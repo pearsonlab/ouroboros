@@ -1,6 +1,6 @@
 import numpy as np
 from tqdm import tqdm
-
+import warnings
 
 from scipy.signal import hilbert
 #from acoustic_features_torch import get_features
@@ -56,7 +56,7 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False):
             if ii >= max_pairs:
                 break
 
-    print(f"kept {ii}/{total_vocs} vocalizations more than 20 ms long")
+    #print(f"kept {ii}/{total_vocs} vocalizations more than 20 ms long")
     return auds
 
 def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False):
@@ -75,11 +75,13 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
         if audio.dtype == np.int16:
             audio = audio/-np.iinfo(audio.dtype).min
 
-        onoffs = np.loadtxt(v)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            onoffs = np.loadtxt(v)
         if len(onoffs) > 0:
             if len(onoffs.shape)==1:
                 onoffs = onoffs[None,:]
-            onoffs = np.hstack([onoffs,np.ones((onoffs.shape[0],1))])
+            #onoffs = np.hstack([onoffs,np.ones((onoffs.shape[0],1))])
             
             audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope)
     
