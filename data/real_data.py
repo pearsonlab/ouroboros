@@ -82,7 +82,7 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
             if len(onoffs.shape)==1:
                 onoffs = onoffs[None,:]
             #onoffs = np.hstack([onoffs,np.ones((onoffs.shape[0],1))])
-            
+            #print(onoffs.shape)
             audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope)
     
             audio_segs += audios
