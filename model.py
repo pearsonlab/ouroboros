@@ -28,6 +28,7 @@ class ouroboros(nn.Module):
 
     def __init__(self,d_data,
                  d_control,
+                 d_out=1,
                  n_layers_data=2,
                  n_layers_control=2,
                  d_state_data=16,
@@ -50,7 +51,7 @@ class ouroboros(nn.Module):
         self.dataMamba = Mamba(dataConfig).to(device)
         self.controlMamba = Mamba(controlConfig).to(device)
 
-        self.outProj = nn.Linear(d_control,1).to(device)
+        self.outProj = nn.Linear(d_control,d_out).to(device)
         self.control_proj = nn.Linear(d_data*2,d_control).to(device)
         self.device = device
 
