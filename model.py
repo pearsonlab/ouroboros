@@ -3,6 +3,26 @@ from mambapy.mamba import Mamba, MambaConfig
 import torch
 import torch.nn as nn
 
+
+
+def corr_fnc(ts1,tsSet):
+
+    sd1,sd2 = ts1.std(dim=1,keepdim=True), tsSet.std(dim=1,keepdim=True)
+    batch_denom = sd1.transpose(2,1) @ sd2
+
+    batch_cov = ts1.transpose(2,1) @ tsSet/(ts1.shape[1]-1)
+
+    batch_corr = batch_denom/batch_cov
+    #mean_corrs = batch_corr.mean(dim=0)
+
+    #inds = torch.triu_indices(mean_corrs.shape[0],mean_corrs.shape[1])
+    
+    return batch_corr.mean(dim=0).sum()
+
+
+vmap_corr = torch.vmap(corr_fnc,in_dims=(2,None))
+
+
 class ouroboros(nn.Module):
 
 
@@ -40,7 +60,13 @@ class ouroboros(nn.Module):
         dy = y - x
 
         state_pred = self.controlMamba(torch.cat([dy,y],dim=-1))
-        state_pred = torch.nn.SiLU()(self.control_proj(state_pred))
+        state_pred = torch.nn.SiLU()(self.control_proj(state_pred)) # bsz x L x dim
+
+        #b,L,d = state_pred.shape
+
+        #state_mus = state_pred.mean(dim=1,keepdim=True)
+        #corr_penalty = vmap_corr(state_pred - state_mus, state_pred - state_mus)
+        #assert corr_penalty.shape == 
 
         if 0 <= mask_ind <= x.shape[1]:
 
