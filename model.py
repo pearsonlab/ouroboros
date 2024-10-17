@@ -61,7 +61,7 @@ class ouroboros(nn.Module):
         dy = y - x
 
         state_pred = self.controlMamba(torch.flip(torch.cat([dy,y],dim=-1),[1]))
-        state_pred = torch.nn.SiLU()(self.control_proj(state_pred)) # bsz x L x dim
+        state_pred = torch.flip(torch.nn.SiLU()(self.control_proj(state_pred)),[1]) # bsz x L x dim
 
         #b,L,d = state_pred.shape
 
