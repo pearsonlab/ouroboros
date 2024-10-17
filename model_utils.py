@@ -37,9 +37,9 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,nEpochs=100
 
         for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
 
-            
+            optimizer.zero_grad()
             x,y = batch # each is bsz x seq len x n neurons + 1
-            bsz,_,n = x.shape
+            bsz,L,n = x.shape
 
             mask_aud = torch.rand(size=(bsz,1)) >= mask_prob_aud
             mask_neur = torch.rand(size=(bsz, 1,n- 1)) >= mask_prob_neur
@@ -51,7 +51,20 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,nEpochs=100
             y = y.to('cuda')
 
             
-            yhat = model(x)
+            yhat,state_pred = model(x,y) #state: B x L x SD
+            cov = state_pred.transpose(-1,-2) @ state_pred /L 
+            sds = torch.diagonal(cov,dim1=-1,dim2=-2).sqrt()[:,:,None]
+            denom = sds @ sds.transpose(-1,-2)
+            abscorr = (cov/denom).abs()
+    
+            #print(abscorr.shape)
+            inds = torch.triu_indices(abscorr.shape[-1],abscorr.shape[-1],offset=-1,device=abscorr.device)
+            penalty = abscorr[:,inds[0],inds[1]].sum(dim=-1).mean()
+
+            
+
+
+
             ### predict da/dt
             yhat = yhat + x
             ################
@@ -69,23 +82,35 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,nEpochs=100
             
             l.backward()
             optimizer.step()
-            train_losses.append(l.item())
+            train_losses.append((l.item(),penalty.item()))
         
 
         if epoch % val_freq == 0:
             model.eval()
             vl = 0.
+            vp = 0.
             for idx,batch in enumerate(loaders['val'],start=epoch*len(loaders['train'])):
                 with torch.no_grad():
                     x,y = batch
-                    yhat = model(x.to('cuda')) + x.to('cuda')
-                    l = loss_fn(y.to('cuda')[:,:,-1],yhat[:,:,-1])
+                    x,y = x.to('cuda'),y.to('cuda')
+                    yhat,state_pred = model(x,y)
+                    yhat = yhat + x
+                    l = loss_fn(y[:,:,-1],yhat[:,:,-1])
     
                 
                     vl += l.item()
+
+                    cov = state_pred.transpose(-1,-2) @ state_pred /L 
+                    sds = torch.diagonal(cov,dim1=-1,dim2=-2).sqrt()[:,:,None]
+                    denom = sds @ sds.transpose(-1,-2)
+                    abscorr = (cov/denom).abs()
+            
+                    inds = torch.triu_indices(abscorr.shape[-1],abscorr.shape[-1],offset=-1,device=abscorr.device)
+                    penalty = abscorr[:,inds[0],inds[1]].sum(dim=-1).mean()
+                    vp += penalty.item()
             if scheduler:
                 scheduler.step(vl/len(loaders['val']))
-            val_losses.append((epoch*len(loaders['train']),vl/len(loaders['val'])))
+            val_losses.append((epoch*len(loaders['train']),vl/len(loaders['val']),vp/len(loaders['val'])))
             
 
     return train_losses,val_losses,model,optimizer
