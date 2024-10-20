@@ -2,7 +2,7 @@ from mambapy.mamba import Mamba, MambaConfig
 
 import torch
 import torch.nn as nn
-
+from torchaudio.functional import lowpass_biquad
 
 
 def corr_fnc(ts1,tsSet):
@@ -152,6 +152,58 @@ class timescale_ouroboros(ouroboros):
             x *= mask 
 
         yhat = self.dataMamba(torch.cat([state_pred,x],dim=-1))
+
+        ## penalize correlation between states?
+
+        return yhat, state_pred
+    
+class filter_ouroboros(ouroboros):
+
+    def __init__(self,d_data,
+                 d_control,
+                 d_out=1,
+                 n_layers_data=2,
+                 n_layers_control=2,
+                 d_state_data=16,
+                 d_state_control=16,
+                 d_conv_data=4,
+                 d_conv_control=4,
+                 expand_factor_data=1,
+                 expand_factor_control=1,
+                 device='cuda',
+                 freq_limit=100,
+                 fs=1000):
+        
+        super(filter_ouroboros,self).__init__(d_data,\
+                 d_control,\
+                 d_out,\
+                 n_layers_data,\
+                 n_layers_control,\
+                 d_state_data,\
+                 d_state_control,\
+                 d_conv_data,\
+                 d_conv_control,\
+                 expand_factor_data,\
+                 expand_factor_control,\
+                 device) 
+        
+        self.freq_limit = freq_limit
+        self.fs=fs
+        self.filter = torch.vmap(lambda x: lowpass_biquad(x,self.fs,self.freq_limit),in_dims=0)
+
+    def forward(self,x,y):
+        
+
+        dy = y - x
+
+        state_pred = self.controlMamba(torch.flip(torch.cat([dy,y],dim=-1),[1]))
+        state_pred = torch.flip(torch.nn.SiLU()(self.control_proj(state_pred)),[1]) # bsz x L x dim
+        state_pred = self.filter(state_pred)
+
+
+
+        yhat = self.dataMamba(state_pred)
+        yhat = self.outProj(yhat)
 
         ## penalize correlation between states?
 
