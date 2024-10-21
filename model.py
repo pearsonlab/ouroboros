@@ -189,7 +189,7 @@ class filter_ouroboros(ouroboros):
         
         self.freq_limit = freq_limit
         self.fs=fs
-        self.filter = torch.vmap(lambda x: lowpass_biquad(x,self.fs,self.freq_limit),in_dims=0)
+        self.filter = torch.vmap(lambda x: lowpass_biquad(x,self.fs,self.freq_limit),in_dims=2,out_dims=2)
 
     def forward(self,x,y):
         
