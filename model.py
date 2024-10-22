@@ -211,4 +211,49 @@ class filter_ouroboros(ouroboros):
 
 
 
+class fancy_ouroboros(ouroboros):
+
+    def __init__(self,d_data,
+                 d_control,
+                 d_out=1,
+                 n_layers_data=2,
+                 n_layers_control=2,
+                 d_state_data=16,
+                 d_state_control=16,
+                 d_conv_data=4,
+                 d_conv_control=4,
+                 expand_factor_data=1,
+                 expand_factor_control=1,
+                 device='cuda'):
         
+        super(fancy_ouroboros,self).__init__(d_data,\
+                 d_control,\
+                 d_out,\
+                 n_layers_data,\
+                 n_layers_control,\
+                 d_state_data,\
+                 d_state_control,\
+                 d_conv_data,\
+                 d_conv_control,\
+                 expand_factor_data,\
+                 expand_factor_control,\
+                 device)
+        
+        self.omega = nn.Linear(d_control,d_out).to(device)
+        self.inp = nn.Linear(d_control,d_out).to(device)
+
+    def forward(self,x,y):
+
+        xdot= y - x
+
+        state_pred = self.controlMamba(torch.flip(torch.cat([xdot,y],dim=-1),[1]))
+        state_pred = torch.flip(torch.nn.SiLU()(self.control_proj(state_pred)),[1])
+
+        out = self.dataMamba(state_pred)
+        omega = torch.nn.ReLU()(self.omega(out))
+        inp = self.inp(out)
+
+        xdotdothat = -omega*x + inp 
+        xdothat = torch.cumsum(xdotdothat,dim=1)
+
+        return xdotdothat[:,1:,:],state_pred#torch.cat([xdothat,xdotdothat],dim=-1)[:,1:,],state_pred
