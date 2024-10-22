@@ -77,7 +77,7 @@ class ouroboros(nn.Module):
             x *= mask 
 
         # CHANGE: PROJECT TO OUT DIM BEFORE GOING INTO DATA MAMBA
-        state_pred = self.outProj(state_pred)
+        yhat = self.outProj(state_pred)
         yhat = self.dataMamba(state_pred)
         #yhat = self.outProj(yhat)
 
