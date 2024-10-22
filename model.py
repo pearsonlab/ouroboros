@@ -41,10 +41,10 @@ class ouroboros(nn.Module):
         
         super(ouroboros,self).__init__()
 
-        dataConfig = MambaConfig(d_model=d_control,\
+        dataConfig = MambaConfig(d_model=d_out,\
                                     n_layers=n_layers_data,d_state=d_state_data,\
                                     d_conv=d_conv_data,expand_factor=expand_factor_data)
-        controlConfig = MambaConfig(d_model=d_data*2, n_layers=n_layers_control,\
+        controlConfig = MambaConfig(d_model=d_control, n_layers=n_layers_control,\
                                     d_state=d_state_control,d_conv=d_conv_control,\
                                     expand_factor=expand_factor_control)
         
@@ -60,8 +60,9 @@ class ouroboros(nn.Module):
 
         dy = y - x
 
-        state_pred = self.controlMamba(torch.flip(torch.cat([dy,y],dim=-1),[1]))
-        state_pred = torch.flip(torch.nn.SiLU()(self.control_proj(state_pred)),[1]) # bsz x L x dim
+        # CHANGE: PROJECT TO CONTROL DIM BEFORE GOING INTO CONTROL MAMBA
+        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([dy,y],dim=-1),[1]))) 
+        state_pred = torch.flip(torch.nn.SiLU()(state_pred),[1]) # bsz x L x dim
 
         #b,L,d = state_pred.shape
 
@@ -75,8 +76,10 @@ class ouroboros(nn.Module):
             mask[:,mask_ind,:] = 0
             x *= mask 
 
+        # CHANGE: PROJECT TO OUT DIM BEFORE GOING INTO DATA MAMBA
+        state_pred = self.outProj(state_pred)
         yhat = self.dataMamba(state_pred)
-        yhat = self.outProj(yhat)
+        #yhat = self.outProj(yhat)
 
         ## penalize correlation between states?
 
