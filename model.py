@@ -78,7 +78,7 @@ class ouroboros(nn.Module):
 
         # CHANGE: PROJECT TO OUT DIM BEFORE GOING INTO DATA MAMBA
         yhat = self.outProj(state_pred)
-        yhat = self.dataMamba(state_pred)
+        yhat = self.dataMamba(yhat)
         #yhat = self.outProj(yhat)
 
         ## penalize correlation between states?
@@ -249,8 +249,8 @@ class fancy_ouroboros(ouroboros):
 
         xdot= y - x
 
-        state_pred = self.controlMamba(torch.flip(torch.cat([xdot,y],dim=-1),[1]))
-        state_pred = torch.flip(torch.nn.SiLU()(self.control_proj(state_pred)),[1])
+        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([xdot,y],dim=-1),[1])))
+        state_pred = torch.flip(torch.nn.SiLU()(state_pred),[1])
 
         out = self.dataMamba(state_pred)
         omega = torch.nn.ReLU()(self.omega(out))
