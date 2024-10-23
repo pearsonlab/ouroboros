@@ -249,7 +249,7 @@ class fancy_ouroboros(ouroboros):
         
         self.dataMamba = Mamba(dataConfig).to(device)
         self.omega = nn.Linear(d_control,d_out*2).to(device)
-        self.inp = nn.Linear(d_control,d_out).to(device)
+        self.inp = nn.Linear(d_control,d_out*2).to(device)
         self.d_out = d_out
 
     def forward(self,x,y):
@@ -264,9 +264,9 @@ class fancy_ouroboros(ouroboros):
         omega = self.omega(out)
         inp = self.inp(out)
 
-        omega_terms = -omega*x
+        omega_terms = -omega*x + inp
 
-        xdotdothat = torch.nn.ReLU()(omega_terms[:,:,:self.d_out]) + inp 
+        xdotdothat = torch.nn.ReLU()(omega_terms[:,:,:self.d_out])
         xdothat = omega_terms[:,:,self.d_out:]
 
         return torch.cat([xdothat,xdotdothat],dim=-1)[:,1:,],state_pred
