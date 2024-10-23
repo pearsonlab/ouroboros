@@ -242,8 +242,15 @@ class fancy_ouroboros(ouroboros):
                  expand_factor_control,\
                  device)
         
-        self.omega = nn.Linear(d_control,d_out).to(device)
+
+        dataConfig = MambaConfig(d_model=d_control,\
+                                    n_layers=n_layers_data,d_state=d_state_data,\
+                                    d_conv=d_conv_data,expand_factor=expand_factor_data)
+        
+        self.dataMamba = Mamba(dataConfig).to(device)
+        self.omega = nn.Linear(d_control,d_out*2).to(device)
         self.inp = nn.Linear(d_control,d_out).to(device)
+        self.d_out = d_out
 
     def forward(self,x,y):
 
@@ -252,11 +259,14 @@ class fancy_ouroboros(ouroboros):
         state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([xdot,y],dim=-1),[1])))
         state_pred = torch.flip(torch.nn.SiLU()(state_pred),[1])
 
+        #out = self.outProj(state_pred)
         out = self.dataMamba(state_pred)
-        omega = torch.nn.ReLU()(self.omega(out))
+        omega = self.omega(out)
         inp = self.inp(out)
 
-        xdotdothat = -omega*x + inp 
-        xdothat = torch.cumsum(xdotdothat,dim=1)
+        omega_terms = -omega*x
 
-        return xdotdothat[:,1:,:],state_pred#torch.cat([xdothat,xdotdothat],dim=-1)[:,1:,],state_pred
+        xdotdothat = torch.nn.ReLU()(omega_terms[:,:,:self.d_out]) + inp 
+        xdothat = omega_terms[:,:,self.d_out:]
+
+        return torch.cat([xdothat,xdotdothat],dim=-1)[:,1:,],state_pred
