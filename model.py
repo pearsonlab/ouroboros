@@ -264,9 +264,9 @@ class fancy_ouroboros(ouroboros):
         omega = self.omega(out)
         inp = self.inp(out)
 
-        omega_terms = -omega*x + inp
+        omega_terms = -omega*x #+ inp
 
-        xdotdothat = torch.nn.ReLU()(omega_terms[:,:,:self.d_out])
+        xdotdothat = torch.nn.ReLU()(omega_terms[:,:,:self.d_out]) + inp
         xdothat = omega_terms[:,:,self.d_out:]
 
         return torch.cat([xdothat,xdotdothat],dim=-1)[:,1:,],state_pred
