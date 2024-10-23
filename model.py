@@ -249,7 +249,7 @@ class fancy_ouroboros(ouroboros):
         
         self.dataMamba = Mamba(dataConfig).to(device)
         self.omega = nn.Linear(d_control,d_out*2).to(device)
-        self.inp = nn.Linear(d_control,d_out*2).to(device)
+        self.inp = nn.Linear(d_control,d_out).to(device)
         self.d_out = d_out
 
     def forward(self,x,y):
