@@ -14,7 +14,7 @@ def remove_axes(axis):
     axis.set_xticks([])
     axis.set_yticks([])
 
-def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64):
+def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,interp=True,min=-6.5,max=5):
 
     """
     make a spectrogram for a given vocalization.
@@ -26,7 +26,7 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64):
     a,t = audio[np.searchsorted(audiotimes,onset-shoulder):np.searchsorted(audiotimes,offset+shoulder)],\
         audiotimes[np.searchsorted(audiotimes,onset-shoulder):np.searchsorted(audiotimes,offset+shoulder)]
     N = len(t)
-    w = hann(128, sym=True)  # symmetric Gaussian window
+    w = hann(win_len, sym=True)  # symmetric Gaussian window
 
     transform = STFFT(w,hop=16,fs=fs,mfft = 1028)
 
@@ -44,15 +44,32 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64):
     target_ts = np.arange(tAx[0],tAx[-1],0.001)
 
     Sx = np.log(np.abs(Sx) + 1e-12)
-    Sx = (Sx + 6.5) / 5
+    Sx = (Sx - min) / max
     Sx = np.clip(Sx, 0.0, 1.0)
 
-    interp = RegularGridInterpolator((fAx,tAx),Sx,bounds_error=True,fill_value=-1e10)
+    if interp:
+        interp = RegularGridInterpolator((fAx,tAx),Sx,bounds_error=True,fill_value=-1e10)
 
-    newX,newY = np.meshgrid(target_freqs,target_ts,indexing='ij',sparse=True)
+        newX,newY = np.meshgrid(target_freqs,target_ts,indexing='ij',sparse=True)
 
-    Sx2 = interp((newX,newY))
-    Sx = Sx2
+        Sx2 = interp((newX,newY))
+        Sx = Sx2
+    else:
+        target_ts,target_freqs = tAx,fAx
 
     
     return Sx,target_ts,target_freqs,flag
+
+
+from scipy import signal
+
+def butter_highpass(cutoff, fs, order=5):
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff / nyq
+    b, a = signal.butter(order, normal_cutoff, btype='high', analog=False)
+    return b, a
+
+def butter_highpass_filter(data, cutoff, fs, order=5,axis=-1):
+    b, a = butter_highpass(cutoff, fs, order=order)
+    y = signal.filtfilt(b, a, data,axis=axis)
+    return y
