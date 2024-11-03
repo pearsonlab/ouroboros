@@ -384,8 +384,6 @@ class constrained_ouroboros(ouroboros):
                  expand_factor_control=1,
                  device='cuda',
                  poly_dim=40,
-                 data_fs=41100,
-                 smooth_length=0.007,
                 good_init=True,
                 tau = 1000):
         
@@ -402,16 +400,15 @@ class constrained_ouroboros(ouroboros):
                  expand_factor_control,\
                  device)
         
-        self.b_net = nn.Linear(in_features=d_control-1,out_features=2*d_data * poly_dim**2,device=device)
-        self.omega_net = nn.Linear(in_features=d_control-1,out_features=1,device=device)
+        self.b_net = nn.Linear(in_features=d_control,out_features=d_data * poly_dim**2,device=device)
+        # d data above: since we only parameterize  d2y/dt2
+        self.omega_net = nn.Linear(in_features=d_control,out_features=1,device=device)
         self.tau = tau
         if good_init:
             b_params = torch.zeros(self.b_net.weight.shape,device=device)
-            #print(b_params.shape)
-            #print(self.b_net.weight.shape)
+
             omega_params = torch.zeros(self.omega_net.weight.shape,device=device)
             b_biases = torch.zeros(self.b_net.bias.shape,device=device)
-            #b_biases[1] = 1
             omega_biases = torch.zeros(self.omega_net.bias.shape,device=device)
             omega_biases[0] = 2*np.pi*2000/self.tau
             self.b_net.weight = nn.Parameter(b_params)
@@ -431,80 +428,51 @@ class constrained_ouroboros(ouroboros):
         B,L,d = x.shape
         xdot= y - x
         z = torch.cat([x,xdot],dim=-1)
-        #power_mat = z[:,:,:,None].expand(-1,-1,-1,self.poly_dim) # B x L x 2d -> B x L x 2d x P
-        #power_mat = power_mat.pow(self.powers)
-        
-        # CHANGE: double flippy
         x_in = torch.cat([xdot,y],dim=-1)
         x_in = torch.cat([x_in, torch.flip(x_in,[1])])
-        state_pred = self.controlMamba(self.control_proj(x_in))
-        state_pred = torch.flip(state_pred,[1])#.transpose(-1,-2) #torch.flip(torch.nn.SiLU()(state_pred),[1])
-        init_conditions = state_pred[:,0,0]
-        states = state_pred[:,:,1:]
-        #print(states.shape)
-        #print(self.b_net.weight.shape)
-        b = self.b_net(states).view(B,L,2*d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        states = self.controlMamba(self.control_proj(x_in))
+        states = torch.flip(states,[1])
+
+        b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         omega = self.omega_net(states)*self.tau
-        b *= self.tau
-        b[:,:,0,1,0] = 0
-        b[:,:,1,0,1] = 1
-        b[:,:,1,1,0] = -(omega**2).squeeze()
-        #b *= self.tau**2
-        penalty = ((b[:,:,:,2:,:2]**2).sum(dim=(-1,-2)) + (b[:,:,:,:2,2:]**2).sum(dim=(-1,-2)) + (b[:,:,:,2:,2:]**2).sum(dim=(-1,-2))).sqrt().mean()
-        
-        power_mat_z1 = z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x 2d -> B x L x 2d x P
-        power_mat_z2 = z[:,:,1:,None].expand(-1,-1,-1,self.poly_dim) # B x L x 2d -> B x L x 2d x P
+        b *= self.tau**2 
+        b[:,:,0,1,0] = -(omega**2).squeeze() # this means we multiply here by tau**2
+
+        power_mat_z1 = z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
+        power_mat_z2 = z[:,:,1:,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
         power_mat_z1 = power_mat_z1.pow(self.powers)
         power_mat_z2 = power_mat_z2.pow(self.powers)
-        power_mat_z1 = power_mat_z1.expand(-1,-1,2,-1)
-        power_mat_z2 = power_mat_z2.expand(-1,-1,2,-1)
         pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-        #print(pow1)
-        #print(pow1.shape)
-        #print(pow1.shape)
-        #print(b.shape)
-        #print(power_mat_z2.shape)
-        
         yhat = torch.einsum('bldk,bldk->bld',pow1,power_mat_z2)
 
-        #x2 = init_conditions[:,None] + torch.cumsum(zdot[:,:,0],dim=1)
-
-        #yhat = zdot #torch.cat([x2[:,:,None],zdot],dim=-1)
-        return yhat[:,1:,:],states#,penalty
+        return yhat[:,1:,:],states
 
     def get_funcs(self,x,y):
 
         B,L,d = x.shape
         xdot= y - x
         z = torch.cat([x,xdot],dim=-1)
-        #power_mat = z[:,:,:,None].expand(-1,-1,-1,self.poly_dim) # B x L x 2d -> B x L x 2d x P
-        #power_mat = power_mat.pow(self.powers)
-        
+        x_in = torch.cat([xdot,y],dim=-1)
+        x_in = torch.cat([x_in, torch.flip(x_in,[1])])
+        states = self.controlMamba(self.control_proj(x_in))
+        states = torch.flip(states,[1])
 
-        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([xdot,y],dim=-1),[1])))
-        state_pred = torch.flip(state_pred,[1])#.transpose(-1,-2) #torch.flip(torch.nn.SiLU()(state_pred),[1])
-        init_conditions = state_pred[:,:,0]
-        states = state_pred[:,:,1:]
-        b = self.b_net(states).view(B,L,2*d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         omega = self.omega_net(states)*self.tau
-        b *= self.tau
-        b[:,:,0,1,0] = 0
-        b[:,:,1,0,1] = 1
-        b[:,:,1,1,0] = -(omega**2).squeeze()
-        #b *= self.tau**2
-        penalty = ((b[:,:,:,2:,:2]**2).sum(dim=(-1,-2)) + (b[:,:,:,:2,2:]**2).sum(dim=(-1,-2)) + \
-                   (b[:,:,:,2:,2:]**2).sum(dim=(-1,-2))).sqrt().mean()
-        #print(penalty)
-        A = torch.stack([b[:,:,:,1,0].detach().clone(),torch.flip(b,[2])[:,:,:,0,1].detach().clone()],dim=-1) #b[:,:,:,[0,1],[0,1]]
-        #print(A.shape)
-        #print(A[:0,0,:,:])
+        b *= self.tau**2 
+        b[:,:,0,1,0] = -(omega**2).squeeze() # this means we multiply here by tau**2
+
+        B,L,D,P1,P2 = b.shape
+        A = torch.stack([torch.zeros((B,L,D,1,2),device='cuda'),\
+           torch.stack([b[:,:,:,1,0].detach().clone(),b[:,:,:,0,1].detach().clone()],dim=-1)],dim=-2)
+
+        assert A.shape[-1] == 2, print(A.shape)
+        assert A.shape[-2] == 2,print(A.shape) 
 
         c = b[:,:,:,0,0].detach().clone()
 
         b[:,:,:,0,0] = 0
-        #b[:,:,:,1,0] = 0
-        #b[:,:,:,0,1] = 0
-        
+
         power_mat_z1 = z[:,:1,:,None].expand(-1,-1,-1,self.poly_dim) # B x 2d -> B x 2d x P
         power_mat_z2 = z[:,1:,:,None].expand(-1,-1,-1,self.poly_dim) # B x 2d -> B x 2d x P
         power_mat_z1 = power_mat_z1.pow(self.powers)
@@ -512,46 +480,37 @@ class constrained_ouroboros(ouroboros):
         power_mat_z1 = power_mat_z1.expand(-1,-1,2,-1)
         power_mat_z2 = power_mat_z2.expand(-1,-1,2,-1)
         pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-        #print(pow1)
-        #print(pow1.shape)
-        
-        b_out = torch.einsum('bldk,bldk->bld',pow1,power_mat_z2)
-        #b_out = pow2#torch.einsum('bldj,bldj->bld',pow1,pow2)
 
         
-        return A,b,b_out,c,state_pred
+        b_out = torch.einsum('bldk,bldk->bld',pow1,power_mat_z2)
+
+        
+        return A,b,b_out,c,states
     
 
     def integrate(self,data):
 
         x,y = data[:,:-1,:],data[:,1:,:]
         B,L,d = x.shape
-        dx = y - x 
-        z = torch.cat([x,dx],dim=-1)
+        xdot= y - x
+        z = torch.cat([x,xdot],dim=-1)
         z0 = z[:,0,:]
+        x_in = torch.cat([xdot,y],dim=-1)
+        x_in = torch.cat([x_in, torch.flip(x_in,[1])])
+        states = self.controlMamba(self.control_proj(x_in))
+        states = torch.flip(states,[1])
 
-
-        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([dx,y],dim=-1),[1])))
-        state_pred = torch.flip(state_pred,[1])#.transpose(-1,-2) #torch.flip(torch.nn.SiLU()(state_pred),[1])
-        #init_conditions = state_pred[:,:,0]
-        states = state_pred[:,:,1:]
-        b = self.b_net(states).view(B,L,2*d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         omega = self.omega_net(states)*self.tau
-        b *= self.tau
-        b[:,:,0,1,0] = 0
-        b[:,:,1,0,1] = 1
-        b[:,:,1,1,0] = -(omega**2).squeeze()
-        b = b.detach().cpu().numpy()
-        #b *= self.tau**2
+        b *= self.tau**2 
+        b[:,:,0,1,0] = -(omega**2).squeeze() # this means we multiply here by tau**2
+
         def dz(t,z):
 
             # t: time, should have a timestep of roughly 1. treat as ZOH
             # z: B x 2d
-            #print(z)
-            b_ind = int(t)#.type(torch.IntTensor)
-            #print(b_ind)
+            b_ind = int(t)
             b_step = b[:,b_ind,:,:,:]
-            #print(b_step.shape)
             power_mat_z1 = np.tile(z[:,:1,None],(1,1,self.poly_dim)) # B x 2d -> B x 2d x P
             power_mat_z2 = np.tile(z[:,1:,None],(1,1,self.poly_dim)) # B x 2d -> B x 2d x P
             power_mat_z1 = np.power(power_mat_z1,self.powers)
@@ -559,16 +518,13 @@ class constrained_ouroboros(ouroboros):
             power_mat_z1 = np.tile(power_mat_z1,(1,2,1))
             power_mat_z2 = np.tile(power_mat_z2,(1,2,1))
             pow1 = np.einsum('bdjk,bdj->bdk',b_step,power_mat_z1)
-            #print(pow1)
-            #print(pow1.shape)
-            
+
+
             dz = np.einsum('bdk,bdk->bd',pow1,power_mat_z2)
-            #print(dz)
-            
+
             return dz
         #print(L)
-        t_steps = np.arange(0,L)#.type(torch.FloatTensor)
-        #print({'step_size':0.5})
+        t_steps = np.arange(0,L)
         obj = solve_ivp(dz,(0,L),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps)
         #z_int = odeint(dz,,t_steps,method='rk4')#,options=dict(step_size:0.5))
 
