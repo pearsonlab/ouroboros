@@ -515,11 +515,7 @@ class constrained_ouroboros(ouroboros):
             power_mat_z2 = np.tile(z[:,1:,None],(1,1,self.poly_dim)) # B x 2d -> B x 2d x P
             power_mat_z1 = np.power(power_mat_z1,self.powers)
             power_mat_z2 = np.power(power_mat_z2,self.powers)
-            power_mat_z1 = np.tile(power_mat_z1,(1,2,1))
-            power_mat_z2 = np.tile(power_mat_z2,(1,2,1))
             pow1 = np.einsum('bdjk,bdj->bdk',b_step,power_mat_z1)
-
-
             dz = np.einsum('bdk,bdk->bd',pow1,power_mat_z2)
 
             return dz
