@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 
-def gen_pure_tones(n_samples=8000,sample_rate=44100,frequency=5000,sample_length=0.3):
+def gen_pure_tones(n_samples=8000,sample_rate=44100,frequency=5000,sample_length=0.3,random_phase=True):
 
 
     samples = []
@@ -14,9 +14,12 @@ def gen_pure_tones(n_samples=8000,sample_rate=44100,frequency=5000,sample_length
 
     for ii in range(n_samples):
 
-        start_time = gen.uniform(low=0,high=1)
+        if random_phase:
+            start_time = gen.uniform(low=0,high=1)
+        else:
+            start_time=0
 
-        t = np.arange(start_time,start_time + sample_length + dt,dt)
+        t = np.arange(start_time,start_time + sample_length + dt/2,dt)
 
         y = np.sin(2*np.pi * frequency * t)
 
