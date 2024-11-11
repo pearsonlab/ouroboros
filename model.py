@@ -6,8 +6,9 @@ from torchaudio.functional import lowpass_biquad
 from torchdiffeq import odeint
 import numpy as np
 from scipy.integrate import solve_ivp
+from utils import deriv_approx_dy,deriv_approx_d2y
 
-
+torch.set_default_dtype(torch.float64)
 def corr_fnc(ts1,tsSet):
 
     sd1,sd2 = ts1.std(dim=1,keepdim=True), tsSet.std(dim=1,keepdim=True)
@@ -367,22 +368,6 @@ class structured_ouroboros(ouroboros):
         return (zdot,caches)
         
 
-
-
-def deriv_approx_dy(y):
-
-    B,L,d = y.shape
-    assert L >= 5, print(f"y is not long enough to approximate with 9 points! needs 9 points, has {L}")
-    return (3*y[:,:-8,:]-32*y[:,1:-7,:] + 168 * y[:,2:-6,:] - 672*y[:,3:-5,:] +\
-             672*y[:,5:-3,:] - 168*y[:,6:-2,:] + 32*y[:,7:-1,:] - 3*y[:,8:,:])/840
-
-def deriv_approx_d2y(y):
-
-    B,L,d = y.shape
-    assert L >= 5, print(f"y is not long enough to approximate with 9 points! needs 9 points, has {L}")
-    return (-9 * y[:,:-8,:] + 128*y[:,1:-7,:] -1008*y[:,2:-6,:] + 8064*y[:,3:-5,:]- 14350*y[:,4:-4,:] + \
-            8064*y[:,5:-3,:] - 1008*y[:,6:-2,:] + 128* y[:,7:-1,:] - 9*y[:,8:,:])/5040
-
 class constrained_ouroboros(ouroboros):
 
 
@@ -402,7 +387,8 @@ class constrained_ouroboros(ouroboros):
                  poly_dim=40,
                 good_init=True,
                 tau = 1000,
-                omega=4000):
+                omega=4000,
+                noInput = False):
         
         super(constrained_ouroboros,self).__init__(d_data,\
                  d_control,\
@@ -418,8 +404,14 @@ class constrained_ouroboros(ouroboros):
                  device)
         
         self.b_net = nn.Linear(in_features=d_control,out_features=d_data * poly_dim**2,device=device)
+        #print(self.b_net.weight)
+        torch.nn.init.uniform_(self.b_net.weight,a=-1/tau,b=1/tau)
+        #print(self.b_net.weight)
+        torch.nn.init.uniform_(self.b_net.bias,a=-1/tau,b=1/tau)
         # d data above: since we only parameterize  d2y/dt2
-        self.omega_net = nn.Linear(in_features=d_control,out_features=1,device=device)
+        self.omega_net = nn.Linear(in_features=d_control,out_features=d_data,device=device)
+        torch.nn.init.uniform_(self.omega_net.weight,a=-1/tau,b=1/tau)
+        torch.nn.init.uniform_(self.omega_net.bias,a=-1/tau,b=1/tau)
         self.tau = tau
         self.omega=omega
         if good_init:
@@ -435,7 +427,7 @@ class constrained_ouroboros(ouroboros):
             self.omega_net.bias = nn.Parameter(omega_biases)
 
             
-        
+        self.noInput = noInput
         self.poly_dim = poly_dim
         self.d_data = d_data 
         self.powers = torch.arange(0,poly_dim,device=device)
@@ -447,11 +439,12 @@ class constrained_ouroboros(ouroboros):
         all other predictions should be done in the train look (train_utils.py)
         """
 
-        B,_,d = x.shape
+        B,L,d = x.shape
         # x: x_0, x_dt, x_2dt,...
 
-        xdot= deriv_approx_dy(x)/dt # this gives: dx
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
+        xdot= deriv_approx_dy(x) # this gives: dx
+        
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
         x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
@@ -460,18 +453,24 @@ class constrained_ouroboros(ouroboros):
         states = torch.flip(states,[1])
         
         b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        
         omega = self.omega_net(states)
+        #print(omega[0,:40,...])
         #print(omega[0,:40,0],2*np.pi*self.omega)
         b[:,:,0,1,0] = -(omega**2).squeeze()
+        if self.noInput:
+            b[:,:,:,0,0] = 0
 
-        b*= self.tau**2
-
+        #b*= self.tau**2
+        z[:,:,-1] /= dt
         power_mat_z1 = z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
         power_mat_z2 = z[:,:,1:,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
         power_mat_z1 = power_mat_z1.pow(self.powers)
         power_mat_z2 = power_mat_z2.pow(self.powers)
         pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
         yhat = torch.einsum('bldk,bldk->bld',pow1,power_mat_z2)
+        #print(torch.amax(power_mat_z1))
+        #print(torch.amax(power_mat_z2))
 
         return yhat,states
 
@@ -480,7 +479,7 @@ class constrained_ouroboros(ouroboros):
         B,_,d = x.shape
         # x: x_0, x_dt, x_2dt,...
 
-        xdot= deriv_approx_dy(x)/dt
+        xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
 
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
@@ -492,7 +491,7 @@ class constrained_ouroboros(ouroboros):
         b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         omega = self.omega_net(states)
         
-        b[:,:,0,1,0] = -(omega**2).squeeze() 
+        #b[:,:,0,1,0] = -(omega**2).squeeze() 
         b *= self.tau**2
 
         B,L,D,P1,P2 = b.shape
@@ -505,7 +504,7 @@ class constrained_ouroboros(ouroboros):
         c = b[:,:,:,0,0].detach().clone()
 
         b[:,:,:,0,0] = 0
-
+        z[:,:,-1] /= dt
         power_mat_z1 = z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x 2d -> B x 2d x P
         power_mat_z2 = z[:,:,1:,None].expand(-1,-1,-1,self.poly_dim) # B x 2d -> B x 2d x P
         power_mat_z1 = power_mat_z1.pow(self.powers)
@@ -524,21 +523,24 @@ class constrained_ouroboros(ouroboros):
         B,_,d = x.shape
         # x: x_0, x_dt, x_2dt,...
 
-        xdot= deriv_approx_dy(x)/dt
+        xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-
+        #L = xdot.shape[1]
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
         x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
         z0 = z[:,0,:]
+        z0[:,-1] /= dt
         
         states = self.controlMamba(self.control_proj(x_in))
         states = torch.flip(states,[1])
 
         b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         omega = self.omega_net(states)#*self.tau
+        if self.noInput:
+            b[:,:,:,0,0] = 0
         
-        b[:,:,0,1,0] = -(omega**2).squeeze() # this means we multiply here by tau**2
+        b[:,:,:,1,0] = -(omega**2) # this means we multiply here by tau**2
         b *= self.tau**2 #/dt**2
         b = b.detach().cpu().numpy()
         pows = self.powers.detach().cpu().numpy()
@@ -561,9 +563,44 @@ class constrained_ouroboros(ouroboros):
             
             return np.hstack([dz1,dz2])
         t_steps = np.arange(0,L*dt + dt/2,dt)[:L]
-        obj = solve_ivp(dz,(0,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps)
+        obj = solve_ivp(dz,(0,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='Radau')
 
         return obj.y
+    
+class kernel_ouroboros(ouroboros):
+
+
+    def __init__(self,d_data,
+                 d_control,
+                 d_out=1,
+                 n_layers_data=2,
+                 n_layers_control=2,
+                 d_state_data=16,
+                 d_state_control=16,
+                 d_conv_data=4,
+                 d_conv_control=4,
+                 expand_factor_data=1,
+                 expand_factor_control=1,
+                 device='cuda',
+                 n_kernels=2,
+                 tau = 1000,
+                 omega=4000,
+                 noInput = False):
+        
+        super(constrained_ouroboros,self).__init__(d_data,\
+                 d_control,\
+                 d_out,\
+                 n_layers_data,\
+                 n_layers_control,\
+                 d_state_data,\
+                 d_state_control,\
+                 d_conv_data,\
+                 d_conv_control,\
+                 expand_factor_data,\
+                 expand_factor_control,\
+                 device)
+
+
 
 
         
