@@ -5,6 +5,20 @@ from scipy.signal.windows import hann
 from scipy.signal import ShortTimeFFT as STFFT
 from scipy.interpolate import RegularGridInterpolator
 
+def deriv_approx_dy(y):
+
+    B,L,d = y.shape
+    assert L >= 5, print(f"y is not long enough to approximate with 9 points! needs 9 points, has {L}")
+    return (3*y[:,:-8,:]-32*y[:,1:-7,:] + 168 * y[:,2:-6,:] - 672*y[:,3:-5,:] +\
+             672*y[:,5:-3,:] - 168*y[:,6:-2,:] + 32*y[:,7:-1,:] - 3*y[:,8:,:])/840
+
+def deriv_approx_d2y(y):
+
+    B,L,d = y.shape
+    assert L >= 5, print(f"y is not long enough to approximate with 9 points! needs 9 points, has {L}")
+    return (-9 * y[:,:-8,:] + 128*y[:,1:-7,:] -1008*y[:,2:-6,:] + 8064*y[:,3:-5,:]- 14350*y[:,4:-4,:] + \
+            8064*y[:,5:-3,:] - 1008*y[:,6:-2,:] + 128* y[:,7:-1,:] - 9*y[:,8:,:])/5040
+
 def from_numpy(data,device='cuda'):
 
     return torch.from_numpy(data).type(torch.FloatTensor).to(device)
