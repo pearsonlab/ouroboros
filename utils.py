@@ -87,3 +87,27 @@ def butter_highpass_filter(data, cutoff, fs, order=5,axis=-1):
     b, a = butter_highpass(cutoff, fs, order=order)
     y = signal.filtfilt(b, a, data,axis=axis)
     return y
+
+def huber_loss(x,delta=1):
+
+    _,L,_ = x.shape
+    mask = (x.abs() <= delta).to(torch.float64)
+    nMasked = mask.sum(dim=(1))
+    unMasked = torch.maximum(L - nMasked,torch.ones(nMasked.shape,device=mask.device))
+    maskedInds = nMasked > 0
+    unMaskedInds = unMasked >0
+
+    
+    t1 = (((x*mask) **2) /2).sum(dim=1)/nMasked
+    #else:
+    #    t1 = 0
+    #if unMasked > 0:
+    t2 = ((delta*(x.abs() - delta/2))*(1 - mask)).sum(dim=1)/unMasked
+    #else:
+    #    t2 = 0
+    #t2NonZero = t2[t2!=0]
+    #print(t2NonZero.shape)
+    #assert torch.all(t2NonZero >= 0), print(t2NonZero,nMasked,unMasked)
+    assert torch.all(t1 >= 0), print('t1 should be greater than or equal to 0')
+    assert torch.all(t2 >= 0), print('t2 should be greater than or equal to 0')
+    return  t1 + t2

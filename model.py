@@ -382,8 +382,7 @@ class NonNegClipper(object):
             b = module.bias.data
             b.clamp_(min=self.min)
 
-
-plt.rcParams.update({'text.usetex':True})
+#plt.rcParams.update({'text.usetex':True})
 class constrained_ouroboros(ouroboros):
 
 
@@ -494,12 +493,12 @@ class constrained_ouroboros(ouroboros):
         states = self.controlMamba(self.control_proj(x_in))
         states = torch.flip(states,[1])
         
-        b = nn.ReLU()(self.b_net(states))/model.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        b = nn.ReLU()(self.b_net(states))/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         d = nn.ReLU()(self.d_net(states))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
         omega = self.omega_net(states)
-        gamma = self.gamma_net(states)/model.tau
+        gamma = self.gamma_net(states)/self.tau
         
         #print(omega[0,:40,...])
         #print(omega[0,:40,0],2*np.pi*self.omega)
