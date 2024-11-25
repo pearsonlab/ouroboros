@@ -1,6 +1,7 @@
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset,DataLoader
 import torch 
 import numpy as np
+from sklearn.model_selection import train_test_split
 
 
 class aud_neur_ds(Dataset):
@@ -31,3 +32,13 @@ def adjusted_euler_integrate(y0,dy,d2y,dt=1):
     dy_adjusted = dy*dt + 1/2 * d2y * (dt**2)
 
     return y0 + np.cumsum(dy_adjusted,axis=1)
+
+def get_loaders(data,num_workers=4,batch_size=32):
+
+    X_train,X_test = train_test_split(data,test_size=0.2,random_state=42)
+
+    dsTrain,dsTest = aud_neur_ds(X_train),aud_neur_ds(X_test)
+    dls = {'train': DataLoader(dsTrain,num_workers=num_workers,batch_size=batch_size,shuffle=True),
+           'val':DataLoader(dsTest,num_workers=num_workers,batch_size=batch_size,shuffle=False)}
+
+    return dls
