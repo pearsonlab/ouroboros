@@ -1,74 +1,45 @@
-from utils import deriv_approx_dy,from_numpy
-import torch
-import torch.nn as nn
+from utils import from_numpy
 import numpy as np
 from scipy.integrate import solve_ivp
 import time
+import torch
+import matplotlib.pyplot as plt
+from utils import get_spec
 
-def integrate(model,x,dt):
+def test_pure_tones(model,sr,int_time=0.2,start_time=0.05,method='RK45',remove_dc_offset=True):
 
-    xdot= deriv_approx_dy(x)
-    # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
+    dt = 1/sr
+    t = np.arange(0,int_time,1/sr)
+    omegas = np.arange(1000,(sr-1000)//2,1000)
+    start = int(round(start_time*sr))
+    for omega in omegas:
+        x_tone = np.sin(2*np.pi*t*omega)
+        y_int,alpha,beta,*_ = model.integrate(from_numpy(x_tone[None,:,None]).to(torch.float64),dt,st=start_time,method=method)
+        if remove_dc_offset:
+            y_int = y_int - np.nanmean(y_int,axis=1,keepdims=True)
+        ax = plt.gca()
+        ax.plot(x_tone[start:].squeeze())
+        ax.plot(y_int[0,:])
+        plt.show()
 
-    z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-    L = z.shape[1]
-    x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-    states = model.controlMamba(model.control_proj(x_in))
-    states = torch.flip(states,[1])
-    
-    #nn.ReLU()(self.b_net(states))#.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-    d = nn.ReLU()(model.d_net(states))
-    if model.noInput:
-        d = torch.zeros(d.shape,device='cuda')
-    omega = model.omega_net(states)
-    gamma = model.gamma_net(states)
-    
-    omega *= model.tau
-    gamma *= model.tau
-    #gamma *= 0
-    d *= model.tau**2
-    b = nn.ReLU()(model.b_net(states)) #model.b_net(states)#.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-    b *= model.tau
-    
-    b = b.detach().cpu().numpy().squeeze()#*model.tau**2
-    omega = omega.detach().cpu().numpy().squeeze()#*model.tau
-    gamma = gamma.detach().cpu().numpy().squeeze()#*model.tau**2
-    d = d.detach().cpu().numpy().squeeze()#*model.tau**2
-    #pows = model.powers.detach().cpu().numpy()
-    t_steps = np.arange(0,L*dt + dt/2,dt)[:L]
-    omegaTerp = lambda t: np.interp(t,t_steps,omega)
-    gammaTerp = lambda t: np.interp(t,t_steps,gamma)
-    z0 = z[0,0,:]
-    def dz(t,z):
+        fig,(ax1,ax2) = plt.subplots(nrows=1,ncols=2,figsize=(12,5))
+        s1,t1,f1,_ = get_spec(x_tone,sr,onset=0,offset=x_tone.shape[0]/sr,shoulder=0.0,interp=False,win_len=1028,normalize=False)
+        s2,t2,f2,_ = get_spec(y_int[0,:],sr,onset=0,offset=y_int[0,:].shape[0]/sr,shoulder=0.0,interp=False,win_len=1028,normalize=False)
+        #print(s1.shape)
+        #print(s2.shape)
+        vmin = min(np.amin(s1),np.amin(s2))
+        vmax = max(np.amax(s1),np.amax(s2))
+        #weights = s2[:,100:200].sum(axis=1)/s2[:,100:200].sum()
+        #mf = (f2 * weights).sum()
+        ax1.imshow(s1,vmin=vmin,vmax=vmax,origin='lower',extent=[t1[0],t1[-1],f1[0],f1[-1]],aspect='auto')
+        ax2.imshow(s2,vmin=vmin,vmax=vmax,origin='lower',extent=[t2[0],t2[-1],f2[0],f2[-1]],aspect='auto')
+        ax1.set_title(rf"true spec $\omega = ${omega}")
+        ax2.set_title(rf"integrated spec")
+        plt.tight_layout()
+        plt.show()
+        plt.close()
 
-        # t: time, should have a timestep of roughly 1. treat as ZOH
-        # z: B x 2d
-        b_ind = int(t)
-        b_step = b[b_ind]
-        omega_step = omega[b_ind]#omegaTerp(t)#omega[b_ind]
-        gamma_step = gamma[b_ind] #gammaTerp(t)#gamma[b_ind]
-        #print(b_step.shape)
-        #print(t)
-        z1 = z[:1]
-        #print(z1.shape)
-        power_mat_z1 = z[:1]**2 #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-        z2 = z[1:]#,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
- 
-        #print(power_mat_z1.shape)       
-        #power_mat_z1 = power_mat_z1.pow(self.powers)
-        #power_mat_z2 = power_mat_z2.pow(self.powers)
-        #pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-        dz2 = -(omega_step**2)*z1 - gamma_step * z2 + b_step*power_mat_z1 * z2
-        #print(dz2.shape)
-        #print(mult * z[0])
-        #assert False
-        dz1 = z[1]
-        
-        return np.hstack([dz1,dz2])
-    #print(L)
-    print(t_steps.shape)
-    start = time.time()
-    obj = solve_ivp(dz,(0,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='RK45',atol=1e-5)
-    print(f'integrated in {np.round(time.time() - start,2)} s')
-    #print(obj.y.shape)
-    return obj.y,omega,gamma,b,d,obj.status
+
+def reconstruct_data(model,sr,audio,method='RK45',remove_dc_offset=True):
+
+    pass
