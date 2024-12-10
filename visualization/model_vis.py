@@ -14,14 +14,28 @@ def format_axes(ax,xticks=[],yticks=[]):
     ax.set_xticks(xticks)
     ax.set_yticks(yticks)
 
-def generate_quantities_figure(model,audioData,sr,nSamples=10):
+def loss_plot(train_loss,val_loss):
 
-    samples = np.random.choice(len(audioData),nSamples)#,p=weights)
+    train_loss,val_loss = np.array(train_loss),np.array(val_loss)
+
+    ax = plt.gca()
+    ax.plot(train_loss[:,0],color='tab:blue',label="Train loss")
+    ax.plot(val_loss[:,0],val_loss[:,1],color='tab:orange',label ='Validation loss')
+    ax.set_xlabel("Gradient steps")
+    ax.set_ylabel("Loss (MSE)")
+
+    format_axes(ax,xticks=ax.get_xticks(),yticks=ax.get_yticks())
+    plt.show()
+    plt.close()
+
+def quantities_figure(model,audioData,sr,nSamples=10,save=False,filename='./quants.svg'):
+
+    samples = np.random.choice(len(audioData),nSamples)
     dt = 1/sr
     for jj,s in enumerate(samples):
 
         aud = audioData[s]
-        spec,time,freq,_ = get_spec(aud[:,-1],sr,onset=4*dt,offset=(len(aud) - 4)/sr,shoulder=0.0,interp=False)
+        spec,spec_t,freq,_ = get_spec(aud[:,-1],sr,onset=4*dt,offset=(len(aud) - 4)/sr,shoulder=0.0,interp=False)
 
         aud = aud[None,:,:]
         dy = deriv_approx_dy(aud)
@@ -29,26 +43,33 @@ def generate_quantities_figure(model,audioData,sr,nSamples=10):
         aud = aud[:,4:-4,:]
         L = aud.shape[1]
 
-        omega,gamma,b,b_out,states = get_funcs(model,from_numpy(aud),dt)
+        terms = model.get_funcs(from_numpy(aud),dt)
+        terms = [t.detach().cpu().numpy() for t in terms]
+        omega,gamma,b,b_out,states = model.get_funcs(from_numpy(aud),dt)
         omega,gamma,b,b_out,states = omega.detach().cpu().numpy(),gamma.detach().cpu().numpy(),\
                                     b.detach().cpu().numpy(),b_out.detach().cpu().numpy(),states.detach().cpu().numpy()
         
         t = np.arange(4*dt,len(aud)*dt + 4*dt,dt)[:L]
         fig,axs = plt.subplots(2,1,figsize=(20,20))
 
-        onInd = int(round(0.1*sr))
-        offInd = int(round(0.2*sr))
-        onIndSpec,offIndSpec = np.searchsorted(time,0.1),np.searchsorted(time,0.2)
+        on,off = 0.1,0.2
+        onInd = int(round(on*sr))
+        offInd = int(round(off*sr))
+        onIndSpec,offIndSpec = np.searchsorted(spec_t,on),np.searchsorted(spec_t,off)
 
-        axs[1].plot(t[onInd:offInd],omega.squeeze()[onInd:offInd],label=r'$\omega$')
-        axs[1].plot(t[onInd:offInd],gamma.squeeze()[onInd:offInd],label=r'$\gamma$')
-        axs[1].plot(t[onInd:offInd],b.squeeze()[onInd:offInd],label=r'nonlinear correction')
+        fig,axs = plt.subplotrs(nrows=len(model.names),ncols=1,figsize=(10,3*len(model.names)))
+        for ax,term,name in zip(axs[1:],terms,model.names):
+            ax.plot(t[onInd:offInd],term.squeeze()[onInd:offInd],label=name)
+            ax.legend(frameon=False)
+            format_axes(ax,xticks=ax.get_xticks(), yticks = ax.get_yticks())
 
-        axs[1].legend(frameon=False)
-        format_axes(axs[1],xticks=t[onInd:offInd:200])
-
-        axs[0].imshow(spec[:,onIndSpec:offIndSpec],extent=[0.1,0.2,freq[0],freq[-1]],origin='lower',vmin=0,vmax=1,aspect='auto')
+        axs[0].imshow(spec[:,onIndSpec:offIndSpec],extent=[on,off,freq[0],freq[-1]],origin='lower',vmin=0,vmax=1,aspect='auto')
         format_axes(axs[0])
+
+    plt.savefig(filename)
+    plt.show()
+    plt.close()
+
 
 
 
