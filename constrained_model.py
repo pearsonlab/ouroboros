@@ -81,7 +81,7 @@ class constrained_ouroboros(nn.Module):
         all other predictions should be done in the train look (train_utils.py)
         """
 
-        B,L,d = x.shape
+        B,L,D = x.shape
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
@@ -120,7 +120,7 @@ class constrained_ouroboros(nn.Module):
 
     def get_funcs(self,x,dt):
 
-        B,_,d = x.shape
+        B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
         xdot= deriv_approx_dy(x)
@@ -135,7 +135,7 @@ class constrained_ouroboros(nn.Module):
         dControl=smooth(dControl.abs(),smooth_len)
         omegaControl=smooth(omegaControl.abs(),smooth_len)
         gammaControl=smooth(gammaControl,smooth_len)
-        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        b = nn.ReLU()(self.b)
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
@@ -181,69 +181,47 @@ class constrained_ouroboros(nn.Module):
         return
 
     
-    def integrate(self,x,dt):
+    def integrate(self,x,dt,start_time=0.):
 
-        B,_,d = x.shape
+        B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
-        smooth_len = int(round(self.smooth_len/dt))
         xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-        #L = xdot.shape[1]
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
+        
         z0 = z[:,0,:]
         z0[:,-1] /= dt
         
-        states = self.controlMamba(self.control_proj(x_in))
-        states = torch.flip(states,[1])
-
-        omegaControl = self.omegaMamba(x_in)
-        gammaControl = self.gammaMamba(x_in)
-        dControl = self.dMamba(x_in)
-        dControl=smooth(dControl.abs(),smooth_len)
-        omegaControl=smooth(omegaControl.abs(),smooth_len)
-        gammaControl=smooth(gammaControl,smooth_len)
-        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(dControl))
-        if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
-        omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)/self.tau
+        omega,gamma,b,_,d,_ = self.get_funcs(x,dt)
         
-        b *= self.tau #/dt**2
-        b = b.detach().cpu().numpy()
-        pows = self.powers.detach().cpu().numpy()
+        start = int(round(start_time/dt))
+        omega,gamma,b,d = omega.detach().cpu().numpy().squeeze()[start:], gamma.detach().cpu().numpy().squeeze()[start:],\
+                        b.detach().cpu().numpy().squeeze(),d.detach().cpu().numpy().squeeze()[start:]
         def dz(t,z):
 
-            # t: time, should have a timestep of roughly 1. treat as ZOH
+            # t: time, timestep ~ dt. treat as variables as ZOH
             # z: B x 2d
-            b_ind = int(t)
-            b_step = self.b * self.tau**2 #b[0,b_ind,:,:,:]
+            b_ind = int(t/dt)
+            b_step = b * self.tau**2 #b[0,b_ind,:,:,:]
             omega_step = omega[:,b_ind,:]
             gamma_step = gamma[:,b_ind,:]
             d_step = d[:,b_ind,:]
-            
-            #power_mat_z1 = np.tile(z[:1,None],(1,self.poly_dim)) # B x 2d -> B x 2d x P
-            #power_mat_z2 = np.tile(z[1:,None],(1,self.poly_dim)) # B x 2d -> B x 2d x P
-            #power_mat_z1 = np.power(power_mat_z1,pows)
-            #power_mat_z2 = np.power(power_mat_z2,pows)
+
             z1 = z[:1]
-            power_mat_z1 = z[:1]**2 #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
+            power_mat_z1 = z[:1]**2 #
             z2 = z[1:]
-            #pow1 = np.einsum('djk,dj->dk',b_step,power_mat_z1)
-            dz2 = -(omega_step**2)*z1 + gamma_step * z2 - b_step*power_mat_z1 * z2 - d_step #np.einsum('dk,dk->d',pow1,power_mat_z2)
+            dz2 = -(omega_step**2)*z1 + gamma_step * z2 - b_step*power_mat_z1 * z2 - d_step 
             
             dz1 = z[1]
             
             return np.hstack([dz1,dz2])
-        t_steps = np.arange(0,L*dt + dt/2,dt)[:L]
-        obj = solve_ivp(dz,(0,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='Radau')
+        t_steps = np.arange(0,L*dt + dt/2,dt)[:L][start:]
+        obj = solve_ivp(dz,(start_time,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='RK45')
 
         return obj.y
     
     
-
 class arneodobouros(nn.Module):
 
 
@@ -289,7 +267,7 @@ class arneodobouros(nn.Module):
     def forward(self,x,dt):
 
 
-        B,L,d = x.shape
+        B,L,D = x.shape
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
@@ -322,7 +300,7 @@ class arneodobouros(nn.Module):
     
     def get_funcs(self,x,dt):
 
-        B,_,d = x.shape
+        B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
@@ -339,7 +317,6 @@ class arneodobouros(nn.Module):
         
         dControl=smooth(dControl.abs(),smooth_len)
         betaControl=smooth(betaControl.abs(),smooth_len)
-        #b = nn.ReLU()(sel.b)/model.tau * torch.ones(L,device='cuda')#.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
@@ -382,10 +359,8 @@ class arneodobouros(nn.Module):
     
     def integrate(self,x,dt):
 
-        B,_,d = x.shape
+        B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
-        smooth_len = int(round(self.smooth_len/dt))
-
         xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
         
@@ -398,7 +373,6 @@ class arneodobouros(nn.Module):
         
         st = 0.05
         start = int(round(st/dt))
-        #alpha,beta,d = alpha.detach().cpu().numpy(),beta.detach().cpu().numpy(),d.detach().cpu().numpy()
         alpha,beta,d = alpha[start:],beta[start:],d[start:]
 
         t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
@@ -409,37 +383,27 @@ class arneodobouros(nn.Module):
 
         def dz(t,z):
 
-            # t: time, should have a timestep of roughly 1. treat as ZOH
+            # t: time, should have a timestep of roughly dt. treat as ZOH
             # z: B x 2d
-            b_ind = int(t)
+            b_ind = int(t/dt)
             
-            alpha_step = alpha[b_ind]#omegaTerp(t)#omega[b_ind]
-            beta_step = beta[b_ind] #gammaTerp(t)#gamma[b_ind]
+            alpha_step = alpha[b_ind]
+            beta_step = beta[b_ind] 
             d_step = d[b_ind]
-            #print(b_step.shape)
-            #print(t)
+            
             z1 = z[:1]
-            #print(z1.shape)
-            z1_2 = z[:1]**2  #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-            z1_3 = z[:1]**3  #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-            z2 = z[1:] #,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
+            
+            z1_2 = z[:1]**2  
+            z1_3 = z[:1]**3  
+            z2 = z[1:] 
     
-            #print(power_mat_z1.shape)       
-            #power_mat_z1 = power_mat_z1.pow(self.powers)
-            #power_mat_z2 = power_mat_z2.pow(self.powers)
-            #pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
             dz2 = alpha_step + beta_step.abs()**2 *z1 + z1_2 *self.tau**2 - z1_3*self.tau**2 - z1 * z2*self.tau - z1_2 * z2*self.tau - d_step 
-            #dz2 = -(omega_step**2)*z1 - gamma_step * z2 + b_step*power_mat_z1 * z2
-            #print(dz2.shape)
-            #print(mult * z[0])
-            #assert False
+
             dz1 = z[1]
             
             return np.hstack([dz1,dz2])
         
-        #print(t_steps.shape)
         start = time.time()
         obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='RK45',atol=1e-5)
         print(f'integrated in {np.round(time.time() - start,2)} s')
-        #print(obj.y.shape)
         return obj.y,alpha,beta,d,obj.status
