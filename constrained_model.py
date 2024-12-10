@@ -7,6 +7,8 @@ from utils import deriv_approx_dy
 from scipy.integrate import solve_ivp
 import numpy as np
 import time
+import matplotlib.pyplot as plt
+plt.rcParams['text.usetex'] = True
 
 class constrained_ouroboros(nn.Module):
 
@@ -153,9 +155,31 @@ class constrained_ouroboros(nn.Module):
         b *= self.tau
         b_out =b * power_mat_z1 * z2
         
-    
-        
         return omega,gamma,b,b_out,d,torch.cat([omegaControl,gammaControl,dControl],dim=-1)
+    
+    def visualize(self,x,dt):
+
+        B,L,D = x.shape
+        names = [rf"$\omega",rf"$\gamma",'d','nonlinear term']
+        with torch.no_grad():
+            terms = self.get_funcs(x[:1,:,:],dt)
+            terms = [t.detach().cpu().numpy().squeeze() for ii,t in enumerate(terms) if ii not in [2,5]]
+            #omega,gamma,b,b_out,d= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
+            #                    b.detach().cpu().numpy().squeeze(), b_out.detach().cpu().numpy().squeeze(),\
+            #                    d.detach().cpu().numpy().squeeze()
+            torch.cuda.empty_cache()
+
+        on = np.random.choice(L-45)
+        t = np.arange(on,on+40,1)*dt
+        for t,n in zip(terms,names):
+            ax = plt.gca()
+            ax.plot(t,t[on:on+40]/2*np.pi)
+            ax.set_title(n)
+            plt.show()
+            plt.close()
+
+        return
+
     
     def integrate(self,x,dt):
 
@@ -332,6 +356,29 @@ class arneodobouros(nn.Module):
         z2 = z[:,:,1:]
         
         return alpha,beta,d,torch.cat([alphaControl,betaControl,dControl],dim=-1)
+    
+    def visualize(self,x,dt):
+
+        B,L,D = x.shape
+        names = [rf"$\alpha",rf"$\beta",'d']
+        with torch.no_grad():
+            terms = self.get_funcs(x[:1,:,:],dt)
+            terms = [t.detach().cpu().numpy().squeeze() for ii,t in enumerate(terms) if ii not in [3]]
+            #omega,gamma,b,b_out,d= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
+            #                    b.detach().cpu().numpy().squeeze(), b_out.detach().cpu().numpy().squeeze(),\
+            #                    d.detach().cpu().numpy().squeeze()
+            torch.cuda.empty_cache()
+
+        on = np.random.choice(L-45)
+        t = np.arange(on,on+40,1)*dt
+        for t,n in zip(terms,names):
+            ax = plt.gca()
+            ax.plot(t,t[on:on+40]/2*np.pi)
+            ax.set_title(n)
+            plt.show()
+            plt.close()
+
+        return
     
     def integrate(self,x,dt):
 
