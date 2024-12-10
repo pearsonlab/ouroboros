@@ -7,7 +7,7 @@ from torchdiffeq import odeint
 import numpy as np
 from scipy.integrate import solve_ivp
 from utils import deriv_approx_dy,deriv_approx_d2y
-from model_utils import smooth
+from model_utils import smooth, NonNegClipper
 import time
 
 torch.set_default_dtype(torch.float64)
@@ -370,103 +370,65 @@ class structured_ouroboros(ouroboros):
         return (zdot,caches)
         
 
-class NonNegClipper(object):
 
-    def __init__(self,min=0):
-        self.min=0
-
-    def __call__(self,module):
-
-        if hasattr(module,'weight'):
-            w = module.weight.data
-            w.clamp_(min=self.min)
-        if hasattr(module,'bias'):
-            b = module.bias.data
-            b.clamp_(min=self.min)
 
 #plt.rcParams.update({'text.usetex':True})
-class constrained_ouroboros(ouroboros):
+class constrained_ouroboros(nn.Module):
 
 
 
     def __init__(self,d_data,
-                 d_control,
                  d_out=1,
-                 n_layers_data=2,
-                 n_layers_control=2,
-                 d_state_data=16,
-                 d_state_control=16,
-                 d_conv_data=4,
-                 d_conv_control=4,
-                 expand_factor_data=1,
-                 expand_factor_control=1,
+                 n_layers=2,
+                 d_state=16,
+                 d_conv=4,
+                 expand_factor=1,
                  device='cuda',
-                 poly_dim=40,
-                good_init=True,
                 tau = 1000,
-                omega=4000,
                 noInput = False,
                 omega_scale = 10000,
+                 smooth_len=0.001,
                 smooth_penalty=lambda x: torch.var(x,dim=1)):
         
-        super(constrained_ouroboros,self).__init__(d_data,\
-                 d_control,\
-                 d_out,\
-                 n_layers_data,\
-                 n_layers_control,\
-                 d_state_data,\
-                 d_state_control,\
-                 d_conv_data,\
-                 d_conv_control,\
-                 expand_factor_data,\
-                 expand_factor_control,\
-                 device)
+        super(constrained_ouroboros,self).__init__()
 
-        self.clipper = NonNegClipper(min=0)
-        self.smooth_penalty = smooth_penalty
-        #self.b_net = nn.Linear(in_features=d_control,out_features=d_data * (poly_dim+1)**2,device=device)
-        #self.b_net.weight = nn.Parameter(torch.zeros(self.b_net.weight.shape,device=device),requires_grad=False)
-        #print(self.b_net.weight)
-        #torch.nn.init.uniform_(self.b_net.weight,a=-1/tau**2,b=1/tau**2)
-        #print(self.b_net.weight)
-        #torch.nn.init.uniform_(self.b_net.bias,a=-1/tau**2,b=1/tau**2)
-        # d data above: since we only parameterize  d2y/dt2
-        self.omega_net = nn.Linear(in_features=d_control,out_features=d_data,device=device) #unconstrained
-        self.gamma_net = nn.Linear(in_features=d_control,out_features=d_data,device=device) # output unconstrained, but weights nonneg
-        self.b_net = nn.Linear(in_features=d_control,out_features=d_data,device=device) # weights non-neg
-        self.b = nn.Parameter(torch.zeros(1),requires_grad=True).to(device)
-        #torch.nn.init.uniform_(self.b,a=0,b=2/tau)
-        self.d_net = nn.Linear(in_features=d_control,out_features=d_data,device=device)
+        omegaConfig = MambaConfig(d_model=4*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        gammaConfig = MambaConfig(d_model=4*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        dConfig = MambaConfig(d_model=4*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+
+        self.omegaMamba = Mamba(omegaConfig).to(device)
+        self.gammaMamba = Mamba(gammaConfig).to(device)
+        self.dMamba = Mamba(dConfig).to(device)
+        self.omega_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #unconstrained
+        self.gamma_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
+        self.b = nn.Parameter(torch.zeros(1),requires_grad=True).to(device) #non-neg
+        self.d_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #non-neg
         torch.nn.init.uniform_(self.omega_net.weight,a=-omega_scale/tau,b=omega_scale/tau)
         torch.nn.init.uniform_(self.omega_net.bias,a=-omega_scale/tau,b=omega_scale/tau)
         torch.nn.init.uniform_(self.gamma_net.weight,a=0,b=2/tau)
         torch.nn.init.uniform_(self.gamma_net.bias,a=0,b=2/tau)
-        torch.nn.init.uniform_(self.b_net.weight,a=-1/tau,b=1/tau)
-        torch.nn.init.uniform_(self.b_net.bias,a=-1/tau,b=1/tau)
+        torch.nn.init.uniform_(self.b,a=0,b=2/tau)
         torch.nn.init.uniform_(self.d_net.weight,a=-1/tau**2,b=1/tau**2)
         torch.nn.init.uniform_(self.d_net.bias,a=-1/tau**2,b=1/tau**2)
+        
+        
+        self.clipper = NonNegClipper(min=0)
+        self.smooth_penalty = smooth_penalty
+        self.smooth_len=smooth_len
 
         self.tau = tau
-        self.omega=omega
+        #self.omega=omega
         if noInput:
             print("running with no input")
-        if good_init:
-            b_params = torch.zeros(self.b_net.weight.shape,device=device)
-
-            omega_params = torch.zeros(self.omega_net.weight.shape,device=device)
-            b_biases = torch.zeros(self.b_net.bias.shape,device=device)
-            omega_biases = torch.zeros(self.omega_net.bias.shape,device=device)
-            omega_biases[0] = 2*np.pi*self.omega/self.tau
-            self.b_net.weight = nn.Parameter(b_params)
-            self.b_net.bias = nn.Parameter(b_biases)
-            self.omega_net.weight = nn.Parameter(omega_params)
-            self.omega_net.bias = nn.Parameter(omega_biases)
-
             
         self.noInput = noInput
-        self.poly_dim = poly_dim+1
         self.d_data = d_data 
-        self.powers = torch.arange(0,poly_dim+1,device=device)
 
     def _clip_weights(self):
 
@@ -484,6 +446,7 @@ class constrained_ouroboros(ouroboros):
 
         B,L,d = x.shape
         # x: x_0, x_dt, x_2dt,...
+        smooth_len = int(round(self.smooth_len/dt))
 
         xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
         
@@ -492,90 +455,55 @@ class constrained_ouroboros(ouroboros):
         L = z.shape[1]
         x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
         
-        states = self.controlMamba(self.control_proj(x_in))
-        states = torch.flip(states,[1])
-        
-        b = nn.ReLU()(self.b_net(states))/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(states))
+        omegaControl = self.omegaMamba(x_in)
+        gammaControl = self.gammaMamba(x_in)
+        dControl = self.dMamba(x_in)
+
+        dControl=smooth(dControl.abs(),smooth_len)
+        omegaControl=smooth(omegaControl.abs(),smooth_len)
+        gammaControl=smooth(gammaControl,smooth_len)
+        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
-        omega = self.omega_net(states)
-        gamma = self.gamma_net(states)/self.tau
+        omega = self.omega_net(omegaControl)
+        gamma = self.gamma_net(gammaControl)/self.tau
         
-        #print(omega[0,:40,...])
-        #print(omega[0,:40,0],2*np.pi*self.omega)
-        #b[:,:,:,1,0] = -(omega**2)
-        #b[:,:,:,0,1] = gamma
-        """
-        if self.noInput:
-            b[:,:,:,0,0] = 0
-        if idx %100 == 0:
-            ax = plt.gca()
-            ax.plot(omega[0,:40,0].detach().cpu().numpy()*model.tau,label=r'$\omega(t)$')
-            ax.plot(gamma[0,:40,0].detach().cpu().numpy()*model.tau,label=r'$\gamma(t)$')
-            ax.set_ylabel("omega,gamma")
-            ax.legend()
-            ax2=ax.twinx()
-            ax2.plot(b[0,:40,0,1,1].detach().cpu().numpy()*model.tau,label=r'$g(y,\dot{y},t)$',color='tab:green')
-            ax2.set_ylabel("g()")
-            ax2.legend()
-            plt.show()
-            plt.close()
-            ax = plt.gca()
-            ax.plot(torch.diff(omega,dim=1)[0,:40,0].detach().cpu().numpy()*model.tau,label=r'$\omega(t)$ diff')
-            ax.legend()
-            ax2=ax.twinx()
-            ax2.plot(torch.diff(b,dim=1)[0,:40,0,1,1].detach().cpu().numpy()*model.tau,label=r'$g(y,\dot{y},t)$ diff',color='tab:green')
-            ax2.set_ylabel("g()")
-            ax2.legend()
-            plt.show()
-            plt.close()
-            #assert False
-        """
-        #b*= self.tau**2
+       
         z[:,:,-1] /= dt
         z1 = z[:,:,:1]
-        power_mat_z1 = z[:,:,:1]**2 #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-        z2 = z[:,:,1:]#,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-        #power_mat_z1 = power_mat_z1.pow(self.powers)
-        #power_mat_z2 = power_mat_z2.pow(self.powers)
-        #pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-        yhat = -(omega**2)*z1 + gamma * z2 - b*power_mat_z1 * z2 - d #torch.einsum('bldk,bldk->bld',pow1,power_mat_z2)
-        #print(torch.amax(power_mat_z1))
-        #print(torch.amax(power_mat_z2))
+        power_mat_z1 = z[:,:,:1]**2 
+        z2 = z[:,:,1:]
 
-        #db = torch.diff(b,dim=1)
-        smooth_penalty = self.smooth_penalty(torch.diff(omega,dim=1)[:,1:,:]).mean() + self.smooth_penalty(torch.diff(gamma,dim=1)[:,1:,:]).mean() + self.smooth_penalty(torch.diff(b,dim=1)[:,1:,:]).mean()#(torch.diff(omega,dim=1)[:,1:,:]**2).mean() + (torch.diff(gamma,dim=1)[:,1:,:]**2).mean() +\
-                        #(torch.diff(b,dim=1)[:,1:,:]**2).mean()
-        #                     (torch.diff(d,dim=1)**2).sum(dim=(-1,-2)).mean()        #  +       
-        #(db[:,:,:,2:self.poly_dim,:]**2).sum(dim=(-1,-2,-3)).mean() + (db[:,:,:,:,2:self.poly_dim]**2).sum(dim=(-1,-2,-3)).mean() +\
-                        #(db[:,:,:,1,1]**2).sum(dim=(-1,-2)).mean()
-        size_penalty =  (d).abs().mean()#b.pow(2).sum(dim=(-1,-2)).mean() #*self.tau**2).abs().pow(2)#.sum(dim=(-1,-2)).mean()
-        #b[:,:,:,2:self.poly_dim,:].abs().pow(2).sum(dim=(-1,-2,-3)).mean() + b[:,:,:,:,2:self.poly_dim].abs().pow(2).sum(dim=(-1,-2,-3)).mean() +\
-        #b[:,:,:,1,1].abs().pow(2).sum(dim=(-1,-2)).mean()
-        #print(size_penalty)
-        return yhat,states,size_penalty + smooth_penalty/3
+        yhat = -(omega**2)*z1 + gamma * z2 - b*power_mat_z1 * z2 - d
+
+        smooth_penalty = self.smooth_penalty(torch.diff(omega,dim=1)[:,1:,:]).mean() + self.smooth_penalty(torch.diff(gamma,dim=1)[:,1:,:]).mean() + self.smooth_penalty(torch.diff(d,dim=1)[:,1:,:]).mean()
+        size_penalty = 0 # (d).abs().mean()
+        return yhat,torch.cat([omegaControl,gammaControl,dControl],dim=-1),size_penalty + smooth_penalty/3
 
     def get_funcs(self,x,dt):
 
         B,_,d = x.shape
         # x: x_0, x_dt, x_2dt,...
-    
+        smooth_len = int(round(self.smooth_len/dt))
         xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
     
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
         x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        states = self.controlMamba(self.control_proj(x_in))
-        states = torch.flip(states,[1])
-        
-        #nn.ReLU()(self.b_net(states))#.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(states))
+        omegaControl = self.omegaMamba(x_in)
+        gammaControl = self.gammaMamba(x_in)
+        dControl = self.dMamba(x_in)
+        dControl=smooth(dControl.abs(),smooth_len)
+        omegaControl=smooth(omegaControl.abs(),smooth_len)
+        gammaControl=smooth(gammaControl,smooth_len)
+        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
-        omega = self.omega_net(states)
-        gamma = self.gamma_net(states)
+        omega = self.omega_net(omegaControl)
+        gamma = self.gamma_net(gammaControl)/self.tau
         
         omega *= self.tau
         gamma *= self.tau
@@ -586,20 +514,20 @@ class constrained_ouroboros(ouroboros):
         z2 = z[:,:,1:]
         power_mat_z1 = z[:,:,:1].pow(2) #expand(-1,-1,-1,model.poly_dim) # B x 2d -> B x 2d x P
 
-        b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device='cuda')
+        #b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device='cuda')
         b *= self.tau
         b_out =b * power_mat_z1 * z2
         
     
         
-        return omega,gamma,b,b_out,d,states
+        return omega,gamma,b,b_out,d,torch.cat([omegaControl,gammaControl,dControl],dim=-1)
         
 
     def integrate(self,x,dt):
 
         B,_,d = x.shape
         # x: x_0, x_dt, x_2dt,...
-
+        smooth_len = int(round(self.smooth_len/dt))
         xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
         #L = xdot.shape[1]
@@ -612,16 +540,19 @@ class constrained_ouroboros(ouroboros):
         states = self.controlMamba(self.control_proj(x_in))
         states = torch.flip(states,[1])
 
-        b = nn.ReLU()(self.b_net(states))#.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(states))
+        omegaControl = self.omegaMamba(x_in)
+        gammaControl = self.gammaMamba(x_in)
+        dControl = self.dMamba(x_in)
+        dControl=smooth(dControl.abs(),smooth_len)
+        omegaControl=smooth(omegaControl.abs(),smooth_len)
+        gammaControl=smooth(gammaControl,smooth_len)
+        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
+        d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
-        omega = self.omega_net(states)
-        gamma = nn.ReLU()(self.gamma_net(states))
-        #if self.noInput:
-        #    b[:,:,:,0,0] = 0
+        omega = self.omega_net(omegaControl)
+        gamma = self.gamma_net(gammaControl)/self.tau
         
-        #b[:,:,:,1,0] = -(omega**2) # this means we multiply here by tau**2
         b *= self.tau #/dt**2
         b = b.detach().cpu().numpy()
         pows = self.powers.detach().cpu().numpy()
@@ -867,7 +798,7 @@ class arneodobouros(nn.Module):
         
         super(arneodobouros,self).__init__()
 
-
+        self.device=device
         alphaConfig = MambaConfig(d_model=4*d_data,\
                                     n_layers=n_layers,d_state=d_state,\
                                     d_conv=d_conv,expand_factor=expand_factor)
@@ -887,8 +818,10 @@ class arneodobouros(nn.Module):
         #self.b = nn.Parameter(torch.zeros(1),requires_grad=True).to(device) #non-neg
         self.d_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #non-neg
 
-        self.tau = tau 
+        tau = nn.Parameter(torch.tensor([tau],dtype=torch.float64,device=device), requires_grad=True)
+        self.tau = tau
         self.smooth_len = smooth_len
+        self.noInput = noInput
 
     def forward(self,x,dt):
 
@@ -908,7 +841,7 @@ class arneodobouros(nn.Module):
         betaControl = self.betaMamba(x_in)
         dControl = self.dMamba(x_in)
 
-        dControl,alphaControl = smooth(dControl.abs(),smooth_len),smooth(alphaControl.abs(),smooth_len)
+        dControl,betaControl = smooth(dControl.abs(),smooth_len),smooth(betaControl.abs(),smooth_len)
 
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
@@ -921,8 +854,8 @@ class arneodobouros(nn.Module):
         z1_3 = z[:,:,:1]**3 
         z2 = z[:,:,1:]
 
-        yhat = alpha + beta*z1 + z1_2 - z1_3 - z1 * z2/self.tau - z1_2 * z2/self.tau - d 
-        return yhat, torch.cat([alphaControl,betaControl,dControl])
+        yhat = alpha + beta.abs()**2 *z1 + z1_2 - z1_3 - z1 * z2/self.tau - z1_2 * z2/self.tau - d 
+        return yhat, torch.cat([alphaControl,betaControl,dControl]),torch.zeros((1,),device=self.device)
     
     def get_funcs(self,x,dt):
 
@@ -942,16 +875,15 @@ class arneodobouros(nn.Module):
         
         
         dControl=smooth(dControl.abs(),smooth_len)
-        alphaControl=smooth(alphaControl.abs(),smooth_len)
+        betaControl=smooth(betaControl.abs(),smooth_len)
         #b = nn.ReLU()(sel.b)/model.tau * torch.ones(L,device='cuda')#.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
         alpha = self.alpha_net(alphaControl)
-        beta = self.beta_net(betaControl)/self.tau
-
+        beta = self.beta_net(betaControl)
         alpha *= self.tau**2
-        beta *= self.tau **2
+        beta *= self.tau
         d *= self.tau**2
 
         z[:,:,-1] /= dt
@@ -973,27 +905,14 @@ class arneodobouros(nn.Module):
         
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        alphaControl = self.alphaMamba(x_in)
-        betaControl = self.betaMamba(x_in)
-        dControl = self.dMamba(x_in)
-        
-        
-        dControl=smooth(dControl.abs(),smooth_len)
-        alphaControl=smooth(alphaControl.abs(),smooth_len)
-        d = nn.ReLU()(self.d_net(dControl))
-        if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
-        alpha = self.alpha_net(alphaControl)
-        beta = self.beta_net(betaControl)
 
-        alpha *= self.tau**2
-        beta *= self.tau **2
-        d *= self.tau**2
+        alpha,beta,d,states = self.get_funcs(x[:1,:,:],dt)
+        alpha,beta,d= alpha.detach().cpu().numpy().squeeze(),beta.detach().cpu().numpy().squeeze(),\
+                            d.detach().cpu().numpy().squeeze()
         
         st = 0.05
         start = int(round(st/dt))
-        alpha,beta,d = alpha.detach().cpu().numpy(),beta.detach().cpu().numpy(),d.detach().cpu().numpy()
+        #alpha,beta,d = alpha.detach().cpu().numpy(),beta.detach().cpu().numpy(),d.detach().cpu().numpy()
         alpha,beta,d = alpha[start:],beta[start:],d[start:]
 
         t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
@@ -1015,15 +934,15 @@ class arneodobouros(nn.Module):
             #print(t)
             z1 = z[:1]
             #print(z1.shape)
-            z1_2 = z[:1]**2 #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-            z1_3 = z[:1]**3 #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-            z2 = z[1:]#,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
+            z1_2 = z[:1]**2  #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
+            z1_3 = z[:1]**3  #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
+            z2 = z[1:] #,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
     
             #print(power_mat_z1.shape)       
             #power_mat_z1 = power_mat_z1.pow(self.powers)
             #power_mat_z2 = power_mat_z2.pow(self.powers)
             #pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-            dz2 = alpha_step + beta_step*z1 + z1_2 - z1_3 - z1 * z2 - z1_2 * z2 - d_step 
+            dz2 = alpha_step + beta_step.abs()**2 *z1 + z1_2 *self.tau**2 - z1_3*self.tau**2 - z1 * z2*self.tau - z1_2 * z2*self.tau - d_step 
             #dz2 = -(omega_step**2)*z1 - gamma_step * z2 + b_step*power_mat_z1 * z2
             #print(dz2.shape)
             #print(mult * z[0])
