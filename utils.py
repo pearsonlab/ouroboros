@@ -56,8 +56,13 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,in
     fAx = np.linspace(f_lo,f_hi,Sx.shape[0])
     target_freqs = np.linspace(f_lo,f_hi,n_freq_bins)
     target_ts = np.arange(tAx[0],tAx[-1],0.001)
-
+    
     Sx = np.log(np.abs(Sx) + 1e-12)
+    if min == np.nan:
+        min = np.amin(Sx)
+    if max == np.nan:
+        max = np.amax(Sx)
+    
     Sx = (Sx - min) / max
     Sx = np.clip(Sx, 0.0, 1.0)
 

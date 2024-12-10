@@ -174,3 +174,28 @@ def generate(model,sample,mask_audio=False):
         gen_data.append(s + dy)
     
     return torch.vstack(gen_data)[None,:,-1]
+
+def smooth(data,smooth_len):
+
+    B,L,D = data.shape
+    pad = torch.zeros((B,smooth_len,D),device='cuda')
+    try:
+        cumsum = torch.cumsum(torch.cat([pad,data],dim=1),dim=1)
+    except:
+        print(pad.shape,data.shape)
+        assert False
+    return (cumsum[:,smooth_len:,:] - cumsum[:,:-smooth_len,:])/float(smooth_len)
+
+class NonNegClipper(object):
+
+    def __init__(self,min=0):
+        self.min=0
+
+    def __call__(self,module):
+
+        if hasattr(module,'weight'):
+            w = module.weight.data
+            w.clamp_(min=self.min)
+        if hasattr(module,'bias'):
+            b = module.bias.data
+            b.clamp_(min=self.min)
