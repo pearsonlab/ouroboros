@@ -28,7 +28,7 @@ def remove_axes(axis):
     axis.set_xticks([])
     axis.set_yticks([])
 
-def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,interp=True,min=-6.5,max=5):
+def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,interp=True,normalize=True,min=-6.5,max=5):
 
     """
     make a spectrogram for a given vocalization.
@@ -58,13 +58,14 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,in
     target_ts = np.arange(tAx[0],tAx[-1],0.001)
     
     Sx = np.log(np.abs(Sx) + 1e-12)
-    if min == np.nan:
-        min = np.amin(Sx)
-    if max == np.nan:
-        max = np.amax(Sx)
-    
-    Sx = (Sx - min) / max
-    Sx = np.clip(Sx, 0.0, 1.0)
+    if normalize:
+        if min == None:
+            min = np.amin(Sx)
+        if max == None:
+            max = np.amax(Sx)
+        
+        Sx = (Sx - min) / max
+        Sx = np.clip(Sx, 0.0, 1.0)
 
     if interp:
         interp = RegularGridInterpolator((fAx,tAx),Sx,bounds_error=True,fill_value=-1e10)
