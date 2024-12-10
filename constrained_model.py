@@ -54,7 +54,7 @@ class constrained_ouroboros(nn.Module):
         #torch.nn.init.uniform_(self.d_net.weight,a=-1/tau**2,b=1/tau**2)
         #torch.nn.init.uniform_(self.d_net.bias,a=-1/tau**2,b=1/tau**2)
         
-        
+        self.device = device
         self.clipper = NonNegClipper(min=0)
         self.smooth_penalty = smooth_penalty
         self.smooth_len=smooth_len
@@ -66,6 +66,7 @@ class constrained_ouroboros(nn.Module):
             
         self.noInput = noInput
         self.d_data = d_data 
+        self.names = [rf"$\omega$",rf"$\gamma$",'nonlinear weight','nonlinear term','d','control signals']
 
     def _clip_weights(self):
 
@@ -138,7 +139,7 @@ class constrained_ouroboros(nn.Module):
         b = nn.ReLU()(self.b)
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
+            d = torch.zeros(d.shape,device=self.device)
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)/self.tau
         
@@ -154,29 +155,28 @@ class constrained_ouroboros(nn.Module):
         #b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device='cuda')
         b *= self.tau
         b_out =b * power_mat_z1 * z2
-        
+        b = b * torch.ones((B,L,D),device=self.device)
         return omega,gamma,b,b_out,d,torch.cat([omegaControl,gammaControl,dControl],dim=-1)
     
     def visualize(self,x,dt):
 
         B,L,D = x.shape
-        names = [rf"$\omega",rf"$\gamma",'d','nonlinear term']
+        
         with torch.no_grad():
             terms = self.get_funcs(x[:1,:,:],dt)
-            terms = [t.detach().cpu().numpy().squeeze() for ii,t in enumerate(terms) if ii not in [2,5]]
-            #omega,gamma,b,b_out,d= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
-            #                    b.detach().cpu().numpy().squeeze(), b_out.detach().cpu().numpy().squeeze(),\
-            #                    d.detach().cpu().numpy().squeeze()
+            terms = [t.detach().cpu().numpy().squeeze() for t in terms]
+            
             torch.cuda.empty_cache()
 
         on = np.random.choice(L-45)
-        t = np.arange(on,on+40,1)*dt
-        for t,n in zip(terms,names):
-            ax = plt.gca()
-            ax.plot(t,t[on:on+40]/2*np.pi)
-            ax.set_title(n)
-            plt.show()
-            plt.close()
+        t_ax = np.arange(on,on+40,1)*dt
+        for ii,(t,n) in enumerate(zip(terms,self.names)):
+            if ii not in [2,5]:
+                ax = plt.gca()
+                ax.plot(t_ax,t[on:on+40]/2*np.pi)
+                ax.set_title(n)
+                plt.show()
+                plt.close()
 
         return
 
@@ -263,6 +263,7 @@ class arneodobouros(nn.Module):
         self.tau = tau
         self.smooth_len = smooth_len
         self.noInput = noInput
+        self.names = [rf"$\alpha$",rf"$\beta$",'d','states']
 
     def forward(self,x,dt):
 
@@ -337,27 +338,28 @@ class arneodobouros(nn.Module):
     def visualize(self,x,dt):
 
         B,L,D = x.shape
-        names = [rf"$\alpha",rf"$\beta",'d']
+        
         with torch.no_grad():
             terms = self.get_funcs(x[:1,:,:],dt)
-            terms = [t.detach().cpu().numpy().squeeze() for ii,t in enumerate(terms) if ii not in [3]]
+            terms = [t.detach().cpu().numpy().squeeze() for t in terms]
             #omega,gamma,b,b_out,d= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
             #                    b.detach().cpu().numpy().squeeze(), b_out.detach().cpu().numpy().squeeze(),\
             #                    d.detach().cpu().numpy().squeeze()
             torch.cuda.empty_cache()
 
         on = np.random.choice(L-45)
-        t = np.arange(on,on+40,1)*dt
-        for t,n in zip(terms,names):
-            ax = plt.gca()
-            ax.plot(t,t[on:on+40]/2*np.pi)
-            ax.set_title(n)
-            plt.show()
-            plt.close()
+        t_ax = np.arange(on,on+40,1)*dt
+        for ii,(t,n) in enumerate(zip(terms,self.names)):
+            if ii != 3:
+                ax = plt.gca()
+                ax.plot(t_ax,t[on:on+40]/2*np.pi)
+                ax.set_title(n)
+                plt.show()
+                plt.close()
 
         return
     
-    def integrate(self,x,dt):
+    def integrate(self,x,dt,method='RK45',st=0.05):
 
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
@@ -371,15 +373,17 @@ class arneodobouros(nn.Module):
         alpha,beta,d= alpha.detach().cpu().numpy().squeeze(),beta.detach().cpu().numpy().squeeze(),\
                             d.detach().cpu().numpy().squeeze()
         
-        st = 0.05
         start = int(round(st/dt))
         alpha,beta,d = alpha[start:],beta[start:],d[start:]
 
         t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
         alphaTerp = lambda t: np.interp(t,t_steps,alpha)
         betaTerp = lambda t: np.interp(t,t_steps,beta)
+        dTerp = lambda t: np.interp(t,t_steps,d)
         z0 = z[0,start,:]
         z0[-1] /= dt
+
+        tau = self.tau.detach().cpu().numpy()
 
         def dz(t,z):
 
@@ -387,9 +391,9 @@ class arneodobouros(nn.Module):
             # z: B x 2d
             b_ind = int(t/dt)
             
-            alpha_step = alpha[b_ind]
-            beta_step = beta[b_ind] 
-            d_step = d[b_ind]
+            alpha_step = alphaTerp(t) #alpha[b_ind]
+            beta_step = betaTerp(t) # beta[b_ind] 
+            d_step = dTerp(t) #d[b_ind]
             
             z1 = z[:1]
             
@@ -397,13 +401,13 @@ class arneodobouros(nn.Module):
             z1_3 = z[:1]**3  
             z2 = z[1:] 
     
-            dz2 = alpha_step + beta_step.abs()**2 *z1 + z1_2 *self.tau**2 - z1_3*self.tau**2 - z1 * z2*self.tau - z1_2 * z2*self.tau - d_step 
+            dz2 = alpha_step + np.abs(beta_step)**2 *z1 + z1_2 *tau**2 - z1_3*tau**2 - z1 * z2*tau - z1_2 * z2*tau - d_step 
 
             dz1 = z[1]
             
             return np.hstack([dz1,dz2])
         
         start = time.time()
-        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='RK45',atol=1e-5)
+        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
         print(f'integrated in {np.round(time.time() - start,2)} s')
         return obj.y,alpha,beta,d,obj.status
