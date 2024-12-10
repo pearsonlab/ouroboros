@@ -6,37 +6,6 @@ import matplotlib.pyplot as plt
 
 
 plt.rcParams['text.usetex'] = True
-def get_funcs(model,x,dt):
-
-    B,_,d = x.shape
-    # x: x_0, x_dt, x_2dt,...
-
-    xdot= deriv_approx_dy(x)/dt
-    # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-
-    z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-    L = z.shape[1]
-    x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-    states = model.controlMamba(model.control_proj(x_in))
-    states = torch.flip(states,[1])
-    
-    b = model.b_net(states).view(B,L,d,model.poly_dim,model.poly_dim) # B x L x 2d x P x P
-    omega = model.omega_net(states)
-    gamma = model.gamma_net(states)
-        
-    b *= model.tau**2
-    omega *= model.tau**2
-    gamma *= model.tau**2
-
-    z1 = z[:,:,:1]
-    z2 = z[:,:,1:]
-    power_mat_z1 = z[:,:,:1].pow(2) #expand(-1,-1,-1,model.poly_dim) # B x 2d -> B x 2d x P
-
-    b_out =b * power_mat_z1 * z2
-
-    
-    return omega,gamma,b,b_out,states
-
 
 def format_axes(ax,xticks=[],yticks=[]):
 
