@@ -76,7 +76,7 @@ class simpleGaussModule(kernelModule):
         weights = self.weights(z)
         weights = weights.view(B,L,self.d,self.nTerms)
         gauss_mat = torch.linalg.norm(x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus,dim=2,keepdims=True)**2 / (2*torch.exp(self.log_sigmas))
-        kernels = torch.exp(gauss_mat)/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
+        kernels = torch.exp(-gauss_mat)/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
 
         x = torch.einsum('bldp,bldp->bld', weights,kernels)
 
