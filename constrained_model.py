@@ -9,6 +9,7 @@ import numpy as np
 import time
 import matplotlib.pyplot as plt
 plt.rcParams['text.usetex'] = True
+from abc import ABC, abstractmethod
 
 class constrained_ouroboros(nn.Module):
 
@@ -25,7 +26,8 @@ class constrained_ouroboros(nn.Module):
                 noInput = False,
                 omega_scale = 10000,
                  smooth_len=0.001,
-                smooth_penalty=lambda x: torch.var(x,dim=1)):
+                smooth_penalty=lambda x: torch.var(x,dim=1),
+                good_init=False):
         
         super(constrained_ouroboros,self).__init__()
 
@@ -44,8 +46,16 @@ class constrained_ouroboros(nn.Module):
         self.dMamba = Mamba(dConfig).to(device)
         self.omega_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #unconstrained
         self.gamma_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
-        self.b = nn.Parameter(torch.zeros(1),requires_grad=True).to(device) #non-neg
+        self.b = nn.Parameter(torch.zeros(1,device=device),requires_grad=True) #non-neg
         self.d_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #non-neg
+        if good_init:
+            print('initializing with good values')
+            self.omega_net.weight.data = torch.zeros((d_data,4*d_data),device=device)
+            self.omega_net.bias.data = omega_scale * torch.ones((1,1),device=device)
+            self.d_net.weight.data = torch.zeros((d_data,4*d_data),device=device)
+            self.d_net.bias.data = torch.zeros((1,1),device=device)
+            self.gamma_net.weight.data = torch.zeros((d_data,4*d_data),device=device)
+            self.gamma_net.bias.data = torch.zeros((1,1),device=device)
         #torch.nn.init.uniform_(self.omega_net.weight,a=-omega_scale/tau,b=omega_scale/tau)
         #torch.nn.init.uniform_(self.omega_net.bias,a=-omega_scale/tau,b=omega_scale/tau)
         #torch.nn.init.uniform_(self.gamma_net.weight,a=0,b=2/tau)
@@ -76,7 +86,7 @@ class constrained_ouroboros(nn.Module):
         #self.b_net.apply(self.clipper)
         
 
-    def forward(self,x,dt,idx):
+    def forward(self,x,dt):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
@@ -97,15 +107,20 @@ class constrained_ouroboros(nn.Module):
         gammaControl = self.gammaMamba(x_in)
         dControl = self.dMamba(x_in)
 
-        dControl=smooth(dControl.abs(),smooth_len)
-        omegaControl=smooth(omegaControl.abs(),smooth_len)
-        gammaControl=smooth(gammaControl,smooth_len)
+        #dControl=smooth(dControl.abs(),smooth_len)
+        #omegaControl=smooth(omegaControl.abs(),smooth_len)
+        #gammaControl=smooth(gammaControl,smooth_len)
         b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)/self.tau
+        d=smooth(d.abs(),smooth_len)
+        omega=smooth(omega.abs(),smooth_len)
+        gamma = smooth(gamma,smooth_len)
+        #gammaControl=smooth(gammaControl,smooth_len)
+        #/self.tau
         
        
         z[:,:,-1] /= dt
@@ -133,21 +148,24 @@ class constrained_ouroboros(nn.Module):
         omegaControl = self.omegaMamba(x_in)
         gammaControl = self.gammaMamba(x_in)
         dControl = self.dMamba(x_in)
-        dControl=smooth(dControl.abs(),smooth_len)
-        omegaControl=smooth(omegaControl.abs(),smooth_len)
-        gammaControl=smooth(gammaControl,smooth_len)
+        #dControl=smooth(dControl.abs(),smooth_len)
+        #omegaControl=smooth(omegaControl.abs(),smooth_len)
+        #gammaControl=smooth(gammaControl,smooth_len)
         b = nn.ReLU()(self.b)
-        d = nn.ReLU()(self.d_net(dControl))
+        d = self.d_net(dControl)
         if self.noInput:
             d = torch.zeros(d.shape,device=self.device)
         omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)/self.tau
+        gamma = self.gamma_net(gammaControl)
+        omega = smooth(omega.abs(),smooth_len)
+        gamma = smooth(gamma,smooth_len)
+        d = smooth(d.abs(),smooth_len)
         
         omega *= self.tau
         gamma *= self.tau
         d *= self.tau**2
     
-        z /= dt
+        z[:,:,1] /= dt
         z1 = z[:,:,:1]
         z2 = z[:,:,1:]
         power_mat_z1 = z[:,:,:1].pow(2) #expand(-1,-1,-1,model.poly_dim) # B x 2d -> B x 2d x P
@@ -173,7 +191,7 @@ class constrained_ouroboros(nn.Module):
         for ii,(t,n) in enumerate(zip(terms,self.names)):
             if ii not in [2,5]:
                 ax = plt.gca()
-                ax.plot(t_ax,t[on:on+40]/2*np.pi)
+                ax.plot(t_ax,t[on:on+40]/(2*np.pi))
                 ax.set_title(n)
                 plt.show()
                 plt.close()
@@ -181,7 +199,7 @@ class constrained_ouroboros(nn.Module):
         return
 
     
-    def integrate(self,x,dt,start_time=0.):
+    def integrate(self,x,dt,method='RK45',st=0.05):
 
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
@@ -195,18 +213,25 @@ class constrained_ouroboros(nn.Module):
         
         omega,gamma,b,_,d,_ = self.get_funcs(x,dt)
         
-        start = int(round(start_time/dt))
+        start = int(round(st/dt))
         omega,gamma,b,d = omega.detach().cpu().numpy().squeeze()[start:], gamma.detach().cpu().numpy().squeeze()[start:],\
-                        b.detach().cpu().numpy().squeeze(),d.detach().cpu().numpy().squeeze()[start:]
+                        b.detach().cpu().numpy().squeeze()[start:],d.detach().cpu().numpy().squeeze()[start:]
+        
+        t_steps = np.arange(0,L*dt + dt/2,dt)[:L][start:]
+        
+        omegaTerp = lambda t: np.interp(t,t_steps,omega)
+        gammaTerp = lambda t: np.interp(t,t_steps,gamma)
+        dTerp = lambda t: np.interp(t,t_steps,d)
+        bTerp = lambda t: np.interp(t,t_steps,b)
         def dz(t,z):
 
             # t: time, timestep ~ dt. treat as variables as ZOH
             # z: B x 2d
-            b_ind = int(t/dt)
-            b_step = b * self.tau**2 #b[0,b_ind,:,:,:]
-            omega_step = omega[:,b_ind,:]
-            gamma_step = gamma[:,b_ind,:]
-            d_step = d[:,b_ind,:]
+            #b_ind = int(t/dt)
+            b_step = bTerp(t) #* self.tau**2 #b[0,b_ind,:,:,:]
+            omega_step = omegaTerp(t)
+            gamma_step = gammaTerp(t)
+            d_step = dTerp(t)
 
             z1 = z[:1]
             power_mat_z1 = z[:1]**2 #
@@ -216,10 +241,12 @@ class constrained_ouroboros(nn.Module):
             dz1 = z[1]
             
             return np.hstack([dz1,dz2])
-        t_steps = np.arange(0,L*dt + dt/2,dt)[:L][start:]
-        obj = solve_ivp(dz,(start_time,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='RK45')
+        
+        s = time.time()
+        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+        print(f'integrated in {np.round(time.time() - s,2)} s')
 
-        return obj.y
+        return obj.y,omega,gamma,b,d,obj.status
     
     
 class arneodobouros(nn.Module):
@@ -283,13 +310,14 @@ class arneodobouros(nn.Module):
         betaControl = self.betaMamba(x_in)
         dControl = self.dMamba(x_in)
 
-        dControl,betaControl = smooth(dControl.abs(),smooth_len),smooth(betaControl.abs(),smooth_len)
+        #dControl,betaControl = smooth(dControl.abs(),smooth_len),smooth(betaControl.abs(),smooth_len)
 
-        d = nn.ReLU()(self.d_net(dControl))
+        d = self.d_net(dControl)
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
         alpha = self.alpha_net(alphaControl)
         beta = self.beta_net(betaControl)
+        d, beta = smooth(d.abs(),smooth_len),smooth(beta.abs(),smooth_len)
         z[:,:,-1] /= dt
         z1 = z[:,:,:1]
         z1_2 = z[:,:,:1]**2 
@@ -316,13 +344,14 @@ class arneodobouros(nn.Module):
         dControl = self.dMamba(x_in)
         
         
-        dControl=smooth(dControl.abs(),smooth_len)
-        betaControl=smooth(betaControl.abs(),smooth_len)
-        d = nn.ReLU()(self.d_net(dControl))
+        #dControl=smooth(dControl.abs(),smooth_len)
+        #betaControl=smooth(betaControl.abs(),smooth_len)
+        d = self.d_net(dControl)
         if self.noInput:
             d = torch.zeros(d.shape,device='cuda')
         alpha = self.alpha_net(alphaControl)
         beta = self.beta_net(betaControl)
+        d, beta = smooth(d.abs(),smooth_len),smooth(beta.abs(),smooth_len)
         alpha *= self.tau**2
         beta *= self.tau
         d *= self.tau**2
@@ -352,7 +381,7 @@ class arneodobouros(nn.Module):
         for ii,(t,n) in enumerate(zip(terms,self.names)):
             if ii != 3:
                 ax = plt.gca()
-                ax.plot(t_ax,t[on:on+40]/2*np.pi)
+                ax.plot(t_ax,t[on:on+40]/(2*np.pi))
                 ax.set_title(n)
                 plt.show()
                 plt.close()
@@ -407,7 +436,94 @@ class arneodobouros(nn.Module):
             
             return np.hstack([dz1,dz2])
         
-        start = time.time()
+        s = time.time()
         obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
-        print(f'integrated in {np.round(time.time() - start,2)} s')
+        print(f'integrated in {np.round(time.time() - s,2)} s')
         return obj.y,alpha,beta,d,obj.status
+
+
+class kernelModule(nn.Module):
+
+    def __init__(self,nTerms,device,x_dim,z_dim):
+
+        self.nTerms = nTerms
+        self.device=device
+        self.d = x_dim
+        self.n = z_dim
+        pass
+
+    @abstractmethod
+    def forward(self,x):
+        pass 
+
+    def get_weights(self,z):
+
+        return self.weights(z)
+    
+    def get_mus(self):
+
+        return self.mus
+
+
+class polyModule(kernelModule):
+
+    def __init__(self,nTerms,device,x_dim,z_dim,poly_dim):
+
+        super().__init__(nTerms,device,x_dim,z_dim)
+        self.mus = nn.Parameter(torch.rand((1,1,self.d,),device=self.device)*2*np.sqrt(self.d) - np.sqrt(self.d),\
+                                requires_grad=True)
+        self.weights = nn.Linear(self.n,poly_dim**2).to(self.device)
+        self.powers = torch.arange(0,poly_dim+1,device=self.device)
+        self.poly_dim = poly_dim
+        self.mask = torch.ones((2*self.d,poly_dim,poly_dim))
+        self.mask[:,0,0] = 0
+        self.mask[:,0,1] = 0
+        self.mask[:,1,0] = 0
+        self.mask = self.mask.to(self.device)
+
+
+    def forward(self,x,z):
+
+        B,L,d = x.shape
+        _,_,n = z.shape
+        weights = self.weights(z)
+        power_mat = (x - self.mus)[:,:,:,None].expand(-1,-1,-1,self.poly_dim)
+        power_mat = x.pow(self.powers)
+        weights = weights.view(B,L,2*d,self.poly_dim,self.poly_dim) * self.mask
+        x = torch.einsum('bldkj,bldk->bldj',weights,power_mat)
+        x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
+
+        return x
+    
+class simpleGaussModule(kernelModule):
+
+    def __init__(self,nTerms,device,x_dim,z_dim):
+
+        super().__init__(nTerms,device,x_dim,z_dim)
+        self.mus = nn.Parameter(torch.rand((1,1,self.d,nTerms),device=self.device)*2*np.sqrt(self.d*nTerms) - np.sqrt(self.d *nTerms),\
+                                requires_grad=True)
+        self.log_sigmas = nn.Parameter(torch.rand((1,1,1,nTerms),device=self.device)*2*np.sqrt(self.nTerms) - np.sqrt(self.nTerms),\
+                                   requires_grad=True)
+        self.weights = nn.Linear(self.n,self.nTerms).to(self.device)
+
+    def forward(self,x,z):
+        B,L,d = x.shape
+        _,_,n = z.shape
+        weights = self.weights(z)
+        gauss_mat = torch.linalg.norm(x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)**2 / (2*torch.exp(self.log_sigmas))
+        kernels = torch.exp(gauss_mat)/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
+
+        x = torch.einsum('bldp,bldp->bld', weights,kernels)
+
+        return x
+    
+    def get_log_sigmas(self):
+        
+        return self.log_sigmas
+
+
+
+class rkhs_ouroboros(nn.Module):
+
+    def __init__(self):
+        pass 
