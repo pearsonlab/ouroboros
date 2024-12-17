@@ -3,6 +3,7 @@ from torch import nn
 from mambapy.mamba import Mamba, MambaConfig
 from model_utils import smooth, NonNegClipper
 from utils import deriv_approx_dy
+from kernels import *
 
 from scipy.integrate import solve_ivp
 import numpy as np
@@ -10,6 +11,7 @@ import time
 import matplotlib.pyplot as plt
 plt.rcParams['text.usetex'] = True
 from abc import ABC, abstractmethod
+
 
 class constrained_ouroboros(nn.Module):
 
@@ -441,89 +443,179 @@ class arneodobouros(nn.Module):
         print(f'integrated in {np.round(time.time() - s,2)} s')
         return obj.y,alpha,beta,d,obj.status
 
-
-class kernelModule(nn.Module):
-
-    def __init__(self,nTerms,device,x_dim,z_dim):
-
-        self.nTerms = nTerms
-        self.device=device
-        self.d = x_dim
-        self.n = z_dim
-        pass
-
-    @abstractmethod
-    def forward(self,x):
-        pass 
-
-    def get_weights(self,z):
-
-        return self.weights(z)
-    
-    def get_mus(self):
-
-        return self.mus
-
-
-class polyModule(kernelModule):
-
-    def __init__(self,nTerms,device,x_dim,z_dim,poly_dim):
-
-        super().__init__(nTerms,device,x_dim,z_dim)
-        self.mus = nn.Parameter(torch.rand((1,1,self.d,),device=self.device)*2*np.sqrt(self.d) - np.sqrt(self.d),\
-                                requires_grad=True)
-        self.weights = nn.Linear(self.n,poly_dim**2).to(self.device)
-        self.powers = torch.arange(0,poly_dim+1,device=self.device)
-        self.poly_dim = poly_dim
-        self.mask = torch.ones((2*self.d,poly_dim,poly_dim))
-        self.mask[:,0,0] = 0
-        self.mask[:,0,1] = 0
-        self.mask[:,1,0] = 0
-        self.mask = self.mask.to(self.device)
-
-
-    def forward(self,x,z):
-
-        B,L,d = x.shape
-        _,_,n = z.shape
-        weights = self.weights(z)
-        power_mat = (x - self.mus)[:,:,:,None].expand(-1,-1,-1,self.poly_dim)
-        power_mat = x.pow(self.powers)
-        weights = weights.view(B,L,2*d,self.poly_dim,self.poly_dim) * self.mask
-        x = torch.einsum('bldkj,bldk->bldj',weights,power_mat)
-        x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
-
-        return x
-    
-class simpleGaussModule(kernelModule):
-
-    def __init__(self,nTerms,device,x_dim,z_dim):
-
-        super().__init__(nTerms,device,x_dim,z_dim)
-        self.mus = nn.Parameter(torch.rand((1,1,self.d,nTerms),device=self.device)*2*np.sqrt(self.d*nTerms) - np.sqrt(self.d *nTerms),\
-                                requires_grad=True)
-        self.log_sigmas = nn.Parameter(torch.rand((1,1,1,nTerms),device=self.device)*2*np.sqrt(self.nTerms) - np.sqrt(self.nTerms),\
-                                   requires_grad=True)
-        self.weights = nn.Linear(self.n,self.nTerms).to(self.device)
-
-    def forward(self,x,z):
-        B,L,d = x.shape
-        _,_,n = z.shape
-        weights = self.weights(z)
-        gauss_mat = torch.linalg.norm(x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)**2 / (2*torch.exp(self.log_sigmas))
-        kernels = torch.exp(gauss_mat)/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
-
-        x = torch.einsum('bldp,bldp->bld', weights,kernels)
-
-        return x
-    
-    def get_log_sigmas(self):
-        
-        return self.log_sigmas
-
-
-
 class rkhs_ouroboros(nn.Module):
 
-    def __init__(self):
-        pass 
+    def __init__(self,d_data,
+                 kernel,
+                 n_layers=2,
+                 d_state=16,
+                 d_conv=4,
+                 expand_factor=1,
+                 device='cuda',
+                 tau = 1000,
+                 smooth_len=0.001):
+        
+        super().__init__()
+
+        self.device=device
+        omegaConfig = MambaConfig(d_model=4*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        gammaConfig = MambaConfig(d_model=4*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        kernelConfig = MambaConfig(d_model=4*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        
+        self.omega_mamba = Mamba(omegaConfig).to(device)
+        self.gamma_mamba = Mamba(gammaConfig).to(device)
+        self.kernel_mamba = Mamba(kernelConfig).to(device)
+
+        self.omega_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #unconstrained
+        self.gamma_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
+        
+        self.kernel = kernel
+        self.tau = tau
+        self.smooth_len = smooth_len
+        self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
+
+    def forward(self,x,dt):
+        """
+        predicts second derivative at time t.
+        all other predictions should be done in the train look (train_utils.py)
+        """
+
+        B,L,D = x.shape
+        # x: x_0, x_dt, x_2dt,...
+        smooth_len = int(round(self.smooth_len/dt))
+
+        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
+        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        L = z.shape[1]
+        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
+        
+        omegaControl = self.omega_mamba(x_in)
+        gammaControl = self.gamma_mamba(x_in)
+        kernelControl = self.kernel_mamba(x_in)
+
+        omega = self.omega_net(omegaControl)
+        gamma = self.gamma_net(gammaControl)/self.tau
+        
+        omega=smooth(omega.abs(),smooth_len)
+        gamma = smooth(gamma,smooth_len)
+
+        weighted_kernels = self.kernel(z,kernelControl)
+        weighted_kernels = smooth(weighted_kernels,smooth_len)/self.tau
+
+       
+        z[:,:,-1] /= dt
+        z1 = z[:,:,:1]
+        z2 = z[:,:,1:]
+
+        yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
+
+        return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),torch.tensor([0]).to(self.device)
+
+    def get_funcs(self,x,dt):
+
+        B,L,D = x.shape
+        # x: x_0, x_dt, x_2dt,...
+        smooth_len = int(round(self.smooth_len/dt))
+
+        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
+        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        L = z.shape[1]
+        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
+        
+        omegaControl = self.omegaMamba(x_in)
+        gammaControl = self.gammaMamba(x_in)
+        kernelControl = self.kernel_mamba(x_in)
+
+        omega = self.omega_net(omegaControl)
+        gamma = self.gamma_net(gammaControl)/self.tau
+        
+        omega=smooth(omega.abs(),smooth_len)
+        gamma = smooth(gamma,smooth_len)
+
+        weighted_kernels = self.kernel(z,kernelControl)
+        weighted_kernels = smooth(weighted_kernels,smooth_len)/self.tau
+
+        return omega,gamma,weighted_kernels,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
+    
+
+    def visualize(self,x,dt):
+
+        B,L,D = x.shape
+        
+        with torch.no_grad():
+            terms = self.get_funcs(x[:1,:,:],dt)
+            terms = [t.detach().cpu().numpy().squeeze() for t in terms]
+            
+            torch.cuda.empty_cache()
+
+        on = np.random.choice(L-45)
+        t_ax = np.arange(on,on+40,1)*dt
+        for ii,(t,n) in enumerate(zip(terms,self.names)):
+            if ii not in [3]:
+                ax = plt.gca()
+                ax.plot(t_ax,t[on:on+40]/(2*np.pi))
+                ax.set_title(n)
+                plt.show()
+                plt.close()
+
+        return
+    
+    def integrate(self,x,dt,method='RK45',st=0.05):
+
+        B,_,D = x.shape
+        # x: x_0, x_dt, x_2dt,...
+        xdot= deriv_approx_dy(x)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
+        
+        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        L = z.shape[1]
+
+        omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt)
+        omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
+                            weighted_kernels.detach().cpu().numpy().squeeze()
+        
+        start = int(round(st/dt))
+        omega,gamma,weighted_kernels = omega[start:],gamma[start:],weighted_kernels[start:]
+
+        t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+        omegaTerp = lambda t: np.interp(t,t_steps,omega)
+        gammaTerp = lambda t: np.interp(t,t_steps,gamma)
+        weighted_kernelsTerp = lambda t: np.interp(t,t_steps,weighted_kernels)
+        z0 = z[0,start,:]
+        z0[-1] /= dt
+
+        tau = self.tau.detach().cpu().numpy()
+
+        def dz(t,z):
+
+            # t: time, should have a timestep of roughly dt. treat as ZOH
+            # z: B x 2d
+            b_ind = int(t/dt)
+            
+            omega_step = omegaTerp(t) 
+            gamma_step = gammaTerp(t) 
+            weighted_kernels_step = weighted_kernelsTerp(t) 
+            
+            z1 = z[:1]
+            
+            z1_2 = z[:1]**2  
+            z1_3 = z[:1]**3  
+            z2 = z[1:] 
+    
+            dz2 = -(omega_step**2)*z1 + gamma_step * z2 - weighted_kernels_step
+            dz1 = z[1]
+            
+            return np.hstack([dz1,dz2])
+        
+        s = time.time()
+        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+        print(f'integrated in {np.round(time.time() - s,2)} s')
+        return obj.y,omega,gamma,weighted_kernels,obj.status
