@@ -40,9 +40,10 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,nEpochs=100
             if (idx % vis_freq) == 0:
                 model.visualize(x,dt)
             
+                on = np.random.choice(L-45)
                 ax = plt.gca()
-                ax.plot(yhat[0,:40,0].detach().cpu().numpy())
-                ax.plot(y[0,:40,0].detach().cpu().numpy())
+                ax.plot(yhat[0,on:on+40,0].detach().cpu().numpy())
+                ax.plot(y[0,on:on+40,0].detach().cpu().numpy())
                 ax.set_title("data (orange) vs model (blue)")
                 plt.show()
                 plt.close()
