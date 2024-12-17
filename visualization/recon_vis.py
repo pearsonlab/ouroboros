@@ -14,7 +14,11 @@ def test_pure_tones(model,sr,int_time=0.2,start_time=0.05,method='RK45',remove_d
     start = int(round(start_time*sr))
     for omega in omegas:
         x_tone = np.sin(2*np.pi*t*omega)
-        y_int,alpha,beta,*_ = model.integrate(from_numpy(x_tone[None,:,None]).to(torch.float64),dt,st=start_time,method=method)
+        try:
+            y_int, *_ = model.integrate(from_numpy(x_tone[None,:,None]).to(torch.float64),dt,st=start_time,method=method)
+        except: 
+            print(f'unable to integrate for omega = {omega},skipping')
+            continue
         if remove_dc_offset:
             y_int = y_int - np.nanmean(y_int,axis=1,keepdims=True)
         ax = plt.gca()
