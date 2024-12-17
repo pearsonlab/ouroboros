@@ -501,10 +501,10 @@ class rkhs_ouroboros(nn.Module):
         kernelControl = self.kernel_mamba(x_in)
 
         omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)/self.tau
+        gamma = self.gamma_net(gammaControl)
         
         omega=smooth(omega.abs(),smooth_len)
-        gamma = smooth(gamma,smooth_len)
+        gamma = smooth(gamma,smooth_len)/self.tau
 
         weighted_kernels = self.kernel(z,kernelControl)
         weighted_kernels = smooth(weighted_kernels,smooth_len)/self.tau
@@ -530,18 +530,18 @@ class rkhs_ouroboros(nn.Module):
         L = z.shape[1]
         x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
         
-        omegaControl = self.omegaMamba(x_in)
-        gammaControl = self.gammaMamba(x_in)
+        omegaControl = self.omega_mamba(x_in)
+        gammaControl = self.gamma_mamba(x_in)
         kernelControl = self.kernel_mamba(x_in)
 
         omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)/self.tau
+        gamma = self.gamma_net(gammaControl)
         
-        omega=smooth(omega.abs(),smooth_len)
-        gamma = smooth(gamma,smooth_len)
+        omega=smooth(omega.abs(),smooth_len)*self.tau
+        gamma = smooth(gamma,smooth_len)*self.tau
 
         weighted_kernels = self.kernel(z,kernelControl)
-        weighted_kernels = smooth(weighted_kernels,smooth_len)/self.tau
+        weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
         return omega,gamma,weighted_kernels,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
     
@@ -592,7 +592,7 @@ class rkhs_ouroboros(nn.Module):
         z0 = z[0,start,:]
         z0[-1] /= dt
 
-        tau = self.tau.detach().cpu().numpy()
+        tau = self.tau#.detach().cpu().numpy()
 
         def dz(t,z):
 
