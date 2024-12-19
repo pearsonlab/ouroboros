@@ -34,12 +34,14 @@ class polyModule(kernelModule):
     def __init__(self,nTerms,device,x_dim,z_dim,lam=0.9,activation=nn.ReLU()):
 
         super().__init__(nTerms,device,x_dim,z_dim,activation)
-        self.mus = nn.Parameter(torch.rand((1,1,2*self.d,),device=self.device)*2*np.sqrt(2*self.d) - np.sqrt(2*self.d),\
+        
+        self.poly_dim = nTerms
+        self.mus = nn.Parameter(torch.rand((1,1,2*self.d,self.poly_dim-1),device=self.device)*2*np.sqrt(2*self.d) - np.sqrt(2*self.d),\
                                 requires_grad=True)
-        self.poly_dim = nTerms
-        self.weights = nn.Linear(self.n,nTerms-1).to(self.device)
-        self.powers = torch.arange(2,nTerms+1,device=self.device)
-        self.poly_dim = nTerms
+        self.prods = nn.Parameter(torch.rand((1,1,2*self.d,self.poly_dim-1),device=self.device)*2*np.sqrt(2*self.d) - np.sqrt(2*self.d),\
+                                requires_grad=True)
+        self.weights = nn.Linear(self.n,self.poly_dim-1).to(self.device)
+        self.powers = torch.arange(2,self.poly_dim+1,device=self.device)
         self.lam = lam
 
     def forward(self,x,z):
@@ -47,9 +49,8 @@ class polyModule(kernelModule):
         B,L,d = x.shape
         _,_,n = z.shape
         weights = self.activation(self.weights(z))
-        power_mat = self.lam * (x - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
-        power_mat = (power_mat[:,:,:self.d,None] + power_mat[:,:,self.d:,None]).expand(-1,-1,-1,self.poly_dim-1)
-
+        power_mat = self.lam * (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim-1) - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
+        power_mat = torch.einsum('bldp,bldp->blp',power_mat,self.prods)[:,:,None,:]
         power_mat = power_mat.pow(self.powers)
         #weights = weights.view(B,L,d,self.poly_dim+1,self.poly_dim+1) * self.mask
         x = torch.einsum('blp,bldp->bld',weights,power_mat)
