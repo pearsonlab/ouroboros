@@ -28,7 +28,7 @@ def remove_axes(axis):
     axis.set_xticks([])
     axis.set_yticks([])
 
-def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,interp=True,normalize=True,min=-6.5,max=5):
+def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,interp=True,normalize=True,min=-6.5,max=5,spec_type='log'):
 
     """
     make a spectrogram for a given vocalization.
@@ -57,7 +57,13 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,in
     target_freqs = np.linspace(f_lo,f_hi,n_freq_bins)
     target_ts = np.arange(tAx[0],tAx[-1],0.001)
     
-    Sx = np.log(np.abs(Sx) + 1e-12)
+    if spec_type == 'log':
+        Sx = np.log(np.abs(Sx) + 1e-12)
+    elif spec_type == 'abs':
+        Sx = np.abs(Sx)
+    else:
+        print(f"error: {spec_type} spectrogram not implemented")
+        assert False 
     if normalize:
         if min == None:
             min = np.amin(Sx)
