@@ -606,11 +606,10 @@ class rkhs_ouroboros(nn.Module):
             
             z1 = z[:1]
             
-            z1_2 = z[:1]**2  
-            z1_3 = z[:1]**3  
             z2 = z[1:] 
     
-            dz2 = -(omega_step**2)*z1 + gamma_step * z2 - weighted_kernels_step
+            #-(omega**2)*z1 - gamma * z2 - weighted_kernels
+            dz2 = -(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step
             dz1 = z[1]
             
             return np.hstack([dz1,dz2])
