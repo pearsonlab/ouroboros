@@ -5,7 +5,7 @@ from torch import nn
 
 class kernelModule(nn.Module):
 
-    def __init__(self,nTerms,device,x_dim,z_dim):
+    def __init__(self,nTerms,device,x_dim,z_dim,activation):
 
         super().__init__()
 
@@ -13,6 +13,7 @@ class kernelModule(nn.Module):
         self.device=device
         self.d = x_dim
         self.n = z_dim
+        self.activation=activation
         pass
 
     @abstractmethod
@@ -21,7 +22,7 @@ class kernelModule(nn.Module):
 
     def get_weights(self,z):
 
-        return self.weights(z)
+        return self.activation(self.weights(z))
     
     def get_mus(self):
 
@@ -30,9 +31,9 @@ class kernelModule(nn.Module):
 
 class polyModule(kernelModule):
 
-    def __init__(self,nTerms,device,x_dim,z_dim,lam=0.9):
+    def __init__(self,nTerms,device,x_dim,z_dim,lam=0.9,activation=nn.ReLU()):
 
-        super().__init__(nTerms,device,x_dim,z_dim)
+        super().__init__(nTerms,device,x_dim,z_dim,activation)
         self.mus = nn.Parameter(torch.rand((1,1,2*self.d,),device=self.device)*2*np.sqrt(2*self.d) - np.sqrt(2*self.d),\
                                 requires_grad=True)
         self.poly_dim = nTerms
@@ -45,10 +46,9 @@ class polyModule(kernelModule):
 
         B,L,d = x.shape
         _,_,n = z.shape
-        weights = self.weights(z)
+        weights = self.activation(self.weights(z))
         power_mat = self.lam * (x - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
         power_mat = (power_mat[:,:,:self.d,None] + power_mat[:,:,self.d:,None]).expand(-1,-1,-1,self.poly_dim-1)
-
 
         power_mat = power_mat.pow(self.powers)
         #weights = weights.view(B,L,d,self.poly_dim+1,self.poly_dim+1) * self.mask
@@ -59,9 +59,9 @@ class polyModule(kernelModule):
     
 class simpleGaussModule(kernelModule):
 
-    def __init__(self,nTerms,device,x_dim,z_dim):
+    def __init__(self,nTerms,device,x_dim,z_dim,activation=nn.ReLU()):
 
-        super().__init__(nTerms,device,x_dim,z_dim)
+        super().__init__(nTerms,device,x_dim,z_dim,activation)
         self.mus = nn.Parameter(torch.rand((1,1,self.d,nTerms),device=self.device)*2*np.sqrt(self.d*nTerms) - np.sqrt(self.d *nTerms),\
                                 requires_grad=True)
         self.log_sigmas = nn.Parameter(torch.rand((1,1,1,nTerms),device=self.device)*2*np.sqrt(self.nTerms) - np.sqrt(self.nTerms),\
@@ -71,7 +71,7 @@ class simpleGaussModule(kernelModule):
     def forward(self,x,z):
         B,L,d = x.shape
         _,_,n = z.shape
-        weights = self.weights(z)
+        weights = self.activation(self.weights(z))
         weights = weights.view(B,L,self.d,self.nTerms)
         gauss_mat = torch.linalg.norm(x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus,dim=2,keepdims=True)**2 / (2*torch.exp(2*self.log_sigmas))
         kernels = torch.exp(-gauss_mat)/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
