@@ -30,34 +30,32 @@ class kernelModule(nn.Module):
 
 class polyModule(kernelModule):
 
-    def __init__(self,nTerms,device,x_dim,z_dim):
+    def __init__(self,nTerms,device,x_dim,z_dim,lam=0.9):
 
         super().__init__(nTerms,device,x_dim,z_dim)
         self.mus = nn.Parameter(torch.rand((1,1,2*self.d,),device=self.device)*2*np.sqrt(2*self.d) - np.sqrt(2*self.d),\
                                 requires_grad=True)
         self.poly_dim = nTerms
-        self.weights = nn.Linear(self.n,2*self.d*(nTerms+1)**2).to(self.device)
-        self.powers = torch.arange(0,nTerms+1,device=self.device)
+        self.weights = nn.Linear(self.n,nTerms-1).to(self.device)
+        self.powers = torch.arange(2,nTerms+1,device=self.device)
         self.poly_dim = nTerms
-        self.mask = torch.ones((2*self.d,nTerms+1,nTerms+1))
-        self.mask[:,0,0] = 0
-        self.mask[:,0,1] = 0
-        self.mask[:,1,0] = 0
-        self.mask = self.mask.to(self.device)
-
+        self.lam = lam
 
     def forward(self,x,z):
 
         B,L,d = x.shape
         _,_,n = z.shape
         weights = self.weights(z)
-        power_mat = (x - self.mus)[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
-        power_mat = power_mat.pow(self.powers)
-        weights = weights.view(B,L,d,self.poly_dim+1,self.poly_dim+1) * self.mask
-        x = torch.einsum('bldkj,bldk->bldj',weights,power_mat)
-        x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
+        power_mat = self.lam * (x - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
+        power_mat = (power_mat[:,:,:self.d,None] + power_mat[:,:,self.d:,None]).expand(-1,-1,-1,self.poly_dim-1)
 
-        return x[:,:,self.d:]
+
+        power_mat = power_mat.pow(self.powers)
+        #weights = weights.view(B,L,d,self.poly_dim+1,self.poly_dim+1) * self.mask
+        x = torch.einsum('blp,bldp->bld',weights,power_mat)
+        #x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
+
+        return x
     
 class simpleGaussModule(kernelModule):
 
@@ -75,7 +73,7 @@ class simpleGaussModule(kernelModule):
         _,_,n = z.shape
         weights = self.weights(z)
         weights = weights.view(B,L,self.d,self.nTerms)
-        gauss_mat = torch.linalg.norm(x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus,dim=2,keepdims=True)**2 / (2*torch.exp(self.log_sigmas))
+        gauss_mat = torch.linalg.norm(x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus,dim=2,keepdims=True)**2 / (2*torch.exp(2*self.log_sigmas))
         kernels = torch.exp(-gauss_mat)/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
 
         x = torch.einsum('bldp,bldp->bld', weights,kernels)
