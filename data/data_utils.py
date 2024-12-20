@@ -22,6 +22,17 @@ class aud_neur_ds(Dataset):
 
         return x,y
     
+def time_stretch(data,true_dt,fake_dt):
+
+    L = len(data)
+    T = fake_dt * L
+    currTimes = np.arange(0,T + fake_dt/2,fake_dt)
+    newTimes = np.arange(0,T + true_dt/2,true_dt)
+
+    interp = np.interp(newTimes,currTimes,data)
+
+    return interp
+    
 
 def euler_integrate(y0,dy,dt):
 
