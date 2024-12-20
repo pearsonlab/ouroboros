@@ -506,8 +506,8 @@ class rkhs_ouroboros(nn.Module):
         omega=smooth(omega.abs(),smooth_len)
         gamma = smooth(gamma,smooth_len)/self.tau
 
-        weighted_kernels = self.kernel(z,kernelControl)
-        weighted_kernels = smooth(weighted_kernels,smooth_len)/self.tau
+        weighted_kernels = self.kernel(z,kernelControl,smooth_len)/self.tau
+        #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
 
        
         z[:,:,-1] /= dt
@@ -540,8 +540,8 @@ class rkhs_ouroboros(nn.Module):
         omega=smooth(omega.abs(),smooth_len)*self.tau
         gamma = smooth(gamma,smooth_len)*self.tau
 
-        weighted_kernels = self.kernel(z,kernelControl)
-        weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
+        weighted_kernels = self.kernel(z,kernelControl,smooth_len)*self.tau
+        #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
         return omega,gamma,weighted_kernels,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
     
