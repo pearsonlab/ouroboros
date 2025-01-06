@@ -6,7 +6,7 @@ import torch
 import matplotlib.pyplot as plt
 from utils import get_spec
 
-def test_pure_tones(model,sr,int_time=0.2,start_time=0.05,method='RK45',remove_dc_offset=True):
+def test_pure_tones(model,sr,int_time=0.2,start_time=0.05,method='RK45',remove_dc_offset=True,scaled=True):
 
     dt = 1/sr
     t = np.arange(0,int_time,1/sr)
@@ -15,7 +15,7 @@ def test_pure_tones(model,sr,int_time=0.2,start_time=0.05,method='RK45',remove_d
     for omega in omegas:
         x_tone = np.sin(2*np.pi*t*omega)
         try:
-            y_int, *_ = model.integrate(from_numpy(x_tone[None,:,None]).to(torch.float64),dt,st=start_time,method=method)
+            y_int, *_ = model.integrate(from_numpy(x_tone[None,:,None]).to(torch.float64),dt,st=start_time,method=method,scaled=scaled)
         except: 
             print(f'unable to integrate for omega = {omega},skipping')
             continue
