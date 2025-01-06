@@ -518,7 +518,7 @@ class rkhs_ouroboros(nn.Module):
 
         return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),torch.tensor([0]).to(self.device)
 
-    def get_funcs(self,x,dt):
+    def get_funcs(self,x,dt,scaled = True):
 
         B,L,D = x.shape
         # x: x_0, x_dt, x_2dt,...
@@ -537,10 +537,12 @@ class rkhs_ouroboros(nn.Module):
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)
         
-        omega=smooth(omega.abs(),smooth_len)*self.tau
-        gamma = smooth(gamma,smooth_len)*self.tau
+        omega=smooth(omega.abs(),smooth_len)#*self.tau
+        gamma = smooth(gamma,smooth_len)#*self.tau
 
-        weighted_kernels = self.kernel(z,kernelControl,smooth_len)*self.tau
+        weighted_kernels = self.kernel(z,kernelControl,smooth_len)#*self.tau
+        if scaled:
+            omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
         return omega,gamma,weighted_kernels,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
@@ -568,7 +570,7 @@ class rkhs_ouroboros(nn.Module):
 
         return
     
-    def integrate(self,x,dt,method='RK45',st=0.05):
+    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True):
 
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
@@ -578,7 +580,7 @@ class rkhs_ouroboros(nn.Module):
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
 
-        omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt)
+        omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled)
         omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
                             weighted_kernels.detach().cpu().numpy().squeeze()
         
