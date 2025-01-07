@@ -28,6 +28,31 @@ def loss_plot(train_loss,val_loss):
     plt.show()
     plt.close()
 
+def visualize_kernel(model,y,dt):
+
+    # y: B x L x d
+    y = y[None,:,:]
+    smooth_len = int(round(model.smooth_len/dt))
+    dy = deriv_approx_dy(y)
+    z = torch.cat([y[:,4:-4,:],dy],dim=-1)
+    x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
+
+    weight_control = model.kernel_mamba(x_in)
+    weighted_kernels = model.kernel(z,weight_control,smooth_len)/model.tau
+    y,dy = y.detach().cpu().numpy().squeeze()[4:-4],dy.detach().cpu().numpy().squeeze()/dt
+    spec,t,f, _ = get_spec(y,int(round(1/dt)),onset=0,offset=len(y)*dt,shoulder=0.0,interp=False,win_len=1028,min=-2,max=3.5)
+    weighted_kernels = weighted_kernels.detach().cpu().numpy().squeeze()
+
+    fig,axs = plt.subplots(nrows=2,ncols=1,figsize=(6,10))
+    g = axs[1].scatter(y,dy,c=weighted_kernels)
+    axs[1].set_xlabel("y")
+    axs[1].set_ylabel("dy")
+    cb = plt.colorbar(g,ax=axs[1])
+    cb.set_label("Weighted kernel value",rotation=270,labelpad=20)
+    axs[0].imshow(spec,vmin=0,vmax=1,origin='lower',extent=[t[0],t[-1],f[0],f[-1]],aspect='auto')
+    plt.show()
+    plt.close()
+
 def quantities_figure(model,audioData,sr,nSamples=10,save=False,filename='./quants.svg'):
 
     samples = np.random.choice(len(audioData),nSamples)
