@@ -27,21 +27,23 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,nEpochs=100
             
             dy = deriv_approx_dy(x)
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-            dy2 = deriv_approx_d2y(x)
+            #change: scaling to "true" d2y
+            dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
             y2hat,state_pred,penalty = model(x,dt) #state: B x L x SD
             
-            y2hat = y2hat * (model.tau*dt)**2
+            # change: scaling to "true" d2y
+            y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
             
-            y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
+            #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
             
-            yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
+            #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
             
-            yhat = torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
+            yhat = y2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
             #print(yhat.shape)
             # y starts as x[1:0]
-            y = torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
+            y = dy2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
             L = y.shape[1]
 
             if (idx % vis_freq) == 0:
@@ -105,21 +107,23 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,nEpochs=100
                     
                     dy = deriv_approx_dy(y)
                     # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-                    dy2 = deriv_approx_d2y(y)
+                    #scaling to "true" d2y
+                    dy2 = deriv_approx_d2y(y)/(dt**2)
                     # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
                     
                     y2hat,state_pred,penalty = model(x,dt) #state: B x L x SD
             
-                    y2hat = y2hat * (model.tau*dt)**2
+                    ## scaling to "true" d2y
+                    y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
                     
-                    y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
+                    #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
                     
-                    yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
+                    #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
                     
-                    yhat = torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
+                    yhat = y2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
                     #print(yhat.shape)
                     # y starts as x[1:0]
-                    y = torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
+                    y = dy2 #torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
                     
                     L = y.shape[1]
                     l = loss_fn(y,yhat[:,:L,:])
