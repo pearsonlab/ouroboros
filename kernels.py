@@ -61,6 +61,18 @@ class polyModule(kernelModule):
         #x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
 
         return x
+    def forward_given_weights(self,x,weights):
+
+        B,L,d = x.shape
+        
+        power_mat = self.lam * (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim-1) - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
+        power_mat = torch.einsum('bldp,bldp->blp',power_mat,self.prods)[:,:,None,:]
+        power_mat = power_mat.pow(self.powers)
+        #weights = weights.view(B,L,d,self.poly_dim+1,self.poly_dim+1) * self.mask
+        x = torch.einsum('blp,bldp->bld',weights,power_mat)
+        #x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
+
+        return x
     
 class fitPolyModule(polyModule):
 
@@ -92,6 +104,19 @@ class simpleGaussModule(kernelModule):
         weights = smooth(weights,smooth_len)
         weights = weights.view(B,L,self.d,self.nTerms)
         
+        gauss_mat = torch.linalg.norm((x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)/ (2*torch.exp(2*self.log_sigmas)),dim=2,keepdims=True)**2 
+        kernels = torch.exp(-gauss_mat) #/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
+
+        x = torch.einsum('bldp,bldp->bld', weights,kernels)
+
+        return x
+    
+    def forward_given_weights(self,x,weights):
+
+        B,L,d = x.shape
+        if weights.shape != (B,L,self.d,self.nTerms):
+            weights = weights.view(B,L,self.d,self.nTerms)
+
         gauss_mat = torch.linalg.norm((x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)/ (2*torch.exp(2*self.log_sigmas)),dim=2,keepdims=True)**2 
         kernels = torch.exp(-gauss_mat) #/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
 
