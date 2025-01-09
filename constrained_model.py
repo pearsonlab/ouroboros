@@ -508,7 +508,7 @@ class rkhs_ouroboros(nn.Module):
 
         weighted_kernels = self.kernel(z,kernelControl,smooth_len)/self.tau
         #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
-
+        ## should i be modifying z above? before i give it to the kernel?
        
         z[:,:,-1] /= dt
         z1 = z[:,:,:1]
