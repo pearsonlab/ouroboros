@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from mambapy.mamba import Mamba, MambaConfig
 from model_utils import smooth, NonNegClipper
-from utils import deriv_approx_dy
+from utils import deriv_approx_dy,deriv_approx_d2y
 from kernels import *
 
 from scipy.integrate import solve_ivp
@@ -201,11 +201,12 @@ class constrained_ouroboros(nn.Module):
         return
 
     
-    def integrate(self,x,dt,method='RK45',st=0.05):
+    def integrate(self,x,dt,method='RK45',st=0.05,with_residual=False):
 
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
         xdot= deriv_approx_dy(x)
+        xddot = deriv_approx_d2y
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
@@ -214,6 +215,9 @@ class constrained_ouroboros(nn.Module):
         z0[:,-1] /= dt
         
         omega,gamma,b,_,d,_ = self.get_funcs(x,dt)
+        yhat,*_ = self.forward(x,dt)
+        residual = xddot - yhat 
+
         
         start = int(round(st/dt))
         omega,gamma,b,d = omega.detach().cpu().numpy().squeeze()[start:], gamma.detach().cpu().numpy().squeeze()[start:],\
@@ -570,15 +574,21 @@ class rkhs_ouroboros(nn.Module):
 
         return
     
-    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True):
+    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False):
 
+        smooth_len = int(round(self.smooth_len/dt))
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
         xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-        
+        xddot = deriv_approx_d2y(x)
+
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
+
+        yhat,*_ = self.forward(x[:1,:,:],dt)
+        residual = xddot - yhat 
+        smoothed_residual = smooth(residual,smooth_len).detach().cpu().numpy().squeeze()
 
         omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled)
         omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
@@ -591,6 +601,7 @@ class rkhs_ouroboros(nn.Module):
         omegaTerp = lambda t: np.interp(t,t_steps,omega)
         gammaTerp = lambda t: np.interp(t,t_steps,gamma)
         weighted_kernelsTerp = lambda t: np.interp(t,t_steps,weighted_kernels)
+        residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
         z0 = z[0,start,:]
         z0[-1] /= dt
 
@@ -605,13 +616,14 @@ class rkhs_ouroboros(nn.Module):
             omega_step = omegaTerp(t) 
             gamma_step = gammaTerp(t) 
             weighted_kernels_step = weighted_kernelsTerp(t) 
+            resids = residTerp(t)
             
             z1 = z[:1]
             
             z2 = z[1:] 
     
             #-(omega**2)*z1 - gamma * z2 - weighted_kernels
-            dz2 = -(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step
+            dz2 = -(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step + resids
             dz1 = z[1]
             
             return np.hstack([dz1,dz2])
