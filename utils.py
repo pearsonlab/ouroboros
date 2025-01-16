@@ -123,3 +123,16 @@ def huber_loss(x,delta=1):
     assert torch.all(t1 >= 0), print('t1 should be greater than or equal to 0')
     assert torch.all(t2 >= 0), print('t2 should be greater than or equal to 0')
     return  t1 + t2
+
+def smooth(data,smooth_len):
+
+    D,L = data.shape
+    if smooth_len == 1:
+        return data
+    pad = np.zeros((D,smooth_len))
+    try:
+        cumsum = np.cumsum(np.hstack([pad,data]),axis=-1)
+    except:
+        print(pad.shape,data.shape)
+        assert False
+    return (cumsum[:,smooth_len:] - cumsum[:,:-smooth_len])/float(smooth_len)
