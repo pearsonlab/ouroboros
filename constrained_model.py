@@ -595,17 +595,18 @@ class rkhs_ouroboros(nn.Module):
                             weighted_kernels.detach().cpu().numpy().squeeze()
         
         start = int(round(st/dt))
-        omega,gamma,weighted_kernels = omega[start:],gamma[start:],weighted_kernels[start:]
+        omega,gamma,weighted_kernels,smoothed_residual = omega[start:],gamma[start:],weighted_kernels[start:],smoothed_residual[start:]
 
         t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
         omegaTerp = lambda t: np.interp(t,t_steps,omega)
         gammaTerp = lambda t: np.interp(t,t_steps,gamma)
         weighted_kernelsTerp = lambda t: np.interp(t,t_steps,weighted_kernels)
-        residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
+        if with_residual:
+            residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
         z0 = z[0,start,:]
         z0[-1] /= dt
 
-        tau = self.tau#.detach().cpu().numpy()
+        #tau = self.tau#.detach().cpu().numpy()
 
         def dz(t,z):
 
@@ -616,19 +617,23 @@ class rkhs_ouroboros(nn.Module):
             omega_step = omegaTerp(t) 
             gamma_step = gammaTerp(t) 
             weighted_kernels_step = weighted_kernelsTerp(t) 
-            resids = residTerp(t)
-            
+
             z1 = z[:1]
             
             z2 = z[1:] 
     
             #-(omega**2)*z1 - gamma * z2 - weighted_kernels
-            dz2 = -(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step + resids
+            dz2 = -(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step
             dz1 = z[1]
+            if with_residual:
+                resids = residTerp(t)
+                dz2 += resids
             
             return np.hstack([dz1,dz2])
         
         s = time.time()
         obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
         print(f'integrated in {np.round(time.time() - s,2)} s')
+        if with_residual:
+            return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
         return obj.y,omega,gamma,weighted_kernels,obj.status
