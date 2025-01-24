@@ -64,7 +64,9 @@ class polyModule(kernelModule):
     def forward_given_weights(self,x,weights):
 
         B,L,d = x.shape
-        
+        if weights.shape != (B,L,self.poly_dim-1):
+            weights = weights.view(B,L,self.poly_dim-1)
+
         power_mat = self.lam * (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim-1) - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
         power_mat = torch.einsum('bldp,bldp->blp',power_mat,self.prods)[:,:,None,:]
         power_mat = power_mat.pow(self.powers)
