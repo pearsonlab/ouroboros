@@ -7,6 +7,7 @@ from scipy.signal import hilbert
 import os
 import glob
 from scipy.io import wavfile 
+import soundfile as sf
 
 def get_audio(audio,fs,onset,offset,env=False,envelope = []):
 
@@ -64,15 +65,22 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
 
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
     #days = [d.split('/')[-1] for d in wav_dirs]
-    wavs = glob.glob(os.path.join(audiopath,'*.wav'))
+    #print("running this code")
+    #assert False
+    wavs = glob.glob(os.path.join(audiopath,'*' + audio_type))
     wavs.sort()
-    segs = glob.glob(os.path.join(segpath,'*.txt'))
+    segs = glob.glob(os.path.join(segpath,'*' + seg_type))
     segs.sort()
 
     audio_segs = []
+    #print(f'number of wavs: {len(wavs)}')
+    #print(f'number of segs: {len(segs)}')
     for w,v in tqdm(zip(wavs,segs),desc='Getting audio from wav files'):
 
-        sr,audio = wavfile.read(w)
+        if audio_type == '.wav':
+            sr,audio = wavfile.read(w)
+        elif audio_type == '.flac':
+            audio,sr = sf.read(w)
         if audio.dtype == np.int16:
             audio = audio/-np.iinfo(audio.dtype).min
 
@@ -82,16 +90,15 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
         if len(onoffs) > 0:
             if len(onoffs.shape)==1:
                 onoffs = onoffs[None,:]
-            if len(onoffs.shape) == 3:
+            if onoffs.shape[1] == 3:
                 onoffs = onoffs[:,:2]
-            #onoffs = np.hstack([onoffs,np.ones((onoffs.shape[0],1))])
-            #print(onoffs.shape)
+            
             audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope)
     
             audio_segs += audios
             if len(audio_segs) >= max_pairs:
-                return audio_segs[:max_pairs]
-
+                return audio_segs[:max_pairs],sr
+    
     return audio_segs,sr
 
 """
