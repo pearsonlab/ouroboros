@@ -484,7 +484,7 @@ class rkhs_ouroboros(nn.Module):
         self.smooth_len = smooth_len
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
 
-    def forward(self,x,dt):
+    def forward(self,x,dt,use_trend_filtering=False):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
@@ -507,8 +507,12 @@ class rkhs_ouroboros(nn.Module):
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)
         
-        omega=smooth(omega.abs(),smooth_len)
-        gamma = smooth(gamma,smooth_len)/self.tau
+        if use_trend_filtering:
+            omega_diffs,gamma_diffs = torch.diff(omega,dim=1),torch.diff(gamma,dim=1)
+            tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum()
+        else:
+            omega=smooth(omega.abs(),smooth_len)
+            gamma = smooth(gamma,smooth_len)/self.tau
 
         weighted_kernels = self.kernel(z,kernelControl,smooth_len)/self.tau
         #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
@@ -519,8 +523,10 @@ class rkhs_ouroboros(nn.Module):
         z2 = z[:,:,1:]
 
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
-
-        return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),torch.tensor([0]).to(self.device)
+        if use_trend_filtering:
+            return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),tf
+        else:
+            return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),torch.tensor([0]).to(self.device)
 
     def get_funcs(self,x,dt,scaled = True):
 
