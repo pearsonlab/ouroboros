@@ -484,7 +484,7 @@ class rkhs_ouroboros(nn.Module):
         self.smooth_len = smooth_len
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
 
-    def forward(self,x,dt,use_trend_filtering=False):
+    def forward(self,x,dt,use_trend_filtering=False,trend_level=1):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
@@ -508,7 +508,7 @@ class rkhs_ouroboros(nn.Module):
         gamma = self.gamma_net(gammaControl)
         
         if use_trend_filtering:
-            omega_diffs,gamma_diffs = torch.diff(omega,dim=1),torch.diff(gamma,dim=1)
+            omega_diffs,gamma_diffs = torch.diff(omega,dim=1,n=trend_level),torch.diff(gamma,dim=1,n=trend_level)
             tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum()
         else:
             omega=smooth(omega.abs(),smooth_len)
