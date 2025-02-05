@@ -8,6 +8,9 @@ import os
 import glob
 from scipy.io import wavfile 
 import soundfile as sf
+from scipy.io import loadmat
+from utils import butter_filter
+import random
 
 def get_audio(audio,fs,onset,offset,env=False,envelope = []):
 
@@ -60,6 +63,28 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False):
     #print(f"kept {ii}/{total_vocs} vocalizations more than 20 ms long")
     return auds
 
+def get_audio_from_mat(matfile,context_len=0.02,max_pairs=600,env=False):
+
+    d = loadmat(matfile)
+    vocal = d['vocal'][0][0]
+    data = vocal[0]
+    if data.dtype == np.int16:
+        data = data/-np.iinfo(data.dtype).min
+    fs = vocal[1].squeeze()
+    dt = 1/fs
+    chunk_len = int(round(context_len * fs))
+
+    data = butter_filter(data.squeeze(),cutoff=600,order=5,fs=fs,btype='high')[:,None]
+    cut_len = np.mod(len(data),chunk_len)
+    if len(data) >= chunk_len:
+        if cut_len > 0:
+            data = data[:-cut_len]
+
+        data = data.reshape(-1,chunk_len,1)
+        return [data],fs
+    else:
+        return [],fs
+
 def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
                         seg_type='.txt'):
 
@@ -75,27 +100,35 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     audio_segs = []
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
-    for w,v in tqdm(zip(wavs,segs),desc='Getting audio from wav files'):
+    if '.mat' not in audio_type:
+        for w,v in tqdm(zip(wavs,segs),desc='Getting audio from wav files'):
 
-        if audio_type == '.wav':
-            sr,audio = wavfile.read(w)
-        elif audio_type == '.flac':
-            audio,sr = sf.read(w)
-        if audio.dtype == np.int16:
-            audio = audio/-np.iinfo(audio.dtype).min
+            if '.wav' in audio_type:
+                sr,audio = wavfile.read(w)
+            elif '.flac' in audio_type:
+                audio,sr = sf.read(w)
+            if audio.dtype == np.int16:
+                audio = audio/-np.iinfo(audio.dtype).min
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            onoffs = np.loadtxt(v)
-        if len(onoffs) > 0:
-            if len(onoffs.shape)==1:
-                onoffs = onoffs[None,:]
-            if onoffs.shape[1] == 3:
-                onoffs = onoffs[:,:2]
-            
-            audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope)
-    
-            audio_segs += audios
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                onoffs = np.loadtxt(v)
+            if len(onoffs) > 0:
+                if len(onoffs.shape)==1:
+                    onoffs = onoffs[None,:]
+                if onoffs.shape[1] == 3:
+                    onoffs = onoffs[:,:2]
+                
+                audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope)
+        
+                audio_segs += audios
+                if len(audio_segs) >= max_pairs:
+                    return audio_segs[:max_pairs],sr
+    else:
+        random.shuffle(wavs)
+        for w in tqdm(wavs,desc='Getting audio from .mat files'):
+            audio, sr = get_audio_from_mat(w,context_len=context_len,env=envelope)
+            audio_segs += audio 
             if len(audio_segs) >= max_pairs:
                 return audio_segs[:max_pairs],sr
     
