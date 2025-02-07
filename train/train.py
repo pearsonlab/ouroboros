@@ -25,10 +25,9 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             x,y = batch # each is bsz x seq len x n neurons + 1
             bsz,_,n = x.shape
 
-            x = x.to('cuda').to(torch.float64)
-            y = y.to('cuda').to(torch.float64)
+            x = x.to('cuda').to(torch.float32)
+            y = y.to('cuda').to(torch.float32)
 
-            
             dy = deriv_approx_dy(x)
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
             #change: scaling to "true" d2y
@@ -50,16 +49,17 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             y = dy2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
             L = y.shape[1]
 
-            if (idx % vis_freq) == 0:
-                model.visualize(x,dt)
-            
-                on = np.random.choice(L-45)
-                ax = plt.gca()
-                ax.plot(yhat[0,on:on+40,0].detach().cpu().numpy())
-                ax.plot(y[0,on:on+40,0].detach().cpu().numpy())
-                ax.set_title("data (orange) vs model (blue)")
-                plt.show()
-                plt.close()
+            if vis_freq > 0:
+                if (idx % vis_freq) == 0:
+                    model.visualize(x,dt)
+                
+                    on = np.random.choice(L-45)
+                    ax = plt.gca()
+                    ax.plot(yhat[0,on:on+40,0].detach().cpu().numpy())
+                    ax.plot(y[0,on:on+40,0].detach().cpu().numpy())
+                    ax.set_title("data (orange) vs model (blue)")
+                    plt.show()
+                    plt.close()
 
             """    
             ### trend filtering penalty
@@ -106,8 +106,8 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             for idx,batch in enumerate(loaders['val'],start=epoch*len(loaders['train'])):
                 with torch.no_grad():
                     x,y = batch
-                    x = x.to('cuda').to(torch.float64)
-                    y = y.to('cuda').to(torch.float64)
+                    x = x.to('cuda').to(torch.float32)
+                    y = y.to('cuda').to(torch.float32)
                     
                     dy = deriv_approx_dy(y)
                     # dy_4dt, dy_3dt, ...., dy_(L-4)dt
