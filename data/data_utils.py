@@ -18,7 +18,7 @@ class aud_neur_ds(Dataset):
         sample = self.data[idx]
         x,y = sample[:-1,:],sample[1:,:]
 
-        x,y = torch.from_numpy(x).type(torch.FloatTensor),torch.from_numpy(y).type(torch.FloatTensor)
+        x,y = torch.from_numpy(x).type(torch.DoubleTensor),torch.from_numpy(y).type(torch.DoubleTensor)
 
         return x,y
     
