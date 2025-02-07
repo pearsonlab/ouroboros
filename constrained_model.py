@@ -491,6 +491,8 @@ class rkhs_ouroboros(nn.Module):
         """
 
         B,L,D = x.shape
+        #x = x
+        #print(x.dtype)
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
