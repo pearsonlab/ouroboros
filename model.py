@@ -604,7 +604,8 @@ class kernel_ouroboros(ouroboros):
                  n_kernels=2,
                  tau = 1000,
                  omega=4000,
-                 noInput = False):
+                 noInput = False,
+                 trend_filtering=True):
         
         super(constrained_ouroboros,self).__init__(d_data,\
                  d_control,\
@@ -636,6 +637,7 @@ class kernel_ouroboros(ouroboros):
         self.noInput = noInput
         self.n_kernels = n_kernels
         self.d_data = d_data 
+        self.trend_filtering=trend_filtering
         #self.powers = torch.arange(0,poly_dim,device=device)
 
     def _apply_kernels(self,x,centers,variances):
