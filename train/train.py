@@ -24,7 +24,7 @@ def eval_model(dls,model,dt):
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
             #change: scaling to "true" d2y
             dy2 = deriv_approx_d2y(x)/(dt**2)
-            y2hat,state_pred,trend_penalty = model(x,dt,use_trend_filtering=model.use_trend_filtering) #state: B x L x SD
+            y2hat,state_pred,trend_penalty = model(x,dt,use_trend_filtering=model.trend_filtering) #state: B x L x SD
             
             # change: scaling to "true" d2y
             y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
@@ -48,7 +48,7 @@ def eval_model(dls,model,dt):
             dy2 = deriv_approx_d2y(y)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
-            y2hat,state_pred,penalty = model(x,dt,use_trend_filtering=model.use_trend_filtering) #state: B x L x SD
+            y2hat,state_pred,penalty = model(x,dt,use_trend_filtering=model.trend_filtering) #state: B x L x SD
     
             ## scaling to "true" d2y
             y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
