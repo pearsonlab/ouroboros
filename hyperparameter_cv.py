@@ -72,3 +72,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
 
     return
+
+
+if __name__ == '__main__':
+
+    fire.Fire(run_model)
