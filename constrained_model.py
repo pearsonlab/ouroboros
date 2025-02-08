@@ -510,7 +510,8 @@ class rkhs_ouroboros(nn.Module):
 
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)
-        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)/self.tau
+        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
+        weighted_kernels /= self.tau
 
         if self.trend_filtering:
             omega_diffs,gamma_diffs = torch.diff(omega,dim=1,n=trend_level),torch.diff(gamma,dim=1,n=trend_level)
