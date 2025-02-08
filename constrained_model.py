@@ -457,7 +457,8 @@ class rkhs_ouroboros(nn.Module):
                  expand_factor=1,
                  device='cuda',
                  tau = 1000,
-                 smooth_len=0.001):
+                 smooth_len=0.001,
+                 trend_filtering=True):
         
         super().__init__()
 
@@ -483,6 +484,7 @@ class rkhs_ouroboros(nn.Module):
         self.tau = tau
         self.smooth_len = smooth_len
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
+        self.trend_filtering=trend_filtering
 
     def forward(self,x,dt,use_trend_filtering=False,trend_level=1):
         """
@@ -508,16 +510,17 @@ class rkhs_ouroboros(nn.Module):
 
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)
-        
-        if use_trend_filtering:
+        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)/self.tau
+
+        if self.trend_filtering:
             omega_diffs,gamma_diffs = torch.diff(omega,dim=1,n=trend_level),torch.diff(gamma,dim=1,n=trend_level)
-            tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum()
+            weight_diffs = torch.diff(weights,dim=1,n=trend_level)
+            tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum() + weight_diffs.abs().sum()
         else:
             omega=smooth(omega.abs(),smooth_len)
             gamma = smooth(gamma,smooth_len)/self.tau
 
-        weighted_kernels = self.kernel(z,kernelControl,smooth_len)/self.tau
-        #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
+                #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
         ## should i be modifying z above? before i give it to the kernel?
        
         z[:,:,-1] /= dt
@@ -549,10 +552,11 @@ class rkhs_ouroboros(nn.Module):
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)
         
-        omega=smooth(omega.abs(),smooth_len)#*self.tau
-        gamma = smooth(gamma,smooth_len)#*self.tau
+        if not self.trend_filtering:
+            omega=smooth(omega.abs(),smooth_len)#*self.tau
+            gamma = smooth(gamma,smooth_len)#*self.tau
 
-        weighted_kernels = self.kernel(z,kernelControl,smooth_len)#*self.tau
+        weighted_kernels,_ = self.kernel(z,kernelControl,smooth_len)#*self.tau
         if scaled:
             omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
