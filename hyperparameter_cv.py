@@ -26,7 +26,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     audios,sr = get_segmented_audio(audio_path,seg_path,envelope=False,context_len=context_len,\
                                     audio_type=audio_filetype,seg_type=seg_filetype,max_pairs=max_pairs)
     
-    dls = get_loaders(np.vstack(audios),cv = False,train_size=0.6)
+    dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6)
 
     alphas = [0,1,2,4,8,16,32,64,128]
     n_kernels = [1,2,3,4,5,10,20]
