@@ -4,6 +4,7 @@ import numpy as np
 from scipy.signal.windows import hann
 from scipy.signal import ShortTimeFFT as STFFT
 from scipy.interpolate import RegularGridInterpolator
+from scipy.integrate import solve_ivp
 
 def deriv_approx_dy(y):
 
@@ -160,4 +161,26 @@ def smooth(data,smooth_len,smooth_type='causal'):
     
     return corrected / float(smooth_len)
 
-def remove_rm(integrated_data,rm_length=5,smooth_type='causal')
+def remove_rm(integrated_data,rm_length=5,smooth_type='causal'):
+
+    smoothed = smooth(integrated_data,rm_length=rm_length,smooth_type=smooth_type)
+
+    return integrated_data - smoothed
+
+def integrate_d2y(d2y,t_samples,init_cond,method='RK45'):
+
+    interp_d2y = lambda t: np.interp(t,t_samples,d2y)
+
+
+    def dz(t,z):
+
+        dz1 = z[1]
+        dz2 = interp_d2y(t)
+
+        return np.hstack([dz1,dz2])
+    
+    obj = solve_ivp(dz,t_span=(t_samples[0],t_samples[-1]),\
+                    y0=init_cond,method=method,t_eval=t_samples)
+    
+    return obj.y
+
