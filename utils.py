@@ -124,15 +124,40 @@ def huber_loss(x,delta=1):
     assert torch.all(t2 >= 0), print('t2 should be greater than or equal to 0')
     return  t1 + t2
 
-def smooth(data,smooth_len):
+def smooth(data,smooth_len,smooth_type='causal'):
 
     D,L = data.shape
     if smooth_len == 1:
         return data
-    pad = np.zeros((D,smooth_len))
-    try:
-        cumsum = np.cumsum(np.hstack([pad,data]),axis=-1)
-    except:
-        print(pad.shape,data.shape)
-        assert False
-    return (cumsum[:,smooth_len:] - cumsum[:,:-smooth_len])/float(smooth_len)
+    if smooth_type == 'causal':
+        start = smooth_len
+        end = L
+        pad = np.zeros((D,smooth_len))
+        padded = np.hstack([pad,data])
+    elif smooth_type == 'centered':
+        
+        frontLen = smooth_len // 2#+ smooth_len - 2* (smooth_len // 2)
+        endLen = smooth_len // 2
+        start = frontLen
+        end = L + smooth_len - endLen - 1
+        frontPad = np.zeros((D,frontLen))
+        #endPad = np.zeros((D,endLen))
+        padded = np.hstack([frontPad,data])
+    else:
+        start = 1
+        end = L + 1
+        pad = np.zeros((D,smooth_len))
+        padded = np.hstack([np.zeros((D,1)),data,pad])
+
+    cumsum = np.cumsum(padded,axis=-1)
+    if smooth_type == 'causal':
+        corrected=  cumsum[:,smooth_len:] - cumsum[:,:L]
+    elif smooth_type == 'centered':
+        corrected = cumsum[:,frontLen:] - cumsum[:,:L]
+    else:
+        corrected = cumsum[:,smooth_len+1:] - cumsum[:,:L] 
+    #print(corrected.shape)
+    
+    return corrected / float(smooth_len)
+
+def remove_rm(integrated_data,rm_length=5,smooth_type='causal')
