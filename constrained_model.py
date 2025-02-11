@@ -250,7 +250,7 @@ class constrained_ouroboros(nn.Module):
         
         s = time.time()
         obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
-        print(f'integrated in {np.round(time.time() - s,2)} s')
+        #print(f'integrated in {np.round(time.time() - s,2)} s')
 
         return obj.y,omega,gamma,b,d,obj.status
     
@@ -646,7 +646,7 @@ class rkhs_ouroboros(nn.Module):
         
         s = time.time()
         obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
-        print(f'integrated in {np.round(time.time() - s,2)} s')
+        #print(f'integrated in {np.round(time.time() - s,2)} s')
         if with_residual:
             return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
         return obj.y,omega,gamma,weighted_kernels,obj.status
