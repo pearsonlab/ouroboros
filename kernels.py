@@ -92,9 +92,9 @@ class fitPolyModule(polyModule):
 
 class simpleGaussModule(kernelModule):
 
-    def __init__(self,nTerms,device,x_dim,z_dim,activation=nn.ReLU()):
+    def __init__(self,nTerms,device,x_dim,z_dim,activation=nn.ReLU(),trend_filtering=True):
 
-        super().__init__(nTerms,device,x_dim,z_dim,activation)
+        super().__init__(nTerms,device,x_dim,z_dim,activation,trend_filtering)
         self.mus = nn.Parameter(torch.rand((1,1,2*self.d,nTerms),device=self.device)*2*np.sqrt(2*self.d*nTerms) - np.sqrt(self.d *nTerms),\
                                 requires_grad=True)
         self.log_sigmas = nn.Parameter(torch.rand((1,1,2*self.d,nTerms),device=self.device)*2*np.sqrt(self.nTerms) - np.sqrt(self.nTerms),\
