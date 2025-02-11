@@ -163,7 +163,7 @@ def smooth(data,smooth_len,smooth_type='causal'):
 
 def remove_rm(integrated_data,rm_length=5,smooth_type='causal'):
 
-    smoothed = smooth(integrated_data,rm_length=rm_length,smooth_type=smooth_type)
+    smoothed = smooth(integrated_data,smooth_len=rm_length,smooth_type=smooth_type)
 
     return integrated_data - smoothed
 
