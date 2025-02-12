@@ -37,14 +37,16 @@ def eval_model_error(dls,model,dt):
             y = dy2
             L = y.shape[1]
 
-            se = (y - yhat[:,:L,:])**2
-            se = se.detach().cpu().numpy().squeeze()
-            v = np.nanvar(y.detach().cpu().numpy().squeeze(),axis=1)
-            mse = np.nanmean(se,axis=1)
-            train_r2.append(1 - mse/v)
+            sse = ((y - yhat[:,:L,:])**2).sum(dim=1)
+            sse = sse.detach().cpu().numpy().squeeze()
+            #y = y.detach().cpu().numpy()
+            sst = ((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
+            sst = sst.detach().cpu().numpy().squeeze()
+            #mse = np.nanmean(se,axis=1)
+            train_r2.append(1 - sse/sst)
             
             vars.append(y.detach().cpu().numpy().flatten())
-            train_errors.append(se)
+            train_errors.append(sse)
             
 
     for idx,batch in enumerate(dls['val']):
@@ -53,10 +55,10 @@ def eval_model_error(dls,model,dt):
             x = x.to('cuda').to(torch.float32)
             y = y.to('cuda').to(torch.float32)
             
-            dy = deriv_approx_dy(y)
+            dy = deriv_approx_dy(x)
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
             #scaling to "true" d2y
-            dy2 = deriv_approx_d2y(y)/(dt**2)
+            dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
             y2hat,state_pred,penalty = model(x,dt,use_trend_filtering=model.trend_filtering) #state: B x L x SD
@@ -69,13 +71,14 @@ def eval_model_error(dls,model,dt):
             y = dy2 
             
             L = y.shape[1]
-            se = (y - yhat[:,:L,:])**2
-            se = se.detach().cpu().numpy().squeeze()
-            v = np.nanvar(y.detach().cpu().numpy().squeeze(),axis=1)
-            mse = np.nanmean(se,axis=1)
-            test_r2.append(1 - mse/v)
+            sse = ((y - yhat[:,:L,:])**2).sum(dim=1)
+            sse = sse.detach().cpu().numpy().squeeze()
+            #y = y.detach().cpu().numpy()
+            sst = ((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
+            sst = sst.detach().cpu().numpy().squeeze()
+            test_r2.append(1 - sse/sst)
             vars.append(y.detach().cpu().numpy().flatten())
-            test_errors.append(se)
+            test_errors.append(sse)
 
     mean_r2_train = np.nanmean(np.hstack(train_r2))
     mean_r2_test = np.nanmean(np.hstack(test_r2))
