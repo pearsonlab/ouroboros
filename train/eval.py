@@ -110,7 +110,7 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05):
     test_choices = np.random.choice(len(dls['val']),max_segs,replace=False)
 
     train_errs,test_errs=[],[]
-    for train_ind,test_ind in zip(train_choices,test_choices):
+    for train_ind,test_ind in tqdm(zip(train_choices,test_choices),desc='Integrating samples...',total=max_segs):
 
         train_b = dls['train'].dataset[train_ind]
         test_b = dls['val'].dataset[test_ind]

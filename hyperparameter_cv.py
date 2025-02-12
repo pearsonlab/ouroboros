@@ -53,8 +53,8 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
 
         kernel_train_int_coef_sd = []
         kernel_test_int_coef_sd = []
-        
-        for alpha in tqdm(alphas,desc='Iterating through alphas',total=len(alphas)):
+        #,desc='Iterating through alphas',total=len(alphas)):
+        for alpha in alphas:
             if kernel_type == 'gauss':
                 kernel = simpleGaussModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=4,activation=lambda x: x,trend_filtering=use_trend)
             else:
