@@ -84,6 +84,21 @@ def get_audio_from_mat(matfile,context_len=0.02,max_pairs=600,env=False):
         return [data],fs
     else:
         return [],fs
+    
+def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
+
+    random.shuffle(matfiles)
+    vocal_data = []
+    for f in matfiles:
+        d = loadmat(f)['vocal'][0][0] 
+        dvoc = d[5]
+        if dvoc == voctype:
+            vocal_data.append(d[0])
+
+        if len(vocal_data) >= max_vocs:
+            break
+
+    return vocal_data, d[1]
 
 def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
                         seg_type='.txt'):
