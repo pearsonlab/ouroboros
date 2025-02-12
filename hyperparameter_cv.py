@@ -22,12 +22,20 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
     use_trend = True if trend_level > 0 else False
     if seg_path == '':
         seg_path = audio_path
+
+    if not os.path.isdir(model_path):
+        os.mkdir(model_path)
  
     print('loading data')
     audios,sr = get_segmented_audio(audio_path,seg_path,envelope=False,context_len=context_len,\
                                     audio_type=audio_filetype,seg_type=seg_filetype,max_pairs=max_pairs)
     
-    dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6)
+    loader_path = model_path + '/loaders.pth'
+    if os.path.isfile(loader_path):
+        dls = torch.load(loader_path)
+    else:
+        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6)
+        torch.save(dls,loader_path)
 
     alphas = [0,1,2,4,8,16,32,64,128]
     alpha_xaxis = np.arange(len(alphas))
@@ -122,7 +130,8 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
         plt.close()
 
             
-
+    
+    #return model, dls
     with open('/home/miles/Downloads/train_cv_vals.pkl','wb') as pfile:
         pickle.dump(train_cv_list,pfile)
 
