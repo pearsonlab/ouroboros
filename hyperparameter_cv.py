@@ -114,7 +114,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
         ax.set_xlabel("Trend filtering weight")
         ax.set_ylabel("MSE")
         ax.legend()
-        plt.savefig(os.path.join(plot_path,f'train_test_error_nkernels_{n_kernel}.svg'))
+        plt.savefig(os.path.join(model_path,f'train_test_error_kernel_{kernel_type}_nkernels_{n_kernel}.svg'))
         plt.close()
 
         ax = plt.gca()
@@ -126,7 +126,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
         ax.set_xlabel("Trend filtering weight")
         ax.set_ylabel("Integration error coefficient value")
         ax.legend()
-        plt.savefig(os.path.join(plot_path,f'train_test_int_coef_nkernels_{n_kernel}.svg'))
+        plt.savefig(os.path.join(model_path,f'train_test_int_coef_kernel_{kernel_type}_nkernels_{n_kernel}.svg'))
         plt.close()
 
             
