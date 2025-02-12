@@ -67,7 +67,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
                         lr=1e-3)
             scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
 
-            model_path_full = model_path + f'/kernelborous_gauss10_{voctype}_smoothedweights_fittod2y_scaled_trendfiltering_{trend_level}_alpha_{alpha}_nkernels_{n_kernel}'
+            model_path_full = model_path + f'/kernelborous_{voctype}_trendfiltering_{trend_level}_alpha_{alpha}_kernel_{kernel_type}_nkernels_{n_kernel}'
             save_loc = model_path_full + '/checkpoint_100.tar'
 
             if os.path.isfile(save_loc):
@@ -80,7 +80,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
 
                 tl,vl,model,opt = train(model,opt,loss_fn=torch.nn.MSELoss(),loaders=dls,scheduler=scheduler,nEpochs=nEpochs,val_freq=1,\
                                 runDir=model_path_full,\
-                                dt = 1/sr,use_trend_filtering=True,trend_level=trend_level,vis_freq=0,\
+                                dt = 1/sr,use_trend_filtering=use_trend,trend_level=trend_level,vis_freq=0,\
                                     alpha=alpha)
                 
                 sd = {'ouroboros':model.state_dict(),
