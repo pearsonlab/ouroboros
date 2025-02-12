@@ -32,7 +32,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
     
     loader_path = model_path + '/loaders.pth'
     if os.path.isfile(loader_path):
-        dls = torch.load(loader_path)
+        dls = torch.load(loader_path,weights_only=False)
     else:
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6)
         torch.save(dls,loader_path)
