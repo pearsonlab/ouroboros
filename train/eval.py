@@ -13,6 +13,8 @@ def eval_model_error(dls,model,dt):
     train_errors = []
     test_errors = []
     vars = []
+    train_r2 = []
+    test_r2 = []
 
     for idx,batch in enumerate(dls['train']):
         with torch.no_grad():
@@ -36,8 +38,14 @@ def eval_model_error(dls,model,dt):
             L = y.shape[1]
 
             se = (y - yhat[:,:L,:])**2
-            vars.append(np.nanvar(y.detach().cpu().numpy().flatten()))
-            train_errors.append(se.detach().cpu().numpy().flatten())
+            se = se.detach().cpu().numpy().squeeze()
+            v = np.nanvar(y.detach().cpu().numpy().squeeze(),axis=1)
+            mse = np.nanmean(se,axis=1)
+            train_r2.append(1 - mse/v)
+            
+            vars.append(y.detach().cpu().numpy().flatten())
+            train_errors.append(se)
+            
 
     for idx,batch in enumerate(dls['val']):
         with torch.no_grad():
@@ -62,15 +70,22 @@ def eval_model_error(dls,model,dt):
             
             L = y.shape[1]
             se = (y - yhat[:,:L,:])**2
-            vars.append(np.nanvar(y.detach().cpu().numpy().flatten()))
-            test_errors.append(se.detach().cpu().numpy().flatten())
+            se = se.detach().cpu().numpy().squeeze()
+            v = np.nanvar(y.detach().cpu().numpy().squeeze(),axis=1)
+            mse = np.nanmean(se,axis=1)
+            test_r2.append(1 - mse/v)
+            vars.append(y.detach().cpu().numpy().flatten())
+            test_errors.append(se)
 
-    mean_var = np.nanmean(vars)
-    test_errors = np.hstack(test_errors)/mean_var
-    test_mu,test_sd = np.nanmean(test_errors),np.nanstd(test_errors)
-    train_errors = np.hstack(train_errors)/mean_var
-    train_mu,train_sd = np.nanmean(train_errors),np.nanstd(train_errors)
-    return (train_mu,test_mu),(train_sd,test_sd)
+    mean_r2_train = np.nanmean(np.hstack(train_r2))
+    mean_r2_test = np.nanmean(np.hstack(test_r2))
+    sd_r2_train = np.nanstd(np.hstack(train_r2))
+    sd_r2_test = np.nanstd(np.hstack(test_r2))
+
+    print(f"Train r2: {mean_r2_train} +- {sd_r2_train}")
+    print(f"Test r2: {mean_r2_test} +- {sd_r2_test}")
+    
+    return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
 
 
 def pad_with_nan(l,target_len):
