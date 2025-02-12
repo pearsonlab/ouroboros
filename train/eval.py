@@ -137,6 +137,7 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05):
         train_yint = remove_rm(integrate_d2y(train_dy2,t_samples=t,init_cond=z0_train),rm_length=5)[0,start:L_train]
         train_y_modelint = remove_rm(train_y_modelint.squeeze(),rm_length=5)[0,start:L_train]
         test_y_modelint = remove_rm(test_y_modelint.squeeze(),rm_length=5)[0,start:L_test]
+        train_y,test_y = train_y[start:L_train],test_y[start:L_test]
         
         train_errs.append(np.abs(train_y_modelint - train_y))
         test_errs.append(np.abs(test_y_modelint - test_y))
@@ -153,8 +154,19 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05):
     test_errs = np.log(np.stack(test_errs) + 1e-10)
     test_t_dummy = np.tile(t_dummy[None,:],(max_segs,1))
 
-    lr_train = lr().fit(train_t_dummy.flatten()[:,None],train_errs.flatten())
-    lr_test = lr().fit(test_t_dummy.flatten()[:,None],test_errs.flatten())
+    train_coefs,test_coefs = [],[]
+    for tx,ty in zip(train_t_dummy,train_errs):
+        lr_train = lr().fit(tx.flatten()[:,None],ty.flatten())
+        train_coefs.append(lr_train.coef_)
+    for tx,ty in zip(test_t_dummy,test_errs):
+        lr_test = lr().fit(tx.flatten()[:,None],ty.flatten())
+        test_coefs.append(lr_test.coef_)
     
-    return lr_train.coef_,lr_test.coef_
+    mu_train_coef,mu_test_coef = np.nanmean(train_coefs),np.nanmean(test_coefs)
+    sd_train_coef,sd_test_coef = np.nanstd(train_coefs),np.nanstd(test_coefs)
+
+    print(f"Train integration error slope: {mu_train_coef} +- {sd_train_coef}")
+    print(f"Test integration error slope: {mu_test_coef} +- {sd_test_coef}")
+
+    return (mu_train_coef,mu_test_coef),(sd_train_coef,sd_test_coef)
 
