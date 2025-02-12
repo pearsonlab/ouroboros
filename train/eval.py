@@ -4,7 +4,7 @@ from tqdm import tqdm
 from utils import deriv_approx_d2y,deriv_approx_dy,remove_rm,integrate_d2y
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression as lr
-
+from itertools import repeat
 
 def eval_model_error(dls,model,dt):
 
@@ -143,22 +143,27 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05):
         test_errs.append(np.abs(test_y_modelint - test_y))
 
     
-    max_len_errs = max(list(map(len,train_errs)) + list(map(len,test_errs)))
-    t_dummy = np.arange(0,max_len_errs + 1/2,1)[:max_len_errs]
-    pad = lambda x: pad_with_nan(x,max_len_errs)
-    train_errs = list(map(pad,train_errs))
-    test_errs = list(map(pad,test_errs))
-
-    train_errs = np.log(np.stack(train_errs) + 1e-10)
-    train_t_dummy = np.tile(t_dummy[None,:],(max_segs,1))
+    #max_len_errs = max(list(map(len,train_errs)) + list(map(len,test_errs)))
+    #t_dummy = np.arange(0,max_len_errs + 1/2,1)[:max_len_errs]
+    #pad = lambda x: pad_with_nan(x,max_len_errs)
+    #train_errs = list(map(pad,train_errs))
+    #test_errs = list(map(pad,test_errs))
+    train_errs = [np.log(e + 1e-10) for e in train_errs]
+    #train_errs = np.log(np.stack(train_errs) + 1e-10)
+    #train_t_dummy = np.tile(t_dummy[None,:],(max_segs,1))
+    test_errs = [np.log(e + 1e-10) for e in test_errs]
     test_errs = np.log(np.stack(test_errs) + 1e-10)
-    test_t_dummy = np.tile(t_dummy[None,:],(max_segs,1))
+    #test_t_dummy = np.tile(t_dummy[None,:],(max_segs,1))
 
     train_coefs,test_coefs = [],[]
-    for tx,ty in zip(train_t_dummy,train_errs):
+    for ty in train_errs:
+        L = len(ty)
+        tx = np.arange(0,L+1/2,1)[:L]
         lr_train = lr().fit(tx.flatten()[:,None],ty.flatten())
         train_coefs.append(lr_train.coef_)
-    for tx,ty in zip(test_t_dummy,test_errs):
+    for ty in test_errs:
+        L = len(ty)
+        tx = np.arange(0,L+1/2,1)[:L]
         lr_test = lr().fit(tx.flatten()[:,None],ty.flatten())
         test_coefs.append(lr_test.coef_)
     
