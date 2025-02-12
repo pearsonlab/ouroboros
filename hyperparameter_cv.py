@@ -42,6 +42,10 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
 
         kernel_train_int_coef = []
         kernel_test_int_coef = []
+
+        kernel_train_int_coef_sd = []
+        kernel_test_int_coef_sd = []
+        
         for alpha in tqdm(alphas,desc='Iterating through alphas',total=len(alphas)):
             if kernel_type == 'gauss':
                 kernel = simpleGaussModule(nTerms=n_kernel,device='cuda',xdim=1,z_dim=4,activation=lambda x: x)
@@ -83,9 +87,11 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
             kernel_train_cv_sd.append(train_sd)
             kernel_test_cv_sd.append(test_sd)
 
-            train_coef,test_coef = eval_model_integration(dls,model,dt=1/sr,n_segs=25,st=0)
+            (train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,model,dt=1/sr,n_segs=25,st=0)
             kernel_train_int_coef.append(train_coef)
             kernel_test_int_coef.append(test_coef)
+            kernel_train_int_coef_sd.append(train_coef_sd)
+            kernel_test_int_coef_sd.append(test_coef_sd)
 
         min_err_ind = np.argmin(kernel_test_cv_err)
         min_int_ind = np.argmin(kernel_test_int_coef)
@@ -101,6 +107,18 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
         ax.set_ylabel("MSE")
         ax.legend()
         plt.savefig(os.path.join(plot_path,f'train_test_error_nkernels_{n_kernel}.svg'))
+        plt.close()
+
+        ax = plt.gca()
+        ax.bar(alpha_xaxis,kernel_train_int_coef,0.25,color='tab:blue',label='train')
+        ax.bar(alpha_xaxis+0.5,kernel_test_int_coef,0.25,color='tab:orange',label='validation')
+        ax.errorbar(alpha_xaxis,kernel_train_int_coef,yerr=kernel_train_int_coef_sd,capsize=4,fmt='o',color='k')
+        ax.errorbar(alpha_xaxis+0.5,kernel_test_int_coef,yerr=kernel_test_int_coef_sd,capsize=4,fmt='o',color='k')
+        ax.set_xticks(alpha_xaxis+0.25,alphas)
+        ax.set_xlabel("Trend filtering weight")
+        ax.set_ylabel("Integration error coefficient value")
+        ax.legend()
+        plt.savefig(os.path.join(plot_path,f'train_test_int_coef_nkernels_{n_kernel}.svg'))
         plt.close()
 
             
