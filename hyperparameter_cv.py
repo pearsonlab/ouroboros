@@ -56,9 +56,9 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
         
         for alpha in tqdm(alphas,desc='Iterating through alphas',total=len(alphas)):
             if kernel_type == 'gauss':
-                kernel = simpleGaussModule(nTerms=n_kernel,device='cuda',xdim=1,z_dim=4,activation=lambda x: x)
+                kernel = simpleGaussModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=4,activation=lambda x: x,trend_filtering=use_trend)
             else:
-                kernel = polyModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=4,activation = lambda x: x,lam=0.9)
+                kernel = polyModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=4,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
             
             model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
                         d_conv=4,expand_factor=1,tau=1000,\
