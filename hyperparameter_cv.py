@@ -31,7 +31,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
 
     alphas = [0,1,2,4,8,16,32,64,128]
     alpha_xaxis = np.arange(len(alphas))
-    n_kernels = [1,2,3,4,5,10,20]
+    n_kernels = [4,5,10,20] #1,2,3
     train_cv_list,test_cv_list = [],[]
     for ii,n_kernel in enumerate(n_kernels):
         kernel_train_cv_err = []
