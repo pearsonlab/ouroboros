@@ -152,7 +152,7 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05):
     #train_errs = np.log(np.stack(train_errs) + 1e-10)
     #train_t_dummy = np.tile(t_dummy[None,:],(max_segs,1))
     test_errs = [np.log(e + 1e-10) for e in test_errs]
-    test_errs = np.log(np.stack(test_errs) + 1e-10)
+    #test_errs = np.log(np.stack(test_errs) + 1e-10)
     #test_t_dummy = np.tile(t_dummy[None,:],(max_segs,1))
 
     train_coefs,test_coefs = [],[]
