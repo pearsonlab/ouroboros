@@ -11,12 +11,13 @@ import fire
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import pickle
+from visualization.model_vis import loss_plot
 
 
 def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
               seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
-                nEpochs=100, kernel_type='gauss',seed=None):
+                nEpochs=100, kernel_type='gauss',seed=None,save_loaders=True):
     
 
     use_trend = True if trend_level > 0 else False
@@ -38,13 +39,15 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
     else:
         print(f'getting dataloaders with seed {seed}')
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
-        #print('saving dataloaders...')
-        #del audios
-        #torch.save(dls,loader_path)
+        if save_loaders:
+            print('saving dataloaders...')
+            del audios
+            dls['sr'] = sr
+            torch.save(dls,loader_path)
 
-    alphas = [0,1,2,4,8,16,32,64,128]
+    alphas = [1e3,1e5,1e7]
     alpha_xaxis = np.arange(len(alphas))
-    n_kernels = [4,5,10,20] #1,2,3
+    n_kernels = [10] #1,2,3
     train_cv_list,test_cv_list = [],[]
     for ii,n_kernel in enumerate(n_kernels):
         kernel_train_cv_err = []
@@ -88,6 +91,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
                                 dt = 1/sr,use_trend_filtering=use_trend,trend_level=trend_level,vis_freq=0,\
                                     alpha=alpha)
                 
+                loss_plot(tl,vl,save_loc=model_path_full,show=False)
                 sd = {'ouroboros':model.state_dict(),
                 'opt':opt.state_dict()}
                 
@@ -137,11 +141,11 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
             
     
     #return model, dls
-    with open('/home/miles/Downloads/train_cv_vals.pkl','wb') as pfile:
-        pickle.dump(train_cv_list,pfile)
+    #with open('/home/miles/Downloads/train_cv_vals.pkl','wb') as pfile:
+    #    pickle.dump(train_cv_list,pfile)
 
-    with open('/home/miles/Downloads/test_cv_vals.pkl','wb') as pfile:
-        pickle.dump(test_cv_list,pfile)
+    #with open('/home/miles/Downloads/test_cv_vals.pkl','wb') as pfile:
+    #    pickle.dump(test_cv_list,pfile)
 
 
     return
