@@ -12,7 +12,7 @@ from scipy.io import wavfile
 import librosa
 from itertools import repeat
 from matplotlib.colors import ListedColormap
-
+import os
 plt.rcParams['text.usetex'] = True
 
 
@@ -27,22 +27,22 @@ def format_axes(ax,xlabel='',ylabel='',xlims=(),ylims=()):
         ax.set_ylim(ylims)
     return 
 
-def get_error_plot(model,dataloaders):
-
-    pass
-
-def loss_plot(train_loss,val_loss):
+def loss_plot(train_loss,val_loss,save_loc='',show=True):
 
     train_loss,val_loss = np.array(train_loss),np.array(val_loss)
 
     ax = plt.gca()
     ax.plot(train_loss[:,0],color='tab:blue',label="Train loss")
     ax.plot(val_loss[:,0],val_loss[:,1],color='tab:orange',label ='Validation loss')
-    ax.set_xlabel("Gradient steps")
-    ax.set_ylabel("Loss (MSE)")
+    #ax.set_xlabel("Gradient steps")
+    #ax.set_ylabel("Loss (MSE)")
 
-    format_axes(ax,xticks=ax.get_xticks(),yticks=ax.get_yticks())
-    plt.show()
+    format_axes(ax,xlabel="Gradient steps",ylabel="Loss (MSE)")
+    plt.legend()
+    plt.savefig(os.path.join(save_loc,'train_test_loss.svg'))
+    if show:
+        plt.show()
+    
     plt.close()
 
 def visualize_kernel(model,y,dt):
