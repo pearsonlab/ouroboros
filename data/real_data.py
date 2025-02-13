@@ -150,6 +150,26 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     
     return audio_segs,sr
 
+
+def grab_segments(seg_list,*args,fs=42000):
+
+    #### IMPLEMENT
+    output = [[] for _ in args]
+    for ii, onoffs in enumerate(seg_list):
+        #onoffs = np.loadtxt(seg_file)
+        if np.ndim(onoffs) == 1:
+            onoffs = onoffs[None,:]
+        for onInd,offInd in onoffs:
+            #onInd, offInd = int(round(on*fs)),int(round(off*fs))
+            for jj,inputs in enumerate(args):
+                #print(inputs[ii].squeeze()[onInd:offInd].shape)
+                output[jj].append(inputs[ii][onInd:offInd])
+
+        #print(len(output[0]))
+        #assert False
+        #print(output)
+    return output
+
 """
 def get_feature_musd_dataset(samplerate,spiketimes,audio,onOffs,shoulder=0.01,data_type='rates'):
 
