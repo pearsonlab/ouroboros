@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression as lr
 from itertools import repeat
 
-def eval_model_error(dls,model,dt):
+def eval_model_error(dls,model,dt,comparison='val'):
 
     model.eval()
 
@@ -49,7 +49,7 @@ def eval_model_error(dls,model,dt):
             train_errors.append(sse)
             
 
-    for idx,batch in enumerate(dls['val']):
+    for idx,batch in enumerate(dls[comparison]):
         with torch.no_grad():
             x,y = batch
             x = x.to('cuda').to(torch.float32)
@@ -86,7 +86,7 @@ def eval_model_error(dls,model,dt):
     sd_r2_test = np.nanstd(np.hstack(test_r2))
 
     print(f"Train r2: {mean_r2_train} +- {sd_r2_train}")
-    print(f"Test r2: {mean_r2_test} +- {sd_r2_test}")
+    print(f"{comparison} r2: {mean_r2_test} +- {sd_r2_test}")
     
     return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
 
@@ -101,19 +101,19 @@ def pad_with_nan(l,target_len):
     else:
         return l
     
-def eval_model_integration(dls,model,dt,n_segs=100,st=0.05):
+def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
 
     start = int(round(st/dt))
-    max_segs = min(min(len(dls['train']),len(dls['val'])),n_segs)
+    max_segs = min(min(len(dls['train']),len(dls[comparison])),n_segs)
 
     train_choices = np.random.choice(len(dls['train']),max_segs,replace=False)
-    test_choices = np.random.choice(len(dls['val']),max_segs,replace=False)
+    test_choices = np.random.choice(len(dls[comparison]),max_segs,replace=False)
 
     train_errs,test_errs=[],[]
     for train_ind,test_ind in tqdm(zip(train_choices,test_choices),desc='Integrating samples...',total=max_segs):
 
         train_b = dls['train'].dataset[train_ind]
-        test_b = dls['val'].dataset[test_ind]
+        test_b = dls[comparison].dataset[test_ind]
 
         train_x,train_y = train_b
         test_x,test_y = test_b 
@@ -174,7 +174,7 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05):
     sd_train_coef,sd_test_coef = np.nanstd(train_coefs),np.nanstd(test_coefs)
 
     print(f"Train integration error slope: {mu_train_coef} +- {sd_train_coef}")
-    print(f"Test integration error slope: {mu_test_coef} +- {sd_test_coef}")
+    print(f"{comparison} integration error slope: {mu_test_coef} +- {sd_test_coef}")
 
     return (mu_train_coef,mu_test_coef),(sd_train_coef,sd_test_coef)
 
