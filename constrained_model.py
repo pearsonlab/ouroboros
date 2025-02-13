@@ -508,7 +508,7 @@ class rkhs_ouroboros(nn.Module):
         gammaControl = self.gamma_mamba(x_in)
         kernelControl = self.kernel_mamba(x_in)
 
-        omega = self.omega_net(omegaControl)
+        omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
         weighted_kernels /= self.tau
@@ -518,7 +518,7 @@ class rkhs_ouroboros(nn.Module):
             weight_diffs = torch.diff(weights,dim=1,n=trend_level)
             tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum() + weight_diffs.abs().sum()
         else:
-            omega=smooth(omega.abs(),smooth_len)
+            omega=smooth(omega,smooth_len)
             gamma = smooth(gamma,smooth_len)/self.tau
 
                 #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
@@ -550,11 +550,11 @@ class rkhs_ouroboros(nn.Module):
         gammaControl = self.gamma_mamba(x_in)
         kernelControl = self.kernel_mamba(x_in)
 
-        omega = self.omega_net(omegaControl)
+        omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
         
         if not self.trend_filtering:
-            omega=smooth(omega.abs(),smooth_len)#*self.tau
+            omega=smooth(omega,smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
 
         weighted_kernels,_ = self.kernel(z,kernelControl,smooth_len)#*self.tau
