@@ -34,7 +34,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
     
     loader_path = model_path + '/loaders.pth'
     if os.path.isfile(loader_path):
-        dls = torch.load(loader_path)
+        dls = torch.load(loader_path,weights_only=False)
     else:
         print(f'getting dataloaders with seed {seed}')
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
@@ -58,8 +58,8 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
 
         kernel_train_int_coef_sd = []
         kernel_test_int_coef_sd = []
-        
-        for alpha in tqdm(alphas,desc='Iterating through alphas',total=len(alphas)):
+        #,desc='Iterating through alphas',total=len(alphas)):
+        for alpha in alphas:
             if kernel_type == 'gauss':
                 kernel = simpleGaussModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=4,activation=lambda x: x,trend_filtering=use_trend)
             else:
