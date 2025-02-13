@@ -16,26 +16,31 @@ import pickle
 def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
               seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
-                nEpochs=100, kernel_type='gauss'):
+                nEpochs=100, kernel_type='gauss',seed=None):
     
 
     use_trend = True if trend_level > 0 else False
     if seg_path == '':
         seg_path = audio_path
 
+    model_path += '_' + str(seed)
     if not os.path.isdir(model_path):
         os.mkdir(model_path)
  
     print('loading data')
+    
     audios,sr = get_segmented_audio(audio_path,seg_path,envelope=False,context_len=context_len,\
-                                    audio_type=audio_filetype,seg_type=seg_filetype,max_pairs=max_pairs)
+                                    audio_type=audio_filetype,seg_type=seg_filetype,max_pairs=max_pairs,seed=seed)
     
     loader_path = model_path + '/loaders.pth'
     if os.path.isfile(loader_path):
         dls = torch.load(loader_path)
     else:
-        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6)
-        torch.save(dls,loader_path)
+        print(f'getting dataloaders with seed {seed}')
+        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+        #print('saving dataloaders...')
+        #del audios
+        #torch.save(dls,loader_path)
 
     alphas = [0,1,2,4,8,16,32,64,128]
     alpha_xaxis = np.arange(len(alphas))
@@ -112,7 +117,7 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
         ax.errorbar(alpha_xaxis+0.5,kernel_test_cv_err,yerr=kernel_test_cv_sd,capsize=4,fmt='o',color='k')
         ax.set_xticks(alpha_xaxis+0.25,alphas)
         ax.set_xlabel("Trend filtering weight")
-        ax.set_ylabel("MSE")
+        ax.set_ylabel(r"$R^2$")
         ax.legend()
         plt.savefig(os.path.join(model_path,f'train_test_error_kernel_{kernel_type}_nkernels_{n_kernel}.svg'))
         plt.close()

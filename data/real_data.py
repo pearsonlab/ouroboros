@@ -101,8 +101,9 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
     return vocal_data, d[1]
 
 def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
-                        seg_type='.txt'):
+                        seg_type='.txt',seed=None):
 
+    random.seed(seed)
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
     #days = [d.split('/')[-1] for d in wav_dirs]
     #print("running this code")

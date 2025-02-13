@@ -44,17 +44,17 @@ def adjusted_euler_integrate(y0,dy,d2y,dt=1):
 
     return y0 + np.cumsum(dy_adjusted,axis=1)
 
-def get_loaders(data,num_workers=4,batch_size=32,train_size=0.8,cv = False):
+def get_loaders(data,num_workers=4,batch_size=32,train_size=0.8,cv = False,seed=None):
 
     dls = {}
     
     test_size = 1 - train_size
     val_size= test_size/2
-    X_train,X_test = train_test_split(data,test_size=test_size)
+    X_train,X_test = train_test_split(data,test_size=test_size,random_state=seed)
 
 
     if cv:
-        X_val, X_test = train_test_split(X_test,test_size=0.5)
+        X_val, X_test = train_test_split(X_test,test_size=0.5,random_state=seed)
         dsVal = aud_neur_ds(X_val)
         dls['val'] = DataLoader(dsVal,num_workers=num_workers,batch_size=batch_size,shuffle=False)
     dsTrain,dsTest = aud_neur_ds(X_train),aud_neur_ds(X_test)
