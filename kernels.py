@@ -53,8 +53,8 @@ class polyModule(kernelModule):
         B,L,d = x.shape
         _,_,n = z.shape
         weights = self.activation(self.weights(z))
-        #if not self.trend_filtering:
-        weights = smooth(weights,smooth_len)
+        if not self.trend_filtering:
+            weights = smooth(weights,smooth_len)
         power_mat = self.lam * (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim-1) - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
         power_mat = torch.einsum('bldp,bldp->blp',power_mat,self.prods)[:,:,None,:]
         power_mat = power_mat.pow(self.powers)
@@ -72,6 +72,7 @@ class polyModule(kernelModule):
         B,L,d = x.shape
         if weights.shape != (B,L,self.poly_dim-1):
             weights = weights.view(B,L,self.poly_dim-1)
+        weights = weights.view(B,L,self.d,self.nTerms)
 
         power_mat = self.lam * (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim-1) - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
         power_mat = torch.einsum('bldp,bldp->blp',power_mat,self.prods)[:,:,None,:]
@@ -109,8 +110,8 @@ class simpleGaussModule(kernelModule):
         B,L,d = x.shape
         _,_,n = z.shape
         weights = self.activation(self.weights(z))
-        #if not self.trend_filtering:
-        weights = smooth(weights,smooth_len)
+        if not self.trend_filtering:
+            weights = smooth(weights,smooth_len)
         weights = weights.view(B,L,self.d,self.nTerms)
         
         gauss_mat = torch.linalg.norm((x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)/ (2*torch.exp(2*self.log_sigmas)),dim=2,keepdims=True)**2 

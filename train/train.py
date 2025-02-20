@@ -92,7 +92,7 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             ##################################
             
             loss = loss_fn(y,yhat[:,:L,:]) 
-            #alpha = max(0,min(1,(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
+            alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
             l = loss + alpha*trend_penalty
             #print(l)
             l.backward()
@@ -169,7 +169,7 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
                     
                     
             if scheduler:
-                scheduler.step(l.item()/len(loaders['val']))
+                scheduler.step(vl/len(loaders['val']))
             val_losses.append((epoch*len(loaders['train']),vl/len(loaders['val']),vp/len(loaders['val'])))
             writer.add_scalar('Loss/validation',vl/len(loaders['val']),idx)
             writer.add_scalar('Penalty/validation',vp/len(loaders['val']),idx)

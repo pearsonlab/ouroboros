@@ -8,6 +8,8 @@ from itertools import repeat
 
 def eval_model_error(dls,model,dt,comparison='val'):
 
+    #tf = model.trend_filtering
+
     model.eval()
 
     train_errors = []
@@ -15,6 +17,7 @@ def eval_model_error(dls,model,dt,comparison='val'):
     vars = []
     train_r2 = []
     test_r2 = []
+    #model.trend_filtering=False
 
     for idx,batch in enumerate(dls['train']):
         with torch.no_grad():
@@ -87,6 +90,7 @@ def eval_model_error(dls,model,dt,comparison='val'):
 
     print(f"Train r2: {mean_r2_train} +- {sd_r2_train}")
     print(f"{comparison} r2: {mean_r2_test} +- {sd_r2_test}")
+    #model.trend_filtering=tf
     
     return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
 
@@ -103,11 +107,14 @@ def pad_with_nan(l,target_len):
     
 def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
 
-    start = int(round(st/dt))
-    max_segs = min(min(len(dls['train']),len(dls[comparison])),n_segs)
+    #tf = model.trend_filtering
+    #model.trend_filtering=False
 
-    train_choices = np.random.choice(len(dls['train']),max_segs,replace=False)
-    test_choices = np.random.choice(len(dls[comparison]),max_segs,replace=False)
+    start = int(round(st/dt))
+    max_segs = min(min(len(dls['train'].dataset),len(dls[comparison].dataset)),n_segs)
+
+    train_choices = np.random.choice(len(dls['train'].dataset),max_segs,replace=False)
+    test_choices = np.random.choice(len(dls[comparison].dataset),max_segs,replace=False)
 
     train_errs,test_errs=[],[]
     for train_ind,test_ind in tqdm(zip(train_choices,test_choices),desc='Integrating samples...',total=max_segs):
@@ -175,6 +182,7 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
 
     print(f"Train integration error slope: {mu_train_coef} +- {sd_train_coef}")
     print(f"{comparison} integration error slope: {mu_test_coef} +- {sd_test_coef}")
+    #model.trend_filtering=tf
 
     return (mu_train_coef,mu_test_coef),(sd_train_coef,sd_test_coef)
 

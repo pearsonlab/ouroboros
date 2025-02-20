@@ -447,6 +447,72 @@ class arneodobouros(nn.Module):
         print(f'integrated in {np.round(time.time() - s,2)} s')
         return obj.y,alpha,beta,d,obj.status
 
+class residual_fit(nn.Module):
+
+    def __init__(self,d_data,
+                 kernel,
+                 n_layers=2,
+                 d_state=16,
+                 d_conv=4,
+                 expand_factor=1,
+                 device='cuda',
+                 tau = 1000,
+                 smooth_len=0.001,
+                 trend_filtering=True):
+        
+        super().__init__()
+
+        self.device=device
+        ## if stacking on data dimension, d should be 4* d_data (y,dy,rev y, rev dy)
+        ## if stacking on time dimension, d should be 2*d_data (y,dy)
+        resid_config = MambaConfig(d_model=2*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        
+        self.resid_mamba = Mamba(resid_config).to(device)
+        self.resid_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device)
+        self.tau = tau
+        self.smooth_len = smooth_len
+        self.names = [rf"residual"]
+        self.trend_filtering=trend_filtering
+
+    def forward(self,x,dt,use_trend_filtering=False,trend_level=1):
+        """
+        predicts residual of second derivative at time t.
+        all other predictions should be done in the train look (train_utils.py)
+        """
+
+        B,L,D = x.shape
+        #x = x
+        #print(x.dtype)
+        # x: x_0, x_dt, x_2dt,...
+        smooth_len = int(round(self.smooth_len/dt))
+
+        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
+        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        L = z.shape[1]
+        #x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) # stack on data dimension
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
+        
+        resid_control = self.resid_mamba_mamba(x_in)[:,L:,:]
+
+        resid = self.resid_net(resid_control)
+
+        if self.trend_filtering:
+            resid = resid.abs()
+
+        else:
+            resid = smooth(resid.abs(),smooth_len)
+           
+
+                #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
+        ## should i be modifying z above? before i give it to the kernel?
+       
+
+        return -resid,resid_control,torch.tensor([0]).to(self.device)
+
+
 class rkhs_ouroboros(nn.Module):
 
     def __init__(self,d_data,
@@ -463,13 +529,15 @@ class rkhs_ouroboros(nn.Module):
         super().__init__()
 
         self.device=device
-        omegaConfig = MambaConfig(d_model=4*d_data,\
+        ## if stacking on data dimension, d should be 4* d_data (y,dy,rev y, rev dy)
+        ## if stacking on time dimension, d should be 2*d_data (y,dy)
+        omegaConfig = MambaConfig(d_model=2*d_data,\
                                     n_layers=n_layers,d_state=d_state,\
                                     d_conv=d_conv,expand_factor=expand_factor)
-        gammaConfig = MambaConfig(d_model=4*d_data,\
+        gammaConfig = MambaConfig(d_model=2*d_data,\
                                     n_layers=n_layers,d_state=d_state,\
                                     d_conv=d_conv,expand_factor=expand_factor)
-        kernelConfig = MambaConfig(d_model=4*d_data,\
+        kernelConfig = MambaConfig(d_model=2*d_data,\
                                     n_layers=n_layers,d_state=d_state,\
                                     d_conv=d_conv,expand_factor=expand_factor)
         
@@ -477,8 +545,8 @@ class rkhs_ouroboros(nn.Module):
         self.gamma_mamba = Mamba(gammaConfig).to(device)
         self.kernel_mamba = Mamba(kernelConfig).to(device)
 
-        self.omega_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #unconstrained
-        self.gamma_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
+        self.omega_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) #unconstrained
+        self.gamma_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
         
         self.kernel = kernel
         self.tau = tau
@@ -502,23 +570,24 @@ class rkhs_ouroboros(nn.Module):
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
+        #x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) # stack on data dimension
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
         
-        omegaControl = self.omega_mamba(x_in)
-        gammaControl = self.gamma_mamba(x_in)
-        kernelControl = self.kernel_mamba(x_in)
+        omegaControl = self.omega_mamba(x_in)[:,L:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
+        kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
-        omega = self.omega_net(omegaControl).abs()
+        omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
         weighted_kernels /= self.tau
 
         if self.trend_filtering:
             omega_diffs,gamma_diffs = torch.diff(omega,dim=1,n=trend_level),torch.diff(gamma,dim=1,n=trend_level)
-            weight_diffs = torch.diff(weights,dim=1,n=trend_level)
-            tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum() + weight_diffs.abs().sum()
+            #weight_diffs = torch.diff(weights,dim=1,n=trend_level)
+            tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum() #+ weight_diffs.abs().sum()
         else:
-            omega=smooth(omega,smooth_len)
+            omega=smooth(omega.abs(),smooth_len)
             gamma = smooth(gamma,smooth_len)/self.tau
 
                 #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
@@ -529,7 +598,7 @@ class rkhs_ouroboros(nn.Module):
         z2 = z[:,:,1:]
 
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
-        if use_trend_filtering:
+        if self.trend_filtering:
             return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),tf
         else:
             return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),torch.tensor([0]).to(self.device)
@@ -544,17 +613,18 @@ class rkhs_ouroboros(nn.Module):
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
+        # x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) ## stack on data dimension
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
         
-        omegaControl = self.omega_mamba(x_in)
-        gammaControl = self.gamma_mamba(x_in)
-        kernelControl = self.kernel_mamba(x_in)
+        omegaControl = self.omega_mamba(x_in)[:,L:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
+        kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
-        omega = self.omega_net(omegaControl).abs()
+        omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)
         
         if not self.trend_filtering:
-            omega=smooth(omega,smooth_len)#*self.tau
+            omega=smooth(omega.abs(),smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
 
         weighted_kernels,_ = self.kernel(z,kernelControl,smooth_len)#*self.tau
@@ -650,3 +720,45 @@ class rkhs_ouroboros(nn.Module):
         if with_residual:
             return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
         return obj.y,omega,gamma,weighted_kernels,obj.status
+    
+    def funcs_by_step(self,x_in,z,dt):
+
+        smooth_len = int(round(self.smooth_len/dt))
+
+        omega_cache = [(None, torch.zeros((1,self.omega_mamba.config.d_model * self.omega_mamba.config.expand_factor,\
+                                           self.omega_mamba.config.d_conv),device='cuda')) for _ in self.omega_mamba.layers]
+        gamma_cache = [(None, torch.zeros((1,self.gamma_mamba.config.d_model * self.gamma_mamba.config.expand_factor,\
+                                           self.gamma_mamba.config.d_conv),device='cuda')) for _ in self.gamma_mamba.layers]
+        weights_cache = [(None, torch.zeros((1,self.kernel_mamba.config.d_model * self.kernel_mamba.config.expand_factor,\
+                                             self.kernel_mamba.config.d_conv),device='cuda')) for _ in self.kernel_mamba.layers]
+        
+        N = x_in.shape[0]
+        omega,gamma,weights= []
+        for ii in range(N):
+            s = x_in[ii:ii+1]
+
+            omega,omega_cache = self.omega_mamba.step(s,omega_cache)
+            gamma,gamma_cache = self.omega_mamba.step(s,gamma_cache)
+            weights,weights_cache = self.omega_mamba.step(s,weights_cache)
+
+            omega = self.omega_net(omega).abs()
+            gamma = self.gamma_net(gamma)
+            
+            weights.append(weights)
+            omega.append(omega.detach().cpu().numpy())
+            gamma.append(gamma.detach().cpu().numpy())
+            
+
+        omega= np.stack(omega,axis=1)
+        gamma = np.stack(gamma,axis=1)
+        weights = torch.stack(weights,dim=1)
+
+        weighted_kernels,_ = self.kernel(z,weights,smooth_len)#*self.tau
+
+        if not self.trend_filtering:
+            omega=smooth(omega,smooth_len)#*self.tau
+            gamma = smooth(gamma,smooth_len)#*self.tau
+        
+
+        return omega,gamma,weighted_kernels.detach().cpu().numpy()
+
