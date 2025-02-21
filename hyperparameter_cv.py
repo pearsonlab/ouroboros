@@ -17,7 +17,8 @@ from visualization.model_vis import loss_plot
 def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
               seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
-                nEpochs=100, kernel_type='gauss',seed=None,save_loaders=True):
+                nEpochs=100, kernel_type='gauss',seed=None,save_loaders=True,
+                smooth_len=0.005):
     
 
     use_trend = True if trend_level > 0 else False
@@ -45,9 +46,9 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
             dls['sr'] = sr
             torch.save(dls,loader_path)
 
-    alphas = [1e3,1e5,1e7]
+    alphas = [0]
     alpha_xaxis = np.arange(len(alphas))
-    n_kernels = [10] #1,2,3
+    n_kernels = [50,75,100,200,300,400,500] #1,2,3
     train_cv_list,test_cv_list = [],[]
     for ii,n_kernel in enumerate(n_kernels):
         kernel_train_cv_err = []
@@ -64,13 +65,13 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
         #,desc='Iterating through alphas',total=len(alphas)):
         for alpha in alphas:
             if kernel_type == 'gauss':
-                kernel = simpleGaussModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=4,activation=lambda x: x,trend_filtering=use_trend)
+                kernel = simpleGaussModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
             else:
-                kernel = polyModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=4,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
+                kernel = polyModule(nTerms=n_kernel,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
             
             model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
                         d_conv=4,expand_factor=1,tau=1000,\
-                                    smooth_len=0.005,kernel=kernel)
+                                    smooth_len=smooth_len,kernel=kernel)
             opt = Adam(model.parameters(),
                         lr=1e-3)
             scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
@@ -93,7 +94,11 @@ def run_model(audio_path,seg_path='', model_path= '',plot_path='',\
                 
                 loss_plot(tl,vl,save_loc=model_path_full,show=False)
                 sd = {'ouroboros':model.state_dict(),
-                'opt':opt.state_dict()}
+                'opt':opt.state_dict(),
+                'n_kernels': n_kernel,
+                'trend_level': trend_level,
+                'trend_alpha': alpha,
+                'smooth_len': smooth_len}
                 
                 torch.save(sd,save_loc)
             
