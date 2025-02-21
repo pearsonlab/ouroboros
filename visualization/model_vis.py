@@ -4,7 +4,7 @@ from utils import get_spec,deriv_approx_d2y,deriv_approx_dy,from_numpy
 import torch 
 import matplotlib.pyplot as plt
 import gc
-import model_utils
+from model import model_utils
 from matplotlib.colors import Normalize
 from matplotlib import cm
 from matplotlib.animation import FuncAnimation

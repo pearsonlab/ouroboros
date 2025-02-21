@@ -2,7 +2,7 @@ import numpy as np
 from abc import ABC,abstractmethod
 import torch
 from torch import nn
-from model_utils import smooth
+from model.model_utils import smooth
 
 class kernelModule(nn.Module):
 
