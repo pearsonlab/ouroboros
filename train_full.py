@@ -1,8 +1,8 @@
 from data.real_data import *
 from data.data_utils import get_loaders
 from train.train import train
-from constrained_model import rkhs_ouroboros
-from kernels import *
+from model.constrained_model import rkhs_ouroboros
+from model.kernels import *
 import matplotlib.pyplot as plt
 import gc
 import torch
@@ -54,8 +54,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
     else:
         kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
     
-    model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=5,\
-                d_conv=4,expand_factor=5,tau=1000,\
+    model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
+                d_conv=4,expand_factor=1,tau=1000,\
                             smooth_len=smooth_len,kernel=kernel,
                             trend_filtering=use_trend)
     opt = Adam(model.parameters(),

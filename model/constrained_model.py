@@ -547,6 +547,9 @@ class rkhs_ouroboros(nn.Module):
 
         self.omega_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) #unconstrained
         self.gamma_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
+
+        ############ should maybe move kernel creation into this?
+        ############ maybe make trend level an attribute as well?
         
         self.kernel = kernel
         self.tau = tau
@@ -578,7 +581,7 @@ class rkhs_ouroboros(nn.Module):
         kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
         omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)
+        gamma = self.gamma_net(gammaControl)/self.tau # oops
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
         weighted_kernels /= self.tau
 
@@ -588,8 +591,7 @@ class rkhs_ouroboros(nn.Module):
             tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum() #+ weight_diffs.abs().sum()
         else:
             omega=smooth(omega.abs(),smooth_len)
-            gamma = smooth(gamma,smooth_len)/self.tau
-
+            gamma = smooth(gamma,smooth_len)
                 #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
         ## should i be modifying z above? before i give it to the kernel?
        
@@ -613,6 +615,9 @@ class rkhs_ouroboros(nn.Module):
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
+        if L > int(round(1/dt)):
+            omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
+            return omega,gamma,weighted_kernels,weights
         # x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) ## stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
         
@@ -669,13 +674,18 @@ class rkhs_ouroboros(nn.Module):
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
 
-        yhat,*_ = self.forward(x[:1,:,:],dt)
+        if L > int(round(1/dt)):
+            yhat,omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
+        else:
+            yhat,*_ = self.forward(x[:1,:,:],dt)
+            omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled)
+            omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
+                            weighted_kernels.detach().cpu().numpy().squeeze()
+        
         residual = xddot - yhat 
         smoothed_residual = smooth(residual,smooth_len).detach().cpu().numpy().squeeze()
 
-        omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled)
-        omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
-                            weighted_kernels.detach().cpu().numpy().squeeze()
+        
         
         start = int(round(st/dt))
         omega,gamma,weighted_kernels,smoothed_residual = omega[start:],gamma[start:],weighted_kernels[start:],smoothed_residual[start:]
@@ -721,7 +731,7 @@ class rkhs_ouroboros(nn.Module):
             return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
         return obj.y,omega,gamma,weighted_kernels,obj.status
     
-    def funcs_by_step(self,x_in,z,dt):
+    def funcs_by_step(self,z,dt,scaled=True):
 
         smooth_len = int(round(self.smooth_len/dt))
 
@@ -732,8 +742,9 @@ class rkhs_ouroboros(nn.Module):
         weights_cache = [(None, torch.zeros((1,self.kernel_mamba.config.d_model * self.kernel_mamba.config.expand_factor,\
                                              self.kernel_mamba.config.d_conv),device='cuda')) for _ in self.kernel_mamba.layers]
         
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         N = x_in.shape[0]
-        omega,gamma,weights= []
+        omega,gamma,weights,kernel= [],[],[],[]
         for ii in range(N):
             s = x_in[ii:ii+1]
 
@@ -744,21 +755,33 @@ class rkhs_ouroboros(nn.Module):
             omega = self.omega_net(omega).abs()
             gamma = self.gamma_net(gamma)
             
-            weights.append(weights)
+            s = z[ii:ii+1]
+            weights.append(weights.detach().cpu().numpy())
             omega.append(omega.detach().cpu().numpy())
             gamma.append(gamma.detach().cpu().numpy())
+            weighted_kernels,_ = self.kernel(s,weights,smooth_len)
+            kernel.append(weighted_kernels.detach().cpu().numpy())
             
 
+        z[:,:,1]/=dt 
         omega= np.stack(omega,axis=1)
         gamma = np.stack(gamma,axis=1)
-        weights = torch.stack(weights,dim=1)
+        weights = np.stack(weights,dim=1)
+        kernel = np.stack(kernel,dim=1)
 
-        weighted_kernels,_ = self.kernel(z,weights,smooth_len)#*self.tau
+        z1 = z[:,:,:1]
+        z2 = z[:,:,1:]
+
+        yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
 
         if not self.trend_filtering:
             omega=smooth(omega,smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
         
-
-        return omega,gamma,weighted_kernels.detach().cpu().numpy()
+        if scaled:
+            omega *= self.tau
+            gamma *= self.tau 
+            kernel *= self.tau 
+            weights *= self.tau
+        return yhat,omega,gamma,weights,kernel
 

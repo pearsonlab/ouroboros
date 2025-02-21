@@ -1,0 +1,137 @@
+from scipy.integrate import solve_ivp
+import numpy as np
+import torch
+from model.model_utils import smooth
+from utils import deriv_approx_d2y,deriv_approx_dy
+
+C = 343
+L = 0.035
+T = L/C 
+r = 0.65
+Ch = 1.43e-10
+MG = 20
+MB = 1e4
+RB = 5e6
+Rh = 24e3
+
+def simulate_trachea_fixed_params(y,dt):
+
+    p_in = []
+    p_out = []
+    p_in_base = 0
+    p_out_base=0
+    ly = len(y)
+    ts = np.arange(0,ly*dt + dt/2,dt)[:ly]
+    for ii,t in enumerate(ts):
+        in_shift = int((t - T)/dt)
+        out_shift = int((t - T/2)/dt)
+        if in_shift < 0:
+            p_in_step = p_in_base
+        else:
+            p_in_step = p_in[in_shift]
+        if out_shift < 0:
+            p_out_step = p_out_base
+        else:
+            p_out_step = p_in[out_shift]
+
+        p_in.append(y[ii] - r*p_in_step)
+        p_out.append((1 - r)*p_out_step)
+
+    return np.hstack(p_in),np.hstack(p_out)
+
+def simulate_OEC_fixed_params(y,dt):
+
+    dy = np.diff(y)/dt
+    y = y[1:]
+    i1,i2,i3 = np.zeros(3)
+    i0  = np.hstack([i1,i2,i3])
+    #i1s,omegas,i3s = [i1],[i2],[i3]
+    ly = len(y)
+    ts = np.arange(0,ly*dt + dt/2,dt)[:ly]
+    def d_oec(t,v):
+        ind = min(ly-1,int(t/dt))
+        pout = y[ind]
+        dpout = dy[ind]
+        i1,i2,i3 = v
+        di1 = i2
+        di2 = -(1/Ch/MG)*i1 - Rh*(1/MB + 1/MG)*i2 + (1/MG/Ch+Rh*RB/MG/MB)*i3 \
+                    +(1/MG)*dpout + (Rh*RB/MG/MB)*pout
+        di3 = -(MG/MB)*i2 - (Rh/MB)*i3 + (1/MB)*pout
+
+        return np.hstack([di1,di2,di3])
+
+    #s = time.time()
+    st=0
+    obj = solve_ivp(d_oec,(st,ly*dt),i0,t_eval=ts,method='RK45',atol=1e-5)
+
+    return obj.y[-1,:] * Rh
+
+def integrate(model,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,use_omega=True,use_gamma=True):
+
+    smooth_len = int(round(model.smooth_len/dt))
+    B,_,D = x.shape
+    # x: x_0, x_dt, x_2dt,...
+    xdot= deriv_approx_dy(x)
+    # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
+    xddot = deriv_approx_d2y(x)
+
+    z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+    L = z.shape[1]
+
+    yhat,*_ = model.forward(x[:1,:,:],dt)
+    residual = xddot - yhat 
+    smoothed_residual = smooth(residual,smooth_len).detach().cpu().numpy().squeeze()
+
+    omega,gamma,weighted_kernels,states = model.get_funcs(x[:1,:,:],dt,scaled=scaled)
+    omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
+                        weighted_kernels.detach().cpu().numpy().squeeze()
+    
+    start = int(round(st/dt))
+    omega,gamma,weighted_kernels,smoothed_residual = omega[start:],gamma[start:],weighted_kernels[start:],smoothed_residual[start:]
+
+    t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+    omegaTerp = lambda t: np.interp(t,t_steps,omega)
+    gammaTerp = lambda t: np.interp(t,t_steps,gamma)
+    weighted_kernelsTerp = lambda t: np.interp(t,t_steps,weighted_kernels)
+    if with_residual:
+        residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
+    z0 = z[0,start,:]
+    z0[-1] /= dt
+
+    #tau = self.tau#.detach().cpu().numpy()
+
+    def dz(t,z):
+
+        # t: time, should have a timestep of roughly dt. treat as ZOH
+        # z: B x 2d
+        b_ind = int(t/dt)
+        
+        if use_omega:
+            omega_step = omegaTerp(t) 
+        else:
+            omega_step = 0
+        if use_gamma:
+            gamma_step = gammaTerp(t) 
+        else:
+            gamma_step = 0
+        weighted_kernels_step = weighted_kernelsTerp(t) 
+
+        z1 = z[:1]
+        
+        z2 = z[1:] 
+
+        #-(omega**2)*z1 - gamma * z2 - weighted_kernels
+        dz2 = -(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step
+        dz1 = z[1]
+        if with_residual:
+            resids = residTerp(t)
+            dz2 += resids
+        
+        return np.hstack([dz1,dz2])
+    
+    
+    obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+    #print(f'integrated in {np.round(time.time() - s,2)} s')
+    if with_residual:
+        return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
+    return obj.y,omega,gamma,weighted_kernels,obj.status
