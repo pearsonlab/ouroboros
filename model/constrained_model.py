@@ -596,8 +596,8 @@ class rkhs_ouroboros(nn.Module):
         ## should i be modifying z above? before i give it to the kernel?
        
         z[:,:,-1] /= dt
-        z1 = z[:,:,:1]/self.tau**2
-        z2 = z[:,:,1:]/self.tau**2
+        z1 = z[:,:,:1]
+        z2 = z[:,:,1:]
 
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
         if self.trend_filtering:
