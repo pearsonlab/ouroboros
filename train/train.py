@@ -97,8 +97,9 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             #print(l)
             l.backward()
             optimizer.step()
-            train_losses.append((loss.item(),trend_penalty.item()))
-            writer.add_scalar('Loss/train',loss.item(),idx)
+            sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
+            train_losses.append((1 - loss.item()/sse.item(),trend_penalty.item()))
+            writer.add_scalar('Loss/train',1 - loss.item()/sse.item(),idx)
             writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
 
         if epoch % val_freq == 0:
@@ -134,8 +135,9 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
                     
                     L = y.shape[1]
                     l = loss_fn(y,yhat[:,:L,:])
-    
-                    vl += l.item()
+                    sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
+
+                    vl += 1 - l.item()/sse.item()
 
                     """
                     ### trend filtering penalty
@@ -245,12 +247,13 @@ def train_filter(model,filter,optimizer,loss_fn,loaders,scheduler=None,
             ##################################
             
             loss = loss_fn(y,yhat[:,:L,:]) 
+            sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
             alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
             l = loss + alpha*trend_penalty
             #print(l)
             l.backward()
             optimizer.step()
-            train_losses.append((loss.item(),trend_penalty.item()))
+            train_losses.append((loss.item()/sse.item(),trend_penalty.item()))
             writer.add_scalar('Loss/train',loss.item(),idx)
             writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
 
@@ -293,8 +296,8 @@ def train_filter(model,filter,optimizer,loss_fn,loaders,scheduler=None,
                     
                     L = y.shape[1]
                     l = loss_fn(y,yhat[:,:L,:])
-    
-                    vl += l.item()
+                    sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
+                    vl += l.item()/sse.item()
 
                     """
                     ### trend filtering penalty
