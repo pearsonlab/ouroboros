@@ -583,9 +583,9 @@ class rkhs_ouroboros(nn.Module):
         kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
         omega = self.omega_net(omegaControl).abs() # let's try rectifying here
-        gamma = self.gamma_net(gammaControl) # /self.tau # oops
+        gamma = self.gamma_net(gammaControl)/self.tau # oops
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
-        #weighted_kernels /= self.tau
+        weighted_kernels /= self.tau
 
         if self.trend_filtering:
             omega_diffs,gamma_diffs = torch.diff(omega,dim=1,n=trend_level),torch.diff(gamma,dim=1,n=trend_level)
@@ -624,9 +624,9 @@ class rkhs_ouroboros(nn.Module):
         # x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) ## stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
         
-        omegaControl = self.omega_mamba(x_in)[:,L:,:]
-        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
-        kernelControl = self.kernel_mamba(x_in)[:,L:,:]
+        omegaControl = self.omega_mamba(x_in)[:,:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,:,:]
+        kernelControl = self.kernel_mamba(x_in)[:,:,:]
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
@@ -635,12 +635,14 @@ class rkhs_ouroboros(nn.Module):
             omega=smooth(omega.abs(),smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
 
-        weighted_kernels,_ = self.kernel(z,kernelControl,smooth_len)#*self.tau
+        weighted_kernels,_ = self.kernel(x_in,kernelControl,smooth_len)#*self.tau
+        if not self.trend_filtering:
+            weighted_kernels = smooth(weighted_kernels,smooth_len)
         if scaled:
-            omega,gamma,weighted_kernels = omega*self.tau,gamma*(self.tau**2),weighted_kernels*(self.tau**2)
+            omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
-        return omega,gamma,weighted_kernels,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
+        return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
     
 
     def visualize(self,x,dt):
@@ -660,7 +662,7 @@ class rkhs_ouroboros(nn.Module):
                 ax = plt.gca()
                 ax.plot(t_ax,t[on:on+40]/(2*np.pi))
                 ax.set_title(n)
-                plt.show()
+                #plt.show()
                 plt.close()
 
         return
@@ -773,7 +775,7 @@ class rkhs_ouroboros(nn.Module):
         weights = np.stack(weights,dim=1)
         kernel = np.stack(kernel,dim=1)
 
-        z1 = z[:,:,:1]
+        z1 = z[:,:,:1]/dt
         z2 = z[:,:,1:]
 
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels

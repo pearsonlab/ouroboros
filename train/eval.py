@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from tqdm import tqdm
-from utils import deriv_approx_d2y,deriv_approx_dy,remove_rm,integrate_d2y
+from utils import deriv_approx_d2y,deriv_approx_dy,remove_rm,integrate_d2y,sst,sse
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression as lr
 from itertools import repeat
@@ -40,16 +40,16 @@ def eval_model_error(dls,model,dt,comparison='val'):
             y = dy2
             L = y.shape[1]
 
-            sse = ((y - yhat[:,:L,:])**2).sum(dim=1)
-            sse = sse.detach().cpu().numpy().squeeze()
+            err = sse(yhat[:,:L,:],y,reduction='none')#((y - yhat[:,:L,:])**2).sum(dim=1)
+            err = err.detach().cpu().numpy().squeeze()
             #y = y.detach().cpu().numpy()
-            sst = ((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
-            sst = sst.detach().cpu().numpy().squeeze()
+            tot = sst(y,reduction='none')
+            tot = tot.detach().cpu().numpy().squeeze()
             #mse = np.nanmean(se,axis=1)
-            train_r2.append(1 - sse/sst)
+            train_r2.append(1 - err/tot)
             
             vars.append(y.detach().cpu().numpy().flatten())
-            train_errors.append(sse)
+            train_errors.append(err)
             
 
     for idx,batch in enumerate(dls[comparison]):
@@ -74,14 +74,14 @@ def eval_model_error(dls,model,dt,comparison='val'):
             y = dy2 
             
             L = y.shape[1]
-            sse = ((y - yhat[:,:L,:])**2).sum(dim=1)
-            sse = sse.detach().cpu().numpy().squeeze()
+            err = sse(yhat[:,:L,:],y,reduction='none') #((y - yhat[:,:L,:])**2).sum(dim=1)
+            err = err.detach().cpu().numpy().squeeze()
             #y = y.detach().cpu().numpy()
-            sst = ((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
-            sst = sst.detach().cpu().numpy().squeeze()
-            test_r2.append(1 - sse/sst)
+            tot = sst(y,reduction='none') #((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
+            tot = tot.detach().cpu().numpy().squeeze()
+            test_r2.append(1 - err/tot)
             vars.append(y.detach().cpu().numpy().flatten())
-            test_errors.append(sse)
+            test_errors.append(err)
 
     mean_r2_train = np.nanmean(np.hstack(train_r2))
     mean_r2_test = np.nanmean(np.hstack(test_r2))

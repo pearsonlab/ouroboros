@@ -1,6 +1,6 @@
 from data.real_data import *
 from data.data_utils import get_loaders
-from train.train import train
+from train.train import train,save_model,load_model
 from model.constrained_model import rkhs_ouroboros
 from model.kernels import *
 import matplotlib.pyplot as plt
@@ -16,7 +16,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
               seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
                 nEpochs=100, kernel_type='gauss',n_kernels=10,alpha=1e7,seed=None,\
-                    save_loaders=False,smooth_len=0.005):
+                    save_loaders=False,smooth_len=0.005,vis_freq=0):
 
     
     use_trend = True if trend_level > 0 else False
@@ -67,6 +67,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
     if os.path.isfile(save_loc):
         #print(f'loading_checkpoint at {save_loc}')
+        model,opt,scheduler = load_model(save_loc,kernel_type=kernel_type)
         state = torch.load(save_loc,weights_only=True)
         model.load_state_dict(state['ouroboros'])
         opt.load_state_dict(state['opt'])
@@ -75,14 +76,14 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
         tl,vl,model,opt = train(model,opt,loss_fn=torch.nn.MSELoss(),loaders=dls,scheduler=scheduler,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_full,\
-                        dt = 1/sr,use_trend_filtering=use_trend,trend_level=trend_level,vis_freq=0,\
+                        dt = 1/sr,use_trend_filtering=use_trend,trend_level=trend_level,vis_freq=vis_freq,\
                             alpha=alpha)
         
         loss_plot(tl,vl,save_loc=model_path_full,show=False)
         sd = {'ouroboros':model.state_dict(),
         'opt':opt.state_dict()}
         
-        torch.save(sd,save_loc)
+        save_model(model,opt,save_loc)
     #model.trend_filtering=False
     (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,model,dt=1/sr)
 

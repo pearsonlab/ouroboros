@@ -2,9 +2,45 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 import numpy as np
 from tqdm import tqdm
-from utils import deriv_approx_d2y,deriv_approx_dy
+from utils import deriv_approx_d2y,deriv_approx_dy,sst,sse
 import matplotlib.pyplot as plt
- 
+import os
+from model.constrained_model import rkhs_ouroboros
+from model.kernels import *
+from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+
+def save_model(model,opt,location):
+    sd = {'ouroboros':model.state_dict(),
+        'opt':opt.state_dict(),
+        'tau':model.tau,
+        'smooth_len':model.smooth_len,
+        'n_kernel':model.kernel.nTerms
+        }
+        
+    torch.save(sd,location)
+
+def load_model(location,kernel_type='gauss'):
+
+    sd = torch.load(location,weights_only=False)
+    if kernel_type == 'gauss':
+        kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
+    else:
+        kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
+    
+
+    model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
+                d_conv=4,expand_factor=1,tau=1000,\
+                            smooth_len=sd['smooth_len'],kernel=kernel,
+                            trend_filtering=1)
+    opt = Adam(model.parameters(),
+                lr=1e-3)
+    scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
+    model.load_state_dict(sd['ouroboros'])
+    opt.load_state_dict(sd['opt'])
+    return model,opt,scheduler
+
 
 def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
           nEpochs=100,val_freq=25,mask_prob_aud = 0.1,
@@ -54,14 +90,18 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
 
             if vis_freq > 0:
                 if (idx % vis_freq) == 0:
+                    sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
+                    sst_sample = sst(y[:1,:,:1])
+                    r2_sample = (1 - sse_sample/sst_sample).item()
                     model.visualize(x,dt)
                 
                     on = np.random.choice(L-45)
                     ax = plt.gca()
-                    ax.plot(yhat[0,on:on+40,0].detach().cpu().numpy())
-                    ax.plot(y[0,on:on+40,0].detach().cpu().numpy())
-                    ax.set_title("data (orange) vs model (blue)")
-                    plt.show()
+                    ax.plot(yhat[0,:,0].detach().cpu().numpy(),label='model')
+                    ax.plot(y[0,:,0].detach().cpu().numpy(),label='data')
+                    ax.set_title(f"sample r2: {r2_sample: 0.4f}")
+                    ax.legend()
+                    plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
                     plt.close()
 
             """    
@@ -97,9 +137,9 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             #print(l)
             l.backward()
             optimizer.step()
-            sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
-            train_losses.append((1 - loss.item()/sse.item(),trend_penalty.item()))
-            writer.add_scalar('Loss/train',1 - loss.item()/sse.item(),idx)
+            tot = sst(y)
+            train_losses.append((1 - loss.item()/tot.item(),trend_penalty.item()))
+            writer.add_scalar('Loss/train',1 - loss.item()/tot.item(),idx)
             writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
 
         if epoch % val_freq == 0:
@@ -132,12 +172,27 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
                     #print(yhat.shape)
                     # y starts as x[1:0]
                     y = dy2 #torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
-                    
                     L = y.shape[1]
+                    if vis_freq > 0:
+                        if idx == epoch*len(loaders['train']):
+                            sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
+                            sst_sample = sst(y[:1,:,:1])
+                            r2_sample = (1 - sse_sample/sst_sample).item()
+                            model.visualize(x,dt)
+                        
+                            on = np.random.choice(L-45)
+                            ax = plt.gca()
+                            ax.plot(yhat[0,on:on+600,0].detach().cpu().numpy(),label='model')
+                            ax.plot(y[0,on:on+600,0].detach().cpu().numpy(),label='data')
+                            ax.set_title(f"sample r2: {r2_sample: 0.4f}")
+                            ax.legend()
+                            plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}_test.svg"))
+                            plt.close()
+                    
                     l = loss_fn(y,yhat[:,:L,:])
-                    sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
+                    tot = sst(y)
 
-                    vl += 1 - l.item()/sse.item()
+                    vl += 1 - l.item()/tot.item()
 
                     """
                     ### trend filtering penalty

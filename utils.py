@@ -20,6 +20,21 @@ def deriv_approx_d2y(y):
     return (-9 * y[:,:-8,:] + 128*y[:,1:-7,:] -1008*y[:,2:-6,:] + 8064*y[:,3:-5,:]- 14350*y[:,4:-4,:] + \
             8064*y[:,5:-3,:] - 1008*y[:,6:-2,:] + 128* y[:,7:-1,:] - 9*y[:,8:,:])/5040
 
+def sse(yhat,y,reduction='mean'):
+    if reduction == 'mean':
+        return ((yhat - y)**2).sum(dim=1).mean()
+    elif reduction == 'sum':
+        return ((yhat - y)**2).sum(dim=1).sum()
+    else:
+        return ((yhat - y)**2).sum(dim=1)
+def sst(y,reduction='mean'):
+    if reduction == 'mean':
+        return ((y - y.mean(dim=1,keepdims=True))**2).sum(dim=1).mean()
+    elif reduction == 'sum':
+        return ((y - y.mean(dim=1,keepdims=True))**2).sum(dim=1).sum()
+    else:
+        return ((y - y.mean(dim=1,keepdims=True))**2).sum(dim=1)
+
 def from_numpy(data,device='cuda'):
 
     return torch.from_numpy(data).type(torch.FloatTensor).to(device)
@@ -86,6 +101,7 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,in
 
     
     return Sx,target_ts,target_freqs,flag
+
 
 
 from scipy import signal
