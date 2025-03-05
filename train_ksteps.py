@@ -1,7 +1,8 @@
 from data.real_data import *
 from data.data_utils import get_loaders
-from train.train import train_ksteps,save_model,load_model
+from train.train import train_ksteps,save_model,load_model,save_filter,load_filter
 from model.constrained_model import rkhs_ouroboros
+from model.filters import filter
 from model.kernels import *
 import matplotlib.pyplot as plt
 import gc
@@ -58,7 +59,9 @@ def run_model(audio_path,seg_path='', model_path= '',\
                 d_conv=4,expand_factor=1,tau=1000,\
                             smooth_len=smooth_len,kernel=kernel,
                             trend_filtering=use_trend)
-    opt = Adam(model.parameters(),
+    filter_length = int(round(0.05*sr))*2 - 1
+    filt = filter(n_filters=[4,4,4],filter_size=filter_length)
+    opt = Adam(list(model.parameters()) + list(filt.parameters()),
                 lr=1e-3)
     scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
 
@@ -68,22 +71,23 @@ def run_model(audio_path,seg_path='', model_path= '',\
     if os.path.isfile(save_loc):
         #print(f'loading_checkpoint at {save_loc}')
         model,opt,scheduler = load_model(save_loc,kernel_type=kernel_type)
-        state = torch.load(save_loc,weights_only=True)
-        model.load_state_dict(state['ouroboros'])
-        opt.load_state_dict(state['opt'])
+        filt = load_filter(model_path_full + '/filter_checkpoint_100.tar')
+        #state = torch.load(save_loc,weights_only=True)
+        #model.load_state_dict(state['ouroboros'])
+        #opt.load_state_dict(state['opt'])
     else:
 
-
-        tl,vl,model,opt = train_ksteps(model,opt,loaders=dls,scheduler=scheduler,nEpochs=nEpochs,val_freq=1,\
+        
+        tl,vl,model,opt = train_ksteps(model,filt,opt,loaders=dls,scheduler=scheduler,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_full,\
                         dt = 1/sr,use_trend_filtering=use_trend,trend_level=trend_level,vis_freq=vis_freq,\
                             alpha=alpha,ksteps=ksteps)
         
         loss_plot(tl,vl,save_loc=model_path_full,show=False)
-        sd = {'ouroboros':model.state_dict(),
-        'opt':opt.state_dict()}
+    
         
         save_model(model,opt,save_loc)
+        save_filter(filt,model_path_full + '/filter_checkpoint_100.tar')
     #model.trend_filtering=False
     (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,model,dt=1/sr)
 

@@ -6,9 +6,27 @@ from utils import deriv_approx_d2y,deriv_approx_dy,sst,sse,euler_step_k
 import matplotlib.pyplot as plt
 import os
 from model.constrained_model import rkhs_ouroboros
+from model.filters import filter as filt
 from model.kernels import *
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+
+def save_filter(trained_filt,location,n_filters,filter_size):
+
+    sd = {'filter_params':trained_filt.state_dict(),
+            'n_filters':n_filters,
+            'filter_size':filter_size
+            }
+    torch.save(sd,location)
+    return
+
+def load_filter(location):
+    sd = torch.load(location,weights_only=False)
+    trained_filt = filt(n_filters=sd['n_filters'],filter_size=sd['filter_size'])
+    trained_filt.load_state_dict(sd['filter_params'])
+
+    return trained_filt
+
 
 
 def save_model(model,opt,location):
@@ -17,7 +35,7 @@ def save_model(model,opt,location):
         'tau':model.tau,
         'smooth_len':model.smooth_len,
         'n_kernel':model.kernel.nTerms
-        }
+    }
         
     torch.save(sd,location)
 
@@ -274,8 +292,11 @@ def train_ksteps(model,filter,optimizer,loaders,scheduler=None,
             y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2, corresponding to x[4:-4]
             
             (y_target,dy_target),(yhat,dyhat) = euler_step_k(y,dy,y2hat,dt,k=ksteps) #dy + y2hat*dt # makes dy [5:-3], corresponding to x[5:-3]
-            
-            yhat = torch.vmap(filter,in_dims=-1,out_dims=-1)(yhat)
+            #print(yhat.shape)
+            yhats = []
+            for yh in yhat:
+                yhats.append(filter(yh.transpose(0,1)).squeeze().transpose(0,1))
+            yhat = torch.stack(yhats,axis=0)#torch.vmap(filter,in_dims=-1,out_dims=-1)(yhat)
             #yhat = x[:,5:-3] + y1hat *dt # makes corresponding to x[6:-2]
             
             #yhat = torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
@@ -346,7 +367,10 @@ def train_ksteps(model,filter,optimizer,loaders,scheduler=None,
                     y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
                     
                     (y_target,dy_target),(yhat,dyhat) = euler_step_k(y,dy,y2hat,dt,k=ksteps)
-                    yhat = torch.vmap(filter,in_dims=-1,out_dims=-1)(yhat)
+                    yhats = []
+                    for yh in yhat:
+                        yhats.append(filter(yh.transpose(0,1)).squeeze().transpose(0,1))
+                    yhat = torch.stack(yhats,axis=0)
                     #yhat = torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
                     #print(yhat.shape)
                     # y starts as x[1:0]
