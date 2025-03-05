@@ -34,6 +34,48 @@ def sst(y,reduction='mean'):
         return ((y - y.mean(dim=1,keepdims=True))**2).sum(dim=1).sum()
     else:
         return ((y - y.mean(dim=1,keepdims=True))**2).sum(dim=1)
+    
+def euler_step_k(y,dy,d2y,dt,k=1):
+
+    #print(k)
+    d2ydt = d2y*dt 
+    ### how do we want to structure this? think about it.
+    ### we need to decide if we just want gradients on the k'th step,
+    ### or everything inbetween. If everything inbetween, we should output
+    ### the corresponding y -- maybe stacked on the last dimension,
+    ### so that for each l in L, d1 -> k=1, d2 -> k=2, d3 -> k=3, etc.
+    y_out = []
+    dy_out = []
+    dyhat_out = []
+    yhat_out = []
+    _,L,_ = y.shape
+    for step in range(k):
+        #print(step)
+        y_step = y[:,step+1:(L - k+1)+step,:]
+        dy_step = dy[:,step:L-k+step,:]
+        y_out.append(y_step)
+        dy_out.append(dy_step)
+        #print(y_step.shape,dy_step.shape)
+        if step == 0:
+            dy_pred = dy_out[0] + d2ydt[:,step:-k+step,:]
+        else:
+            dy_pred = dyhat_out[step-1] + d2ydt[:,step:-k+step,:]
+        dyhat_out.append(dy_pred)
+
+        if step == 0:
+            y_pred = y_out[0] + dyhat_out[step] * dt
+        else:
+            y_pred = yhat_out[step-1] + dyhat_out[step]*dt
+        yhat_out.append(y_pred)
+
+    y_out = torch.cat(y_out,dim=-1)
+    dy_out = torch.cat(dy_out,dim=-1)
+    dyhat_out = torch.cat(dyhat_out,dim=-1)
+    yhat_out = torch.cat(yhat_out,dim=-1)
+    
+    assert np.all(yhat_out.shape == y_out.shape),print(yhat_out.shape,y_out.shape)
+    assert np.all(dy_out.shape == dyhat_out.shape),print(dy_out.shape,dyhat_out.shape)
+    return (y_out,yhat_out),(dy_out,dyhat_out)
 
 def from_numpy(data,device='cuda'):
 
