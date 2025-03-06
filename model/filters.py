@@ -19,9 +19,9 @@ class filter(nn.Module):
        
         super().__init__()    
         self.device=device
-        filters = [nn.Conv1d(in_channels=1,out_channels=n_filters[0],kernel_size=filter_size,padding=(filter_size-1)/2)]
-        filters += [nn.Conv1d(in_channels=i,out_channels=o,kernel_size=filter_size,padding=(filter_size-1)/2) for i,o in zip(n_filters[:-1],n_filters[1:])]
-        filters += [nn.Conv1d(in_channels=n_filters[-1],out_channels=1,kernel_size=filter_size,padding=(filter_size-1)/2)]
+        filters = [nn.Conv1d(in_channels=1,out_channels=n_filters[0],kernel_size=filter_size,padding=(filter_size-1)//2)]
+        filters += [nn.Conv1d(in_channels=i,out_channels=o,kernel_size=filter_size,padding=(filter_size-1)//2) for i,o in zip(n_filters[:-1],n_filters[1:])]
+        filters += [nn.Conv1d(in_channels=n_filters[-1],out_channels=1,kernel_size=filter_size,padding=(filter_size-1)//2)]
         self.filter = nn.Sequential(*filters).to(self.device)
         
 
