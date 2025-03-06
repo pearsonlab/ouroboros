@@ -17,7 +17,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
               seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
                 nEpochs=100, kernel_type='gauss',n_kernels=10,alpha=1e7,seed=None,\
-                    save_loaders=False,smooth_len=0.005,vis_freq=0,ksteps=1):
+                    save_loaders=False,smooth_len=0.005,vis_freq=0,ksteps=1,batch_size=32):
 
     
     use_trend = True if trend_level > 0 else False
@@ -38,7 +38,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
         dls = torch.load(loader_path,weights_only=False)
     else:
         print(f'getting dataloaders with seed {seed}')
-        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed,batch_size=batch_size)
         if save_loaders:
             print('saving dataloaders...')
             del audios
