@@ -60,6 +60,64 @@ def load_model(location,kernel_type='gauss'):
     return model,opt,scheduler
 
 
+def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
+                     nEpochs=100,val_freq=25,runDir='.',dt=1/44100,\
+                    vis_freq=100,use_trend_filtering=False,trend_level=1,\
+                    alpha=1):
+    
+    harmonic_model,harmonic_opt = damped_harmonic_model
+    kernel_model,kernel_opt = kernel 
+
+    print(f'training damped harmonic model with trend filtering alpha = {alpha}')
+
+    writer = SummaryWriter(log_dir=runDir)
+
+    train_losses,val_losses=[],[]
+    
+    for epoch in tqdm(range(nEpochs),desc='training model'):
+
+        harmonic_model.train()
+        for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
+
+            harmonic_opt.zero_grad()
+            x,y = batch # each is bsz x seq len x n neurons + 1
+            bsz,_,n = x.shape
+
+            x = x.to('cuda').to(torch.float32)
+            y = y.to('cuda').to(torch.float32)
+
+            dy = deriv_approx_dy(x)
+            # dy_4dt, dy_3dt, ...., dy_(L-4)dt
+            #change: scaling to "true" d2y
+            dy2 = deriv_approx_d2y(x)/(dt**2)
+            # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
+            
+            y2hat,state_pred,trend_penalty = harmonic_model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
+            
+            # change: scaling to "true" d2y
+            y2hat = y2hat * harmonic_model.tau**2 #* (model.tau*dt)**2
+            
+            yhat = y2hat
+
+            y = dy2
+            L = y.shape[1]
+            if vis_freq > 0:
+                if (idx % vis_freq) == 0:
+                    sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
+                    sst_sample = sst(y[:1,:,:1])
+                    r2_sample = (1 - sse_sample/sst_sample).item()
+                    harmonic_model.visualize(x,dt)
+                
+                    on = np.random.choice(L-45)
+                    ax = plt.gca()
+                    ax.plot(yhat[0,:,0].detach().cpu().numpy(),label='model')
+                    ax.plot(y[0,:,0].detach().cpu().numpy(),label='data')
+                    ax.set_title(f"sample r2: {r2_sample: 0.4f}")
+                    ax.legend()
+                    plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
+                    plt.close()
+
+
 def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
           nEpochs=100,val_freq=25,mask_prob_aud = 0.1,
           init_len = 200,runDir='.',dt=1/44100,vis_freq=100,
