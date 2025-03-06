@@ -512,6 +512,251 @@ class residual_fit(nn.Module):
 
         return -resid,resid_control,torch.tensor([0]).to(self.device)
 
+class simple_ouroboros(nn.Module):
+
+    def __init__(self,d_data,
+                 kernel,
+                 n_layers=2,
+                 d_state=16,
+                 d_conv=4,
+                 expand_factor=1,
+                 device='cuda',
+                 tau = 1000,
+                 smooth_len=0.001):
+        
+        super().__init__()
+
+        self.device=device
+        ## if stacking on data dimension, d should be 4* d_data (y,dy,rev y, rev dy)
+        ## if stacking on time dimension, d should be 2*d_data (y,dy)
+        omegaConfig = MambaConfig(d_model=2*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        gammaConfig = MambaConfig(d_model=2*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        
+        self.omega_mamba = Mamba(omegaConfig).to(device)
+        self.gamma_mamba = Mamba(gammaConfig).to(device)
+
+        self.omega_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) #unconstrained
+        self.gamma_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
+
+        ############ should maybe move kernel creation into this?
+        ############ maybe make trend level an attribute as well?
+
+        self.tau = tau
+        self.smooth_len = smooth_len
+        self.names = [rf"$\omega$",rf"$\gamma$",'states']
+
+    def forward(self,x,dt):
+        """
+        predicts second derivative at time t.
+        all other predictions should be done in the train look (train_utils.py)
+        """
+
+        B,L,D = x.shape
+        #x = x
+        # x: x_0, x_dt, x_2dt,...
+        smooth_len = int(round(self.smooth_len/dt))
+
+        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
+        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        L = z.shape[1]
+        #x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) # stack on data dimension
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
+        
+        omegaControl = self.omega_mamba(x_in)[:,L:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
+
+        omega = self.omega_net(omegaControl).abs() # let's try rectifying here
+        gamma = self.gamma_net(gammaControl)/self.tau # oops
+
+
+        #    omega=smooth(omega.abs(),smooth_len)
+        #    gamma = smooth(gamma,smooth_len)
+        #        #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
+        ## should i be modifying z above? before i give it to the kernel?
+       
+        z[:,:,-1] /= dt
+        z1 = z[:,:,:1]
+        z2 = z[:,:,1:]
+
+        yhat = -(omega**2)*z1 - gamma * z2 
+        if self.trend_filtering:
+            return yhat,torch.cat([omegaControl,gammaControl])
+        else:
+            return yhat,torch.cat([omegaControl,gammaControl])
+
+    def get_funcs(self,x,dt,scaled = True,smoothing=False):
+
+        B,L,D = x.shape
+        # x: x_0, x_dt, x_2dt,...
+        smooth_len = int(round(self.smooth_len/dt))
+
+        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
+        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        L = z.shape[1]
+        if L > int(round(1/dt)):
+            print('using step by step functions')
+            omega,gamma = self.funcs_by_step(z,dt,scaled=scaled,smoothing=smoothing)
+            return omega,gamma
+        # x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) ## stack on data dimension
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
+        
+        omegaControl = self.omega_mamba(x_in)[:,:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,:,:]
+
+        omega = self.omega_net(omegaControl).abs()
+        gamma = self.gamma_net(gammaControl)
+        
+        if smoothing:
+            omega=smooth(omega.abs(),smooth_len)#*self.tau
+            gamma = smooth(gamma,smooth_len)#*self.tau
+
+        if scaled:
+            omega,gamma = omega*self.tau,gamma*self.tau
+        #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
+
+        return omega[:,L:,:],gamma[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:]],dim=-1)
+    
+
+    def visualize(self,x,dt):
+
+        B,L,D = x.shape
+        
+        with torch.no_grad():
+            terms = self.get_funcs(x[:1,:,:],dt)
+            terms = [t.detach().cpu().numpy().squeeze() for t in terms]
+            
+            torch.cuda.empty_cache()
+
+        on = np.random.choice(L-45)
+        t_ax = np.arange(on,on+40,1)*dt
+        for ii,(t,n) in enumerate(zip(terms,self.names)):
+            if ii not in [3]:
+                ax = plt.gca()
+                ax.plot(t_ax,t[on:on+40]/(2*np.pi))
+                ax.set_title(n)
+                #plt.show()
+                plt.close()
+
+        return
+    
+    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False):
+
+        smooth_len = int(round(self.smooth_len/dt))
+        B,_,D = x.shape
+        # x: x_0, x_dt, x_2dt,...
+        xdot= deriv_approx_dy(x)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
+        xddot = deriv_approx_d2y(x)
+
+        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        L = z.shape[1]
+
+        #if L > int(round(1/dt)):
+        #    yhat,omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
+        #else:
+        yhat,*_ = self.forward(x[:1,:,:],dt)
+        omega,gamma,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled)
+        omega,gamma= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze()
+    
+        residual = xddot - yhat 
+        smoothed_residual = smooth(residual,smooth_len).detach().cpu().numpy().squeeze()
+        
+        start = int(round(st/dt))
+        omega,gamma,smoothed_residual = omega[start:],gamma[start:],smoothed_residual[start:]
+
+        t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+        omegaTerp = lambda t: np.interp(t,t_steps,omega)
+        gammaTerp = lambda t: np.interp(t,t_steps,gamma)
+        if with_residual:
+            residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
+        z0 = z[0,start,:]
+        z0[-1] /= dt
+
+        #tau = self.tau#.detach().cpu().numpy()
+
+        def dz(t,z):
+
+            # t: time, should have a timestep of roughly dt. treat as ZOH
+            # z: B x 2d
+            b_ind = int(t/dt)
+            
+            omega_step = omegaTerp(t) 
+            gamma_step = gammaTerp(t) 
+
+            z1 = z[:1]
+            
+            z2 = z[1:] 
+    
+            #-(omega**2)*z1 - gamma * z2 - weighted_kernels
+            dz2 = -(omega_step**2)*z1 - gamma_step * z2
+            dz1 = z[1]
+            if with_residual:
+                resids = residTerp(t)
+                dz2 += resids
+            
+            return np.hstack([dz1,dz2])
+        
+        s = time.time()
+        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+        #print(f'integrated in {np.round(time.time() - s,2)} s')
+        if with_residual:
+            return obj.y,omega,gamma,smoothed_residual,obj.status
+        return obj.y,omega,gamma,obj.status
+    
+    def funcs_by_step(self,z,dt,scaled=True,smoothing=False):
+
+        smooth_len = int(round(self.smooth_len/dt))
+
+        omega_cache = [(None, torch.zeros((1,self.omega_mamba.config.d_model * self.omega_mamba.config.expand_factor,\
+                                           self.omega_mamba.config.d_conv),device='cuda')) for _ in self.omega_mamba.layers]
+        gamma_cache = [(None, torch.zeros((1,self.gamma_mamba.config.d_model * self.gamma_mamba.config.expand_factor,\
+                                           self.gamma_mamba.config.d_conv),device='cuda')) for _ in self.gamma_mamba.layers]
+
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
+        B,L,D = x_in.shape
+        omega,gamma= [],[],[],[]
+        
+        for ii in range(L):
+            s = x_in[:,ii,:]
+
+            omega,omega_cache = self.omega_mamba.step(s,omega_cache)
+            gamma,gamma_cache = self.gamma_mamba.step(s,gamma_cache)
+
+            omega = self.omega_net(omega).abs()
+            gamma = self.gamma_net(gamma)
+            
+            s = z[:,ii:ii+1,:]
+            omega.append(omega.detach().cpu().numpy())
+            gamma.append(gamma.detach().cpu().numpy())
+            
+
+        z[:,:,1]/=dt 
+        omega= np.stack(omega,axis=1)
+        gamma = np.stack(gamma,axis=1)
+
+        z1 = z[:,:,:1]/dt
+        z2 = z[:,:,1:]
+
+        yhat = -(omega**2)*z1 - gamma * z2 
+
+        if smoothing:
+            omega=smooth(omega,smooth_len)#*self.tau
+            gamma = smooth(gamma,smooth_len)#*self.tau
+        
+        if scaled:
+            omega *= self.tau
+            gamma *= self.tau 
+
+        return yhat,omega,gamma
+
+
+
 
 class rkhs_ouroboros(nn.Module):
 
