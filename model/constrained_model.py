@@ -515,7 +515,6 @@ class residual_fit(nn.Module):
 class simple_ouroboros(nn.Module):
 
     def __init__(self,d_data,
-                 kernel,
                  n_layers=2,
                  d_state=16,
                  d_conv=4,
@@ -758,7 +757,7 @@ class simple_ouroboros(nn.Module):
 
 
 
-class rkhs_ouroboros(nn.Module):
+class rkhs_ouroboros(simple_ouroboros):
 
     def __init__(self,d_data,
                  kernel,
@@ -771,38 +770,41 @@ class rkhs_ouroboros(nn.Module):
                  smooth_len=0.001,
                  trend_filtering=True):
         
-        super().__init__()
+        super().__init__(d_data,
+                 n_layers,
+                 d_state,
+                 d_conv,
+                 expand_factor,
+                 device,
+                 tau,
+                 smooth_len)
 
-        self.device=device
         ## if stacking on data dimension, d should be 4* d_data (y,dy,rev y, rev dy)
         ## if stacking on time dimension, d should be 2*d_data (y,dy)
-        omegaConfig = MambaConfig(d_model=2*d_data,\
-                                    n_layers=n_layers,d_state=d_state,\
-                                    d_conv=d_conv,expand_factor=expand_factor)
-        gammaConfig = MambaConfig(d_model=2*d_data,\
-                                    n_layers=n_layers,d_state=d_state,\
-                                    d_conv=d_conv,expand_factor=expand_factor)
+
         kernelConfig = MambaConfig(d_model=2*d_data,\
                                     n_layers=n_layers,d_state=d_state,\
                                     d_conv=d_conv,expand_factor=expand_factor)
         
-        self.omega_mamba = Mamba(omegaConfig).to(device)
-        self.gamma_mamba = Mamba(gammaConfig).to(device)
         self.kernel_mamba = Mamba(kernelConfig).to(device)
-
-        self.omega_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) #unconstrained
-        self.gamma_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
 
         ############ should maybe move kernel creation into this?
         ############ maybe make trend level an attribute as well?
         
         self.kernel = kernel
-        self.tau = tau
         self.smooth_len = smooth_len
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
         self.trend_filtering=trend_filtering
         if self.trend_filtering:
             print('we will not be smoothing during training!')
+
+    def load_omega_gamma(self,location):
+
+        ### load stuff here
+
+        ### remove everything omega/gamma related from the computation graph
+
+        return
 
     def forward(self,x,dt,use_trend_filtering=False,trend_level=1):
         """
