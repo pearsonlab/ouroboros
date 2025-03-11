@@ -583,10 +583,8 @@ class simple_ouroboros(nn.Module):
         z2 = z[:,:,1:]
 
         yhat = -(omega**2)*z1 - gamma * z2 
-        if self.trend_filtering:
-            return yhat,torch.cat([omegaControl,gammaControl])
-        else:
-            return yhat,torch.cat([omegaControl,gammaControl])
+        
+        return yhat,torch.cat([omegaControl,gammaControl])
 
     def get_funcs(self,x,dt,scaled = True,smoothing=False):
 
@@ -644,7 +642,7 @@ class simple_ouroboros(nn.Module):
 
         return
     
-    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False):
+    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True):
 
         smooth_len = int(round(self.smooth_len/dt))
         B,_,D = x.shape
@@ -660,7 +658,7 @@ class simple_ouroboros(nn.Module):
         #    yhat,omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
         #else:
         yhat,*_ = self.forward(x[:1,:,:],dt)
-        omega,gamma,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled)
+        omega,gamma,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled,smoothing=smoothing)
         omega,gamma= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze()
     
         residual = xddot - yhat 
@@ -767,8 +765,7 @@ class rkhs_ouroboros(simple_ouroboros):
                  expand_factor=1,
                  device='cuda',
                  tau = 1000,
-                 smooth_len=0.001,
-                 trend_filtering=True):
+                 smooth_len=0.001):
         
         super().__init__(d_data,
                  n_layers,
@@ -792,21 +789,27 @@ class rkhs_ouroboros(simple_ouroboros):
         ############ maybe make trend level an attribute as well?
         
         self.kernel = kernel
-        self.smooth_len = smooth_len
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
-        self.trend_filtering=trend_filtering
-        if self.trend_filtering:
-            print('we will not be smoothing during training!')
+
 
     def load_omega_gamma(self,location):
 
         ### load stuff here
 
         ### remove everything omega/gamma related from the computation graph
-
+        sd = torch.load(location,weights_only=False)
+        self.load_state_dict(sd['ouroboros'],strict=False)
+        for param in self.omega_mamba.parameters():
+            param.requires_grad=False
+        for param in self.gamma_mamba.parameters():
+            param.requires_grad = False
+        for param in self.gamma_net.parameters():
+            param.requires_grad = False
+        for param in self.omega_net.parameters():
+            param.requires_grad=False
         return
 
-    def forward(self,x,dt,use_trend_filtering=False,trend_level=1):
+    def forward(self,x,dt):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
@@ -834,13 +837,6 @@ class rkhs_ouroboros(simple_ouroboros):
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
         weighted_kernels /= self.tau
 
-        if self.trend_filtering:
-            omega_diffs,gamma_diffs = torch.diff(omega,dim=1,n=trend_level),torch.diff(gamma,dim=1,n=trend_level)
-            #weight_diffs = torch.diff(weights,dim=1,n=trend_level)
-            tf = omega_diffs.abs().sum() + gamma_diffs.abs().sum() #+ weight_diffs.abs().sum()
-        else:
-            omega=smooth(omega.abs(),smooth_len)
-            gamma = smooth(gamma,smooth_len)
                 #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
         ## should i be modifying z above? before i give it to the kernel?
        
@@ -849,12 +845,10 @@ class rkhs_ouroboros(simple_ouroboros):
         z2 = z[:,:,1:]
 
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
-        if self.trend_filtering:
-            return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),tf
-        else:
-            return yhat,torch.cat([omegaControl,gammaControl,kernelControl]),torch.tensor([0]).to(self.device)
 
-    def get_funcs(self,x,dt,scaled = True):
+        return yhat,torch.cat([omegaControl,gammaControl,kernelControl])
+
+    def get_funcs(self,x,dt,scaled = True,smoothing=False):
 
         B,L,D = x.shape
         # x: x_0, x_dt, x_2dt,...
@@ -878,13 +872,13 @@ class rkhs_ouroboros(simple_ouroboros):
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
         
-        if not self.trend_filtering:
+        if smoothing:
             omega=smooth(omega.abs(),smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
 
         weighted_kernels,_ = self.kernel(x_in,kernelControl,smooth_len)#*self.tau
-        if not self.trend_filtering:
-            weighted_kernels = smooth(weighted_kernels,smooth_len)
+        #if not self.trend_filtering:
+        #    weighted_kernels = smooth(weighted_kernels,smooth_len)
         if scaled:
             omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
@@ -914,7 +908,7 @@ class rkhs_ouroboros(simple_ouroboros):
 
         return
     
-    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False):
+    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True):
 
         smooth_len = int(round(self.smooth_len/dt))
         B,_,D = x.shape
@@ -930,7 +924,7 @@ class rkhs_ouroboros(simple_ouroboros):
         #    yhat,omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
         #else:
         yhat,*_ = self.forward(x[:1,:,:],dt)
-        omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled)
+        omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled,smoothing=smoothing)
         omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
                         weighted_kernels.detach().cpu().numpy().squeeze()
     
