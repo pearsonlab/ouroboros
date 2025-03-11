@@ -5,7 +5,7 @@ from tqdm import tqdm
 from utils import deriv_approx_d2y,deriv_approx_dy,sst,sse,euler_step_k
 import matplotlib.pyplot as plt
 import os
-from model.constrained_model import rkhs_ouroboros
+from model.constrained_model import rkhs_ouroboros,simple_ouroboros
 from model.filters import filter as filt
 from model.kernels import *
 from torch.optim import Adam
@@ -33,25 +33,34 @@ def save_model(model,opt,location):
     sd = {'ouroboros':model.state_dict(),
         'opt':opt.state_dict(),
         'tau':model.tau,
-        'smooth_len':model.smooth_len,
-        'n_kernel':model.kernel.nTerms
+        'smooth_len':model.smooth_len
     }
+    try:
+        sd['n_kernel'] = model.kernel.nTerms
+    except:
+        pass
         
     torch.save(sd,location)
 
 def load_model(location,kernel_type='gauss'):
 
     sd = torch.load(location,weights_only=False)
-    if kernel_type == 'gauss':
-        kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
-    else:
-        kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
-    
+    try:
+        if kernel_type == 'gauss':
+            kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
+        else:
+            kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
+        
 
-    model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
-                d_conv=4,expand_factor=1,tau=1000,\
-                            smooth_len=sd['smooth_len'],kernel=kernel,
-                            trend_filtering=1)
+        model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
+                    d_conv=4,expand_factor=1,tau=sd['tau'],\
+                                smooth_len=sd['smooth_len'],kernel=kernel,
+                                trend_filtering=1)
+    except:
+        model = simple_ouroboros(d_data=1,n_layers=1,d_state=1,\
+                d_conv=4,expand_factor=1,tau=sd['tau'],\
+                            smooth_len=sd['smooth_len'])
+
     opt = Adam(model.parameters(),
                 lr=1e-3)
     scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
@@ -118,13 +127,10 @@ def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
                     plt.close()
 
 
-def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
-          nEpochs=100,val_freq=25,mask_prob_aud = 0.1,
-          init_len = 200,runDir='.',dt=1/44100,vis_freq=100,
-          use_trend_filtering=False,
-          trend_level=1,alpha=1):
+def train(model,optimizer,loss_fn,loaders,scheduler=None,
+          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100):
     
-    print(f'training with trend filtering alpha = {alpha}')
+    #print(f'training with trend filtering alpha = {alpha}')
 
     writer = SummaryWriter(log_dir=runDir)
 
@@ -149,7 +155,7 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
-            y2hat,state_pred,trend_penalty = model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
+            y2hat,state_pred = model(x,dt) #state: B x L x SD
             
             # change: scaling to "true" d2y
             y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
@@ -208,15 +214,15 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
             ##################################
             
             loss = loss_fn(y,yhat[:,:L,:]) 
-            alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
-            l = loss + alpha*trend_penalty
+            #alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
+            l = loss# + alpha*trend_penalty
             #print(l)
             l.backward()
             optimizer.step()
             tot = sst(y)
-            train_losses.append((1 - loss.item()/tot.item(),trend_penalty.item()))
+            train_losses.append((1 - loss.item()/tot.item()))
             writer.add_scalar('Loss/train',1 - loss.item()/tot.item(),idx)
-            writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
+            # writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
 
         if epoch % val_freq == 0:
             model.eval()
@@ -235,7 +241,7 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
                     dy2 = deriv_approx_d2y(y)/(dt**2)
                     # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
                     
-                    y2hat,state_pred,penalty = model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
+                    y2hat,state_pred = model(x,dt) #state: B x L x SD
             
                     ## scaling to "true" d2y
                     y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
@@ -298,7 +304,7 @@ def train(model,optimizer,loss_fn,loaders,filter=None,scheduler=None,
                     penalty = abscorr[:,inds[0],inds[1]].sum(dim=-1).mean()
                     """
                     
-                    vp += penalty.item()
+                    #vp += penalty.item()
                     
                     
             if scheduler:
