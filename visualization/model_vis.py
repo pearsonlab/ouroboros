@@ -32,7 +32,7 @@ def loss_plot(train_loss,val_loss,save_loc='',show=True):
     train_loss,val_loss = np.array(train_loss),np.array(val_loss)
 
     ax = plt.gca()
-    ax.plot(train_loss[:,0],color='tab:blue',label="Train loss")
+    ax.plot(train_loss,color='tab:blue',label="Train loss")
     ax.plot(val_loss[:,0],val_loss[:,1],color='tab:orange',label ='Validation loss')
     #ax.set_xlabel("Gradient steps")
     #ax.set_ylabel("Loss (MSE)")
