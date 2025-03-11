@@ -31,7 +31,7 @@ def eval_model_error(dls,model,dt,comparison='val'):
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
             #change: scaling to "true" d2y
             dy2 = deriv_approx_d2y(x)/(dt**2)
-            y2hat,state_pred,trend_penalty = model(x,dt,use_trend_filtering=model.trend_filtering) #state: B x L x SD
+            y2hat,state_pred = model(x,dt) #state: B x L x SD
             
             # change: scaling to "true" d2y
             y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
@@ -64,7 +64,7 @@ def eval_model_error(dls,model,dt,comparison='val'):
             dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
-            y2hat,state_pred,penalty = model(x,dt,use_trend_filtering=model.trend_filtering) #state: B x L x SD
+            y2hat,state_pred = model(x,dt) #state: B x L x SD
     
             ## scaling to "true" d2y
             y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
@@ -126,8 +126,8 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
         test_x,test_y = test_b 
         train_x,test_x = train_x.view(1,len(train_x),1),test_x.view(1,len(test_x),1)
         
-        test_y_modelint,*_ = model.integrate(test_x.to('cuda').to(torch.float32),dt,with_residual=False,method='RK45',st=0.0)
-        train_y_modelint,*_ = model.integrate(train_x.to('cuda').to(torch.float32),dt,with_residual=False,method='RK45',st=0.0)
+        test_y_modelint,*_ = model.integrate(test_x.to('cuda').to(torch.float32),dt,with_residual=False,method='RK45',st=0.0,smoothing=True)
+        train_y_modelint,*_ = model.integrate(train_x.to('cuda').to(torch.float32),dt,with_residual=False,method='RK45',st=0.0,smoothing=True)
         test_dy2,train_dy2 = deriv_approx_d2y(test_x)/(dt**2), deriv_approx_d2y(train_x)/(dt**2)
         test_dy2,train_dy2 = test_dy2.detach().cpu().numpy().squeeze(),train_dy2.detach().cpu().numpy().squeeze()
         test_dy,train_dy = deriv_approx_dy(test_x)/(dt), deriv_approx_dy(train_x)/(dt)
