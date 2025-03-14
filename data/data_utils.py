@@ -2,6 +2,7 @@ from torch.utils.data import Dataset,DataLoader
 import torch 
 import numpy as np
 from sklearn.model_selection import train_test_split
+from scipy.interpolate import make_interp_spline
 
 
 class aud_neur_ds(Dataset):
@@ -22,6 +23,19 @@ class aud_neur_ds(Dataset):
 
         return x,y
     
+    def interpolate_oversample(self,oversample_prop,dt):
+
+        L = self.data.shape[1]
+        new_data = []
+        for d in self.data:
+            old_t = np.arange(0,L*dt+dt/2,dt)[:L]
+            new_t = np.arange(0,L*dt+dt/2,dt/oversample_prop)[:L*oversample_prop]
+            spl = make_interp_spline(old_t,d)
+            new_data.append(spl(new_t))
+
+        self.data = np.stack(new_data,axis=0)
+            
+
 def time_stretch(data,true_dt,fake_dt):
 
     L = len(data)
@@ -44,7 +58,8 @@ def adjusted_euler_integrate(y0,dy,d2y,dt=1):
 
     return y0 + np.cumsum(dy_adjusted,axis=1)
 
-def get_loaders(data,num_workers=4,batch_size=32,train_size=0.8,cv = False,seed=None):
+def get_loaders(data,num_workers=4,batch_size=32,train_size=0.8,\
+                cv = False,seed=None,oversample_prop=1,dt=1/44100):
 
     dls = {}
     
@@ -56,8 +71,13 @@ def get_loaders(data,num_workers=4,batch_size=32,train_size=0.8,cv = False,seed=
     if cv:
         X_val, X_test = train_test_split(X_test,test_size=0.5,random_state=seed)
         dsVal = aud_neur_ds(X_val)
+        if oversample_prop > 1:
+            dsVal.interpolate_oversample(oversample_prop=oversample_prop,dt=dt)
         dls['val'] = DataLoader(dsVal,num_workers=num_workers,batch_size=batch_size,shuffle=False)
     dsTrain,dsTest = aud_neur_ds(X_train),aud_neur_ds(X_test)
+    if oversample_prop > 1:
+        dsTrain.interpolate_oversample(oversample_prop=oversample_prop,dt=dt)
+        dsTest.interpolate_oversample(oversample_prop=oversample_prop,dt=dt)
     dls['train'] = DataLoader(dsTrain,num_workers=num_workers,batch_size=batch_size,shuffle=True)
     dls['test'] = DataLoader(dsTest,num_workers=num_workers,batch_size=batch_size,shuffle=False)
 

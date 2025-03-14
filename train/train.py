@@ -54,8 +54,7 @@ def load_model(location,kernel_type='gauss'):
 
         model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
                     d_conv=4,expand_factor=1,tau=sd['tau'],\
-                                smooth_len=sd['smooth_len'],kernel=kernel,
-                                trend_filtering=1)
+                                smooth_len=sd['smooth_len'],kernel=kernel)
     except:
         model = simple_ouroboros(d_data=1,n_layers=1,d_state=1,\
                 d_conv=4,expand_factor=1,tau=sd['tau'],\
@@ -329,13 +328,13 @@ def train_ksteps(model,filter,optimizer,loaders,scheduler=None,
 
     loss_fn = lambda y,yhat: sse(yhat,y,reduction='none')
     loss_scale = torch.FloatTensor([1,dt,dt**2])[None,:].to('cuda')
-    
+    vis_test=False
     for epoch in tqdm(range(nEpochs),desc='training model'):
 
         model.train()
-
+        
         for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
-
+            
             optimizer.zero_grad()
             x,y = batch # each is bsz x seq len x n neurons + 1
             bsz,_,n = x.shape
@@ -370,7 +369,9 @@ def train_ksteps(model,filter,optimizer,loaders,scheduler=None,
             L = y.shape[1]
 
             if vis_freq > 0:
+
                 if (idx % vis_freq) == 0:
+                    vis_test=True
                     sse_sample = sse(yhat[:1,:,:1],y_target[:1,:,:1])
                     sst_sample = sst(y_target[:1,:,:1])
                     r2_sample = (1 - sse_sample/sst_sample).item()
@@ -440,7 +441,7 @@ def train_ksteps(model,filter,optimizer,loaders,scheduler=None,
                     # y starts as x[1:0]
                     #y = torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
                     L = y.shape[1]
-                    if vis_freq > 0:
+                    if vis_freq > 0 & vis_test:
                         if idx == epoch*len(loaders['train']):
                             sse_sample = sse(yhat[:1,:,:1],y_target[:1,:,:1])
                             sst_sample = sst(y_target[:1,:,:1])
@@ -455,6 +456,7 @@ def train_ksteps(model,filter,optimizer,loaders,scheduler=None,
                             ax.legend()
                             plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}_test.svg"))
                             plt.close()
+                        vis_test=False
                     y_loss = (loss_fn(y_target,yhat).sum(dim=-1)/ksteps).mean()
                     dy_loss = (loss_fn(dy_target,dyhat).sum(dim=-1)*dt/ksteps).mean()
                     d2y_loss = (loss_fn(dy2,y2hat).sum(dim=-1)*dt**2).mean()

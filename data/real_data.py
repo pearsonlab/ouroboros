@@ -12,22 +12,20 @@ from scipy.io import loadmat
 from utils import butter_filter
 import random
 
-def get_audio(audio,fs,onset,offset,env=False,envelope = []):
+def get_audio(audio,fs,onset,offset,context_len=0.3):
 
     audiotimes = np.linspace(0,len(audio)/fs,len(audio))
-    on,off = np.searchsorted(audiotimes,onset),np.searchsorted(audiotimes,offset)
-    a,t = audio[on:off],\
-        audiotimes[on:off]
-    if env:
-        assert len(envelope) == len(audio)
-
-        e = envelope[on:off]
-        a = np.vstack([e,a]).T
-    else:
-        a = a[:,None]
+    difference = (offset - onset) - context_len
+    if difference <= 0:
+        onset += difference #context_len//2
+    #on,off = np.searchsorted(audiotimes,onset),np.searchsorted(audiotimes,offset)
+    on = int(round(onset * fs))
+    off = int(round(offset * fs))
+    
+    a = audio[on:off]
 
     #print(a.shape)
-    return a,t
+    return a[:,None]
 
 def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False):
 
@@ -38,12 +36,15 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False):
     
 
     chunk_len = int(round(context_len * fs))
-    analytic_signal = hilbert(audio)
-    envelope=np.abs(analytic_signal)
+    if env:
+        analytic_signal = hilbert(audio)
+        envelope=np.abs(analytic_signal)
+    else:
+        envelope=[]
     
-    for onset,offset in onOffs:
+    for onset,offset in tqdm(onOffs,desc='iterating through onsets & offsets for file',total=len(onOffs)):
 
-        aud,spec_times = get_audio(audio,fs,onset,offset,env=env,envelope=envelope)
+        aud = get_audio(audio,fs,onset,offset,context_len)
         
         cut_len = np.mod(aud.shape[0],chunk_len)
         #print(aud[:minLen].shape)
@@ -117,8 +118,8 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
     if '.mat' not in audio_type:
-        for w,v in tqdm(zip(wavs,segs),desc='Getting audio from wav files'):
-
+        for ii,(w,v) in enumerate(zip(wavs,segs)):
+            print(f"file number {ii+1}")
             if '.wav' in audio_type:
                 sr,audio = wavfile.read(w)
             elif '.flac' in audio_type:

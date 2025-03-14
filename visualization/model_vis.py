@@ -37,7 +37,7 @@ def loss_plot(train_loss,val_loss,save_loc='',show=True):
     #ax.set_xlabel("Gradient steps")
     #ax.set_ylabel("Loss (MSE)")
 
-    format_axes(ax,xlabel="Gradient steps",ylabel="Loss (MSE)")
+    format_axes(ax,xlabel="Gradient steps",ylabel="Model performance (R2)",ylims=(0,1))
     plt.legend()
     plt.savefig(os.path.join(save_loc,'train_test_loss.svg'))
     if show:

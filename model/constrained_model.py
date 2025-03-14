@@ -623,13 +623,14 @@ class simple_ouroboros(nn.Module):
     def visualize(self,x,dt):
 
         B,L,D = x.shape
-        
+        L-= 8
         with torch.no_grad():
             terms = self.get_funcs(x[:1,:,:],dt)
             terms = [t.detach().cpu().numpy().squeeze() for t in terms]
             
             torch.cuda.empty_cache()
 
+        #B,L,D = terms[0].shape
         on = np.random.choice(L-45)
         t_ax = np.arange(on,on+40,1)*dt
         for ii,(t,n) in enumerate(zip(terms,self.names)):
@@ -884,29 +885,6 @@ class rkhs_ouroboros(simple_ouroboros):
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
         return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
-    
-
-    def visualize(self,x,dt):
-
-        B,L,D = x.shape
-        
-        with torch.no_grad():
-            terms = self.get_funcs(x[:1,:,:],dt)
-            terms = [t.detach().cpu().numpy().squeeze() for t in terms]
-            
-            torch.cuda.empty_cache()
-
-        on = np.random.choice(L-45)
-        t_ax = np.arange(on,on+40,1)*dt
-        for ii,(t,n) in enumerate(zip(terms,self.names)):
-            if ii not in [3]:
-                ax = plt.gca()
-                ax.plot(t_ax,t[on:on+40]/(2*np.pi))
-                ax.set_title(n)
-                #plt.show()
-                plt.close()
-
-        return
     
     def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True):
 
