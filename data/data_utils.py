@@ -62,7 +62,10 @@ def get_loaders(data,num_workers=4,batch_size=32,train_size=0.8,\
                 cv = False,seed=None,oversample_prop=1,dt=1/44100):
 
     dls = {}
-    
+    if oversample_prop > 1:
+        print('oversampling') 
+    else:
+        pass
     test_size = 1 - train_size
     val_size= test_size/2
     X_train,X_test = train_test_split(data,test_size=test_size,random_state=seed)
