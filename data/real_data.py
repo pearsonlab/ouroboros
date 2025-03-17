@@ -119,10 +119,11 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     #print(f'number of segs: {len(segs)}')
     if '.mat' not in audio_type:
         for ii,(w,v) in enumerate(zip(wavs,segs)):
-            print(f"file number {ii+1}")
+            
             if '.wav' in audio_type:
                 sr,audio = wavfile.read(w)
             elif '.flac' in audio_type:
+                print(f"file number {ii+1}")
                 audio,sr = sf.read(w)
             if audio.dtype == np.int16:
                 audio = audio/-np.iinfo(audio.dtype).min
