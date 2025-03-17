@@ -27,11 +27,11 @@ def get_audio(audio,fs,onset,offset,context_len=0.3):
     #print(a.shape)
     return a[:,None]
 
-def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False):
+def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,current_total=0):
 
     spikes = []
     auds = []
-    ii = 0
+    ii = current_total
     total_vocs = len(onOffs)
     
 
@@ -42,7 +42,7 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False):
     else:
         envelope=[]
     
-    for onset,offset in tqdm(onOffs,desc='iterating through onsets & offsets for file',total=len(onOffs)):
+    for onset,offset in onOffs:
 
         aud = get_audio(audio,fs,onset,offset,context_len)
         
@@ -57,7 +57,8 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False):
 
             auds.append(aud)
             
-            ii += 1
+            ii += len(aud)
+            print(f'current_total: {ii} samples',end='\r',flush=True)
             if ii >= max_pairs:
                 break
 
@@ -117,13 +118,14 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     audio_segs = []
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
+    current_total=0
     if '.mat' not in audio_type:
         for ii,(w,v) in enumerate(zip(wavs,segs)):
             
             if '.wav' in audio_type:
                 sr,audio = wavfile.read(w)
             elif '.flac' in audio_type:
-                print(f"file number {ii+1}")
+                #print(f"file number {ii+1}")
                 audio,sr = sf.read(w)
             if audio.dtype == np.int16:
                 audio = audio/-np.iinfo(audio.dtype).min
@@ -137,9 +139,11 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
                 if onoffs.shape[1] == 3:
                     onoffs = onoffs[:,:2]
                 
-                audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope)
+                audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope,current_total=current_total)
         
                 audio_segs += audios
+                assert len(audio_segs) >= current_total,print("wtf")
+                current_total = len(audio_segs)
                 if len(audio_segs) >= max_pairs:
                     return audio_segs[:max_pairs],sr
     else:
