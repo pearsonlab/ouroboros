@@ -615,6 +615,8 @@ class simple_ouroboros(nn.Module):
 
         if scaled:
             omega,gamma = omega*self.tau,gamma*self.tau
+        else:
+            omega,gamma = omega*(self.tau *dt),gamma*(self.tau*dt)
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
         return omega[:,L:,:],gamma[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:]],dim=-1)
@@ -623,9 +625,9 @@ class simple_ouroboros(nn.Module):
     def visualize(self,x,dt):
 
         B,L,D = x.shape
-        L-= 8
+        L = 1000 - 8
         with torch.no_grad():
-            terms = self.get_funcs(x[:1,:,:],dt)
+            terms = self.get_funcs(x[:1,:1000,:],dt)
             terms = [t.detach().cpu().numpy().squeeze() for t in terms]
             
             torch.cuda.empty_cache()
@@ -668,13 +670,18 @@ class simple_ouroboros(nn.Module):
         start = int(round(st/dt))
         omega,gamma,smoothed_residual = omega[start:],gamma[start:],smoothed_residual[start:]
 
-        t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+        if scaled:
+            t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+        else:
+            t_steps = np.arange(0,L,1)[:L][start:]
+
         omegaTerp = lambda t: np.interp(t,t_steps,omega)
         gammaTerp = lambda t: np.interp(t,t_steps,gamma)
         if with_residual:
             residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
         z0 = z[0,start,:]
-        z0[-1] /= dt
+        if scaled:
+            z0[-1] /= dt
 
         #tau = self.tau#.detach().cpu().numpy()
 
@@ -701,8 +708,11 @@ class simple_ouroboros(nn.Module):
             return np.hstack([dz1,dz2])
         
         s = time.time()
-        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
-        #print(f'integrated in {np.round(time.time() - s,2)} s')
+        if scaled:
+            obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+        else:
+            obj = solve_ivp(dz,(start,L),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+
         if with_residual:
             return obj.y,omega,gamma,smoothed_residual,obj.status
         return obj.y,omega,gamma,obj.status
@@ -718,7 +728,7 @@ class simple_ouroboros(nn.Module):
 
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
-        omega,gamma= [],[],[],[]
+        omegas,gammas= [],[]
         
         for ii in range(L):
             s = x_in[:,ii,:]
@@ -730,28 +740,28 @@ class simple_ouroboros(nn.Module):
             gamma = self.gamma_net(gamma)
             
             s = z[:,ii:ii+1,:]
-            omega.append(omega.detach().cpu().numpy())
-            gamma.append(gamma.detach().cpu().numpy())
+            omegas.append(omega.detach().cpu().numpy())
+            gammas.append(gamma.detach().cpu().numpy())
             
 
         z[:,:,1]/=dt 
-        omega= np.stack(omega,axis=1)
-        gamma = np.stack(gamma,axis=1)
+        omegas= np.stack(omegas,axis=1)
+        gammas = np.stack(gammas,axis=1)
 
-        z1 = z[:,:,:1]/dt
-        z2 = z[:,:,1:]
+        z1 = z[:,:,:1].detach().cpu().numpy().squeeze()/dt
+        z2 = z[:,:,1:].detach().cpu().numpy().squeeze()
 
-        yhat = -(omega**2)*z1 - gamma * z2 
+        yhat = -(omegas**2)*z1 - gammas * z2 
 
         if smoothing:
-            omega=smooth(omega,smooth_len)#*self.tau
-            gamma = smooth(gamma,smooth_len)#*self.tau
+            omegas=smooth(omegas,smooth_len)#*self.tau
+            gammas = smooth(gammas,smooth_len)#*self.tau
         
         if scaled:
-            omega *= self.tau
-            gamma *= self.tau 
+            omegas *= self.tau
+            gammas *= self.tau 
 
-        return yhat,omega,gamma
+        return yhat,omegas,gammas
 
 
 
@@ -882,6 +892,9 @@ class rkhs_ouroboros(simple_ouroboros):
         #    weighted_kernels = smooth(weighted_kernels,smooth_len)
         if scaled:
             omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
+        else:
+            omega,gamma = omega*(self.tau*dt),gamma*(self.tau*dt)
+            weighted_kernels = weighted_kernels*(self.tau*dt**2)
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
         return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
@@ -914,14 +927,18 @@ class rkhs_ouroboros(simple_ouroboros):
         start = int(round(st/dt))
         omega,gamma,weighted_kernels,smoothed_residual = omega[start:],gamma[start:],weighted_kernels[start:],smoothed_residual[start:]
 
-        t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+        if scaled:
+            t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+        else:
+            t_steps = np.arange(0,L,1)[:L][start:]
         omegaTerp = lambda t: np.interp(t,t_steps,omega)
         gammaTerp = lambda t: np.interp(t,t_steps,gamma)
         weighted_kernelsTerp = lambda t: np.interp(t,t_steps,weighted_kernels)
         if with_residual:
             residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
         z0 = z[0,start,:]
-        z0[-1] /= dt
+        if scaled:
+            z0[-1] /= dt
 
         #tau = self.tau#.detach().cpu().numpy()
 
@@ -949,7 +966,11 @@ class rkhs_ouroboros(simple_ouroboros):
             return np.hstack([dz1,dz2])
         
         s = time.time()
-        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+        if scaled:
+            obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+        else:
+            obj = solve_ivp(dz,(start,L),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method=method,atol=1e-5)
+
         #print(f'integrated in {np.round(time.time() - s,2)} s')
         if with_residual:
             return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
@@ -968,45 +989,45 @@ class rkhs_ouroboros(simple_ouroboros):
         
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
-        omega,gamma,weights,kernel= [],[],[],[]
+        omegas,gammas,weights,kernel= [],[]
         
         for ii in range(L):
             s = x_in[:,ii,:]
 
             omega,omega_cache = self.omega_mamba.step(s,omega_cache)
             gamma,gamma_cache = self.omega_mamba.step(s,gamma_cache)
-            weights,weights_cache = self.omega_mamba.step(s,weights_cache)
+            w,weights_cache = self.omega_mamba.step(s,weights_cache)
 
             omega = self.omega_net(omega).abs()
             gamma = self.gamma_net(gamma)
             
             s = z[:,ii:ii+1,:]
-            weights.append(weights.detach().cpu().numpy())
-            omega.append(omega.detach().cpu().numpy())
-            gamma.append(gamma.detach().cpu().numpy())
-            weighted_kernels,_ = self.kernel(s,weights[:,None,:],smooth_len)
+            weights.append(w.detach().cpu().numpy())
+            omegas.append(omega.detach().cpu().numpy())
+            gammas.append(gamma.detach().cpu().numpy())
+            weighted_kernels,_ = self.kernel(s,w[:,None,:],smooth_len)
             kernel.append(weighted_kernels.detach().cpu().numpy())
             
 
         z[:,:,1]/=dt 
-        omega= np.stack(omega,axis=1)
-        gamma = np.stack(gamma,axis=1)
+        omegas= np.stack(omegas,axis=1)
+        gammas = np.stack(gammas,axis=1)
         weights = np.stack(weights,dim=1)
         kernel = np.stack(kernel,dim=1)
 
-        z1 = z[:,:,:1]/dt
-        z2 = z[:,:,1:]
+        z1 = z[:,:,:1].detach().cpu().numpy().squeeze()/dt
+        z2 = z[:,:,1:].detach().cpu().numpy().squeeze()
 
-        yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
+        yhat = -(omegas**2)*z1 - gammas * z2 - weighted_kernels
 
         if not self.trend_filtering:
-            omega=smooth(omega,smooth_len)#*self.tau
-            gamma = smooth(gamma,smooth_len)#*self.tau
+            omegas=smooth(omegas,smooth_len)#*self.tau
+            gammas = smooth(gammas,smooth_len)#*self.tau
         
         if scaled:
-            omega *= self.tau
-            gamma *= self.tau 
+            omegas *= self.tau
+            gammas *= self.tau 
             kernel *= self.tau 
             weights *= self.tau
-        return yhat,omega,gamma,weights,kernel
+        return yhat,omegas,gammas,weights,kernel
 
