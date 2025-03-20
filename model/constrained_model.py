@@ -887,17 +887,19 @@ class rkhs_ouroboros(simple_ouroboros):
             omega=smooth(omega.abs(),smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
 
-        weighted_kernels,_ = self.kernel(x_in,kernelControl,smooth_len)#*self.tau
+        weighted_kernels,weights = self.kernel(x_in,kernelControl,smooth_len)#*self.tau
         #if not self.trend_filtering:
         #    weighted_kernels = smooth(weighted_kernels,smooth_len)
         if scaled:
             omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
+            weights = weights *self.tau
         else:
             omega,gamma = omega*(self.tau*dt),gamma*(self.tau*dt)
             weighted_kernels = weighted_kernels*(self.tau*dt**2)
+            weights = weights *(self.tau * dt**2)
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
-        return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
+        return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],weights[:,:L,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
     
     def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True):
 

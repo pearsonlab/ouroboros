@@ -183,60 +183,16 @@ class constantWeights(nn.Module):
         self.nTerms = nTerms
         self.weights = nn.Parameter(torch.rand((1,1,2*self.d,nTerms),device=self.device),\
                                    requires_grad=True)
+    
+    def forward(self,x):
+
+        B,L,_ = x.shape
+        return self.weights.expand(B,L,-1,-1)
 class constantGaussModule(simpleGaussModule):
 
     def __init__(self,nTerms,device,x_dim,z_dim,activation=nn.ReLU(),trend_filtering=True):
 
         super().__init__(nTerms,device,x_dim,z_dim,activation,trend_filtering)
         
-        self.weights = nn.Linear(self.n,self.d*self.nTerms).to(self.device)
-
-    def forward(self,x,z,smooth_len):
-        B,L,d = x.shape
-        _,_,n = z.shape
-        weights = self.activation(self.weights(z))
-        if not self.trend_filtering:
-            weights = smooth(weights,smooth_len)
-        weights = weights.view(B,L,self.d,self.nTerms)
-        
-        gauss_mat = torch.linalg.norm((x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)/ (2*torch.exp(2*self.log_sigmas)),dim=2,keepdims=True)**2 
-        kernels = torch.exp(-gauss_mat) #/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
-
-        x = torch.einsum('bldp,bldp->bld', weights,kernels)
-
-
-        return x,weights
-    
-    def forward_given_weights(self,x,weights):
-
-        B,L,d = x.shape
-        if weights.shape != (B,L,self.d,self.nTerms):
-            weights = weights.view(B,L,self.d,self.nTerms)
-
-        gauss_mat = torch.linalg.norm((x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)/ (2*torch.exp(2*self.log_sigmas)),dim=2,keepdims=True)**2 
-        kernels = torch.exp(-gauss_mat) #/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
-
-        x = torch.einsum('bldp,bldp->bld', weights,kernels)
-
-        return x
-    
-    def forward_given_weights_numpy(self,x,weights):
-        # x must at least be Bx2D
-        mus,log_sigmas = self.mus.detach().cpu().numpy(),self.log_sigmas.detach().cpu().numpy()
-        if len(x.shape)!=3:
-            x = np.reshape(x,(x.shape[0],-1,2*self.d))
-        B,L,d = x.shape
-        if weights.shape != (B,L,self.d,self.nTerms):
-            weights = np.reshape(weights,(B,L,self.d,self.nTerms))
-            
-        gauss_mat = np.linalg.norm((np.tile(x[:,:,:,None],(1,1,1,self.nTerms)) - mus)/ (2*np.exp(2*log_sigmas)),axis=2,keepdims=True)**2
-        kernels = np.exp(-gauss_mat)
-        
-        x = np.einsum('bldp,bldp->bld', weights,kernels)
-        
-        return x
-    
-    def get_log_sigmas(self):
-
-        return self.log_sigmas
+        self.weights = constantWeights(self.d,self.nTerms).to(self.device)
 

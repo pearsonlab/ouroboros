@@ -88,6 +88,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
     if kernel_type == 'gauss':
         kernel = simpleGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
+    elif kernel_type == 'constant_gauss':
+        kernel = constantGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
     else:
         kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
     
@@ -131,6 +133,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
     if kernel_type == 'gauss':
         kernel = simpleGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
+    elif kernel_type == 'constant_gauss':
+        kernel = constantGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
     else:
         kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
     
