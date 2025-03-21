@@ -175,13 +175,14 @@ class simpleGaussModule(kernelModule):
 
 class constantWeights(nn.Module):
 
-    def __init__(self,dimension,nTerms):
+    def __init__(self,dimension,nTerms,device='cuda'):
 
         super().__init__()
 
         self.d = dimension
         self.nTerms = nTerms
-        self.weights = nn.Parameter(torch.rand((1,1,2*self.d,nTerms),device=self.device),\
+        self.device=device
+        self.weights = nn.Parameter(torch.rand((1,1,self.d,nTerms),device=self.device),\
                                    requires_grad=True)
     
     def forward(self,x):

@@ -48,6 +48,8 @@ def load_model(location,kernel_type='gauss'):
     try:
         if kernel_type == 'gauss':
             kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
+        elif kernel_type == 'constant_gauss':
+            kernel = constantGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
         else:
             kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
         
