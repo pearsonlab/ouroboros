@@ -901,7 +901,7 @@ class rkhs_ouroboros(simple_ouroboros):
 
         return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],weights[:,:L,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
     
-    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True):
+    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
 
         smooth_len = int(round(self.smooth_len/dt))
         B,_,D = x.shape
@@ -917,9 +917,14 @@ class rkhs_ouroboros(simple_ouroboros):
         #    yhat,omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
         #else:
         yhat,*_ = self.forward(x[:1,:,:],dt)
-        omega,gamma,weighted_kernels,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled,smoothing=smoothing)
+        omega,gamma,weighted_kernels,weights,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled,smoothing=smoothing)
+        #print(weights.shape)
+        weights = smooth(weights.squeeze(2),smooth_len)
         omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
                         weighted_kernels.detach().cpu().numpy().squeeze()
+        weights = weights.detach().cpu().numpy().squeeze()
+        #weights = np.zeros(weights.shape)
+        weightsTerp = []
     
         residual = xddot - yhat 
         smoothed_residual = smooth(residual,smooth_len).detach().cpu().numpy().squeeze()
@@ -928,14 +933,20 @@ class rkhs_ouroboros(simple_ouroboros):
         
         start = int(round(st/dt))
         omega,gamma,weighted_kernels,smoothed_residual = omega[start:],gamma[start:],weighted_kernels[start:],smoothed_residual[start:]
+        weights = weights[start:]
 
         if scaled:
             t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
+            t_eval = np.arange(0,L*dt+dt/2,dt/oversample_prop)[:L*oversample_prop][start*oversample_prop:]
+            dt_used = dt/oversample_prop
         else:
+            t_eval = np.arange(0,L,1/oversample_prop)[:L*oversample_prop][start*oversample_prop:]
             t_steps = np.arange(0,L,1)[:L][start:]
+            dt_used = 1/oversample_prop
         omegaTerp = lambda t: np.interp(t,t_steps,omega)
         gammaTerp = lambda t: np.interp(t,t_steps,gamma)
         weighted_kernelsTerp = lambda t: np.interp(t,t_steps,weighted_kernels)
+        weightsTerp = [lambda t: np.interp(t,t_steps,weights[:,ii]) for ii in range(weights.shape[1])]
         if with_residual:
             residTerp = lambda t: np.interp(t,t_steps,smoothed_residual)
         z0 = z[0,start,:]
@@ -948,17 +959,26 @@ class rkhs_ouroboros(simple_ouroboros):
 
             # t: time, should have a timestep of roughly dt. treat as ZOH
             # z: B x 2d
-            b_ind = int(t/dt)
-            
-            omega_step = omegaTerp(t) 
-            gamma_step = gammaTerp(t) 
-            weighted_kernels_step = weighted_kernelsTerp(t) 
+            b_ind = min(int(t/dt),L-1)
+            if strategy == 'interp':
+                omega_step = omegaTerp(t) 
+                gamma_step = gammaTerp(t)
+                weights_step = np.stack([terp(t) for terp in weightsTerp])
+            else:
+                omega_step= omega[b_ind]
+                gamma_step = gamma[b_ind]
+                weights_step=weights[b_ind]
 
             z1 = z[:1]
             
             z2 = z[1:] 
+            dz1 = z[1]
+
+            if scaled:
+                z[-1] *= dt
     
             #-(omega**2)*z1 - gamma * z2 - weighted_kernels
+            weighted_kernels_step = self.kernel.forward_given_weights_numpy(z[None,:],weights_step).squeeze()
             dz2 = -(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step
             dz1 = z[1]
             if with_residual:
