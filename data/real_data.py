@@ -27,7 +27,7 @@ def get_audio(audio,fs,onset,offset,context_len=0.3):
     #print(a.shape)
     return a[:,None]
 
-def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,current_total=0):
+def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,current_total=0,full_vocs=False):
 
     spikes = []
     auds = []
@@ -50,10 +50,12 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
         #print(aud[:minLen].shape)
         
         if aud.shape[0] >= chunk_len:
-            
-            aud = aud[: - cut_len]
+            if not full_vocs:
+                aud = aud[: - cut_len]
 
-            aud = aud.reshape(-1,chunk_len,aud.shape[-1])
+                aud = aud.reshape(-1,chunk_len,aud.shape[-1])
+            else:
+                aud = aud.reshape(1,-1,1)
 
             auds.append(aud)
             
@@ -103,7 +105,7 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
     return vocal_data, d[1]
 
 def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
-                        seg_type='.txt',seed=None):
+                        seg_type='.txt',seed=None,full_vocs=False):
 
     random.seed(seed)
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
@@ -139,11 +141,17 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
                 if onoffs.shape[1] == 3:
                     onoffs = onoffs[:,:2]
                 
-                audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,context_len=context_len,env=envelope,current_total=current_total)
-        
-                audio_segs += audios
-                assert len(audio_segs) >= current_total,print("wtf")
-                current_total = len(audio_segs)
+                audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
+                                       context_len=context_len,env=envelope,\
+                                        current_total=current_total,full_vocs=full_vocs)
+                if not full_vocs:
+                    audio_segs += audios
+
+                else:
+                    audio_segs.append(audios)
+                
+                current_total += len(audios)
+                #assert len(audio_segs) >= current_total,print("wtf")
                 if len(audio_segs) >= max_pairs:
                     return audio_segs[:max_pairs],sr
     else:
