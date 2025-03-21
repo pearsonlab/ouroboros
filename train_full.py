@@ -82,7 +82,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     print('performance after training omega, gamma')
     (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,model,dt=1/sr)
 
-    (train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,model,dt=1/sr,n_segs=25,st=0)
+    #(train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,model,dt=1/sr,n_segs=25,st=0)
 
     
 
@@ -96,7 +96,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     full_model=rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
                 d_conv=4,expand_factor=1,tau=tau,\
                             smooth_len=smooth_len,kernel=kernel)
-    print('loading pre-trained omega,gamma')
+    print('loading pre-trained kernelboros')
     full_model.load_omega_gamma(save_loc)
 
     full_opt = Adam(full_model.parameters(),
@@ -127,7 +127,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     print('evaluating full model....')
     (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model,dt=1/sr)
 
-    (train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,full_model,dt=1/sr,n_segs=25,st=0)
+    #(train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,full_model,dt=1/sr,n_segs=25,st=0)
 
     print("training comparison model end to end")
 
@@ -162,6 +162,11 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
         
         save_model(full_model,full_opt,save_loc)
+    print('evaluating end-to-end model....')
+    (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model,dt=1/sr)
+
+    #(train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,full_model,dt=1/sr,n_segs=25,st=0)
+
     return model, dls
 
 if __name__ == '__main__':
