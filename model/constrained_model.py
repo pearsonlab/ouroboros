@@ -1011,7 +1011,7 @@ class rkhs_ouroboros(simple_ouroboros):
         
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
-        omegas,gammas,weights,kernel= [],[]
+        omegas,gammas,weights,kernel= [],[],[],[]
         
         for ii in range(L):
             s = x_in[:,ii,:]
