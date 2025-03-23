@@ -549,7 +549,7 @@ class simple_ouroboros(nn.Module):
         self.smooth_len = smooth_len
         self.names = [rf"$\omega$",rf"$\gamma$",'states']
 
-    def forward(self,x,dt):
+    def forward(self,x,dt,smoothing=False):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
@@ -572,7 +572,9 @@ class simple_ouroboros(nn.Module):
 
         omega = self.omega_net(omegaControl).abs() # let's try rectifying here
         gamma = self.gamma_net(gammaControl)/self.tau # oops
-
+        if smoothing:
+            omega=smooth(omega,smooth_len)#*self.tau
+            gamma = smooth(gamma,smooth_len)#*self.
 
         #    omega=smooth(omega.abs(),smooth_len)
         #    gamma = smooth(gamma,smooth_len)
@@ -821,7 +823,7 @@ class rkhs_ouroboros(simple_ouroboros):
             param.requires_grad=False
         return
 
-    def forward(self,x,dt):
+    def forward(self,x,dt,smoothing=False):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
@@ -846,8 +848,12 @@ class rkhs_ouroboros(simple_ouroboros):
 
         omega = self.omega_net(omegaControl).abs() # let's try rectifying here
         gamma = self.gamma_net(gammaControl)/self.tau # oops
+        if smoothing:
+            omega=smooth(omega,smooth_len)#*self.tau
+            gamma = smooth(gamma,smooth_len)#*self.
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
         weighted_kernels /= self.tau
+        
 
                 #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
         ## should i be modifying z above? before i give it to the kernel?

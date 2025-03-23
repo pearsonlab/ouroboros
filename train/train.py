@@ -129,7 +129,7 @@ def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
 
 
 def train(model,optimizer,loss_fn,loaders,scheduler=None,
-          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100):
+          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100,smoothing=smoothing):
     
     #print(f'training with trend filtering alpha = {alpha}')
 
@@ -156,7 +156,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
-            y2hat,state_pred = model(x,dt) #state: B x L x SD
+            y2hat,state_pred = model(x,dt,smoothing) #state: B x L x SD
             
             # change: scaling to "true" d2y
             y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
@@ -242,7 +242,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     dy2 = deriv_approx_d2y(y)/(dt**2)
                     # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
                     
-                    y2hat,state_pred = model(x,dt) #state: B x L x SD
+                    y2hat,state_pred = model(x,dt,smoothing) #state: B x L x SD
             
                     ## scaling to "true" d2y
                     y2hat = y2hat * model.tau **2 #(model.tau*dt)**2

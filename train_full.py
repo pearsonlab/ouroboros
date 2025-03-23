@@ -18,7 +18,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
                 nEpochs=100, kernel_type='gauss',n_kernels=10,alpha=1e7,seed=None,\
                     save_loaders=False,smooth_len=0.005,vis_freq=0,tau=1000,
-                    lr=1e-3,oversample_prop = 1):
+                    lr=1e-3,oversample_prop = 1,smoothing=False):
 
     
     use_trend = True if trend_level > 0 else False
@@ -72,7 +72,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
         tl,vl,model,opt = train(model,opt,loss_fn=lambda y,yhat: sse(yhat,y,reduction='mean'),loaders=dls,scheduler=scheduler,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_simple,\
-                        dt = 1/sr,vis_freq=vis_freq)
+                        dt = 1/sr,vis_freq=vis_freq,smoothing=smoothing)
         
         loss_plot(tl,vl,save_loc=model_path_simple,show=False)
         
@@ -84,7 +84,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
     #(train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,model,dt=1/sr,n_segs=25,st=0)
 
-    
+    if smoothing:
+        use_trend=False
 
     if kernel_type == 'gauss':
         kernel = simpleGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
@@ -113,7 +114,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
         tl,vl,model,opt = train(full_model,full_opt,loss_fn=lambda y,yhat: sse(yhat,y,reduction='mean'),loaders=dls,scheduler=full_scheduler,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_full,\
-                        dt = 1/sr,vis_freq=vis_freq)
+                        dt = 1/sr,vis_freq=vis_freq,smoothing=smoothing)
         
         loss_plot(tl,vl,save_loc=model_path_full,show=False)
 
@@ -156,7 +157,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
         tl,vl,model,opt = train(full_model,full_opt,loss_fn=lambda y,yhat: sse(yhat,y,reduction='mean'),loaders=dls,scheduler=full_scheduler,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_full,\
-                        dt = 1/sr,vis_freq=vis_freq)
+                        dt = 1/sr,vis_freq=vis_freq,smoothing=smoothing)
         
         loss_plot(tl,vl,save_loc=model_path_full,show=False)
 
