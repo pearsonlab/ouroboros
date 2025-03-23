@@ -8,6 +8,7 @@ from model.kernels import *
 from scipy.integrate import solve_ivp
 import numpy as np
 import time
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 plt.rcParams['text.usetex'] = True
 from abc import ABC, abstractmethod
@@ -1013,7 +1014,7 @@ class rkhs_ouroboros(simple_ouroboros):
         B,L,D = x_in.shape
         omegas,gammas,weights,kernel= [],[],[],[]
         
-        for ii in range(L):
+        for ii in tqdm(range(L),total=len(L),desc=f"iterating through segment of length {L}"):
             s = x_in[:,ii,:]
 
             omega,omega_cache = self.omega_mamba.step(s,omega_cache)
