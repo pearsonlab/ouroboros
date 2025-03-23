@@ -129,7 +129,7 @@ def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
 
 
 def train(model,optimizer,loss_fn,loaders,scheduler=None,
-          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100,smoothing=smoothing):
+          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100,smoothing=False):
     
     #print(f'training with trend filtering alpha = {alpha}')
 
