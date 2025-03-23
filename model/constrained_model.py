@@ -1012,6 +1012,7 @@ class rkhs_ouroboros(simple_ouroboros):
         
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
+        L_true = L//2
         omegas,gammas,weights,kernel= [],[],[],[]
         
         for ii in tqdm(range(L),total=L,desc=f"iterating through segment of length {L}"):
@@ -1025,12 +1026,13 @@ class rkhs_ouroboros(simple_ouroboros):
             gamma = self.gamma_net(gamma)
             
             s = z[:,ii:ii+1,:]
-            weights.append(w.detach().cpu().numpy())
-            omegas.append(omega.detach().cpu().numpy())
-            gammas.append(gamma.detach().cpu().numpy())
-            weighted_kernels,_ = self.kernel(s,w[:,None,:],smooth_len)
-            kernel.append(weighted_kernels.detach().cpu().numpy())
-            
+            if ii >= L_true:
+                weights.append(w.detach().cpu().numpy())
+                omegas.append(omega.detach().cpu().numpy())
+                gammas.append(gamma.detach().cpu().numpy())
+                weighted_kernels,_ = self.kernel(s,w[:,None,:],smooth_len)
+                kernel.append(weighted_kernels.detach().cpu().numpy())
+                
 
         z[:,:,1]/=dt 
         omegas= np.stack(omegas,axis=1)
