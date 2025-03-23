@@ -1014,7 +1014,7 @@ class rkhs_ouroboros(simple_ouroboros):
         B,L,D = x_in.shape
         omegas,gammas,weights,kernel= [],[],[],[]
         
-        for ii in tqdm(range(L),total=len(L),desc=f"iterating through segment of length {L}"):
+        for ii in tqdm(range(L),total=L,desc=f"iterating through segment of length {L}"):
             s = x_in[:,ii,:]
 
             omega,omega_cache = self.omega_mamba.step(s,omega_cache)
