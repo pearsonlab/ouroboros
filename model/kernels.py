@@ -99,6 +99,29 @@ class polyModule(kernelModule):
         x = np.einsum('blp,bldp->bld',weights,power_mat)
         
         return x
+    
+class full_poly_module(polyModule):
+
+    def __init__(self,nTerms,device,x_dim,z_dim,lam=0.9,activation=nn.ReLU(),trend_filtering=True):
+
+        super().__init__(nTerms,device,x_dim,z_dim,activation,trend_filtering)
+        
+        self.poly_dim = nTerms
+        
+        self.weights = nn.Linear(self.n,(self.poly_dim)**2).to(self.device)
+        self.powers = torch.arange(1,self.poly_dim+1,device=self.device)
+        self.lam = lam
+
+    def forward(self,x,z,smooth_len):
+
+        B,L,d = x.shape
+        _,_,n = z.shape
+        weights = self.activation(self.weights(z))
+        weights=weights.view(B,L,self.poly_dim,self.poly_dim)
+
+        power_mat = (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim)).pow(self.powers)
+
+
         
     
 class fitPolyModule(polyModule):
@@ -188,7 +211,7 @@ class constantWeights(nn.Module):
     def forward(self,x):
 
         B,L,_ = x.shape
-        return self.weights.expand(B,L,-1,-1)
+        return self.weights.expand(B,L,-1,-1),
 class constantGaussModule(simpleGaussModule):
 
     def __init__(self,nTerms,device,x_dim,z_dim,activation=nn.ReLU(),trend_filtering=True):
@@ -196,4 +219,6 @@ class constantGaussModule(simpleGaussModule):
         super().__init__(nTerms,device,x_dim,z_dim,activation,trend_filtering)
         
         self.weights = constantWeights(self.d,self.nTerms).to(self.device)
+
+
 

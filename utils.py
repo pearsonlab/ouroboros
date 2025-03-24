@@ -86,7 +86,7 @@ def remove_axes(axis):
     axis.set_xticks([])
     axis.set_yticks([])
 
-def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,interp=True,normalize=True,min=-6.5,max=5,spec_type='log'):
+def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,interp=True,normalize=True,min=-6.5,max=5,spec_type='log',mel=False):
 
     """
     make a spectrogram for a given vocalization.

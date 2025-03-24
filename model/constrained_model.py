@@ -12,6 +12,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 plt.rcParams['text.usetex'] = True
 from abc import ABC, abstractmethod
+import gc
 
 
 class constrained_ouroboros(nn.Module):
@@ -876,9 +877,9 @@ class rkhs_ouroboros(simple_ouroboros):
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
         z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
         L = z.shape[1]
-        if L > int(round(1/dt)):
+        if L > int(round(8/dt)):
             print('using step by step functions')
-            omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
+            omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled,smoothing=smoothing)
             return omega,gamma,weighted_kernels,weights
         # x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) ## stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
@@ -1005,7 +1006,7 @@ class rkhs_ouroboros(simple_ouroboros):
             return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
         return obj.y,omega,gamma,weighted_kernels,obj.status
     
-    def funcs_by_step(self,z,dt,scaled=True):
+    def funcs_by_step(self,z,dt,scaled=True,smoothing=False):
 
         smooth_len = int(round(self.smooth_len/dt))
 
@@ -1022,17 +1023,22 @@ class rkhs_ouroboros(simple_ouroboros):
         omegas,gammas,weights,kernel= [],[],[],[]
         
         for ii in tqdm(range(L),total=L,desc=f"iterating through segment of length {L}"):
+            
+            if np.mod(ii,10000) == 0:
+                gc.collect()
             s = x_in[:,ii,:]
 
             omega,omega_cache = self.omega_mamba.step(s,omega_cache)
             gamma,gamma_cache = self.omega_mamba.step(s,gamma_cache)
             w,weights_cache = self.omega_mamba.step(s,weights_cache)
 
-            omega = self.omega_net(omega).abs()
-            gamma = self.gamma_net(gamma)
+            
             
             s = z[:,ii:ii+1,:]
             if ii >= L_true:
+                print(ii*dt)
+                omega = self.omega_net(omega).abs()
+                gamma = self.gamma_net(gamma)
                 weights.append(w.detach().cpu().numpy())
                 omegas.append(omega.detach().cpu().numpy())
                 gammas.append(gamma.detach().cpu().numpy())
@@ -1051,7 +1057,7 @@ class rkhs_ouroboros(simple_ouroboros):
 
         yhat = -(omegas**2)*z1 - gammas * z2 - weighted_kernels
 
-        if not self.trend_filtering:
+        if smoothing:
             omegas=smooth(omegas,smooth_len)#*self.tau
             gammas = smooth(gammas,smooth_len)#*self.tau
         

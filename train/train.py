@@ -54,12 +54,12 @@ def load_model(location,kernel_type='gauss'):
             kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
         
 
-        model = rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
-                    d_conv=4,expand_factor=1,tau=sd['tau'],\
+        model = rkhs_ouroboros(d_data=1,n_layers=2,d_state=1,\
+                    d_conv=4,expand_factor=4,tau=sd['tau'],\
                                 smooth_len=sd['smooth_len'],kernel=kernel)
     except:
-        model = simple_ouroboros(d_data=1,n_layers=1,d_state=1,\
-                d_conv=4,expand_factor=1,tau=sd['tau'],\
+        model = simple_ouroboros(d_data=1,n_layers=2,d_state=1,\
+                d_conv=4,expand_factor=4,tau=sd['tau'],\
                             smooth_len=sd['smooth_len'])
 
     opt = Adam(model.parameters(),
@@ -221,8 +221,8 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             l.backward()
             optimizer.step()
             tot = sst(y)
-            train_losses.append((1 - loss.item()/tot.item()))
-            writer.add_scalar('Loss/train',1 - loss.item()/tot.item(),idx)
+            train_losses.append(loss.item())
+            writer.add_scalar('Loss/train',loss.item(),idx)
             # writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
 
         if epoch % val_freq == 0:
@@ -275,7 +275,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     l = loss_fn(y,yhat[:,:L,:])
                     tot = sst(y)
 
-                    vl += 1 - l.item()/tot.item()
+                    vl += l.item()#1 - l.item()/tot.item()
 
                     """
                     ### trend filtering penalty
