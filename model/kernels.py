@@ -102,7 +102,7 @@ class polyModule(kernelModule):
     
 class fullPolyModule(polyModule):
 
-    def __init__(self,nTerms,device,x_dim,z_dim,lam=0.9,activation=nn.ReLU(),trend_filtering=True):
+    def __init__(self,nTerms,device,x_dim,z_dim,lam=10,activation=nn.ReLU(),trend_filtering=True):
 
         super().__init__(nTerms,device,x_dim,z_dim,activation,trend_filtering)
         
@@ -131,7 +131,7 @@ class fullPolyModule(polyModule):
 
         x = torch.einsum('blpp,blpp -> bl',weights,power_mat)
 
-        return x[:,:,None]
+        return x[:,:,None],self.lam *weights.abs()
 
 
     def forward_given_weights(self,x,weights):

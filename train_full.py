@@ -136,11 +136,16 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
     if kernel_type == 'gauss':
         kernel = simpleGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
+        reg_weights=False
     elif kernel_type == 'constant_gauss':
         kernel = constantGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
+        reg_weights=False
+    elif kernel_type == 'full_poly':
+        kernel = fullPolyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=10,trend_filtering=use_trend)
+        reg_weights=True
     else:
         kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
-    
+        reg_weights=False
     full_model=rkhs_ouroboros(d_data=1,n_layers=2,d_state=1,\
                 d_conv=4,expand_factor=4,tau=tau,\
                             smooth_len=smooth_len,kernel=kernel)
@@ -159,7 +164,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
 
         tl,vl,model,opt = train(full_model,full_opt,loss_fn=lambda y,yhat: sse(yhat,y,reduction='mean'),loaders=dls,scheduler=full_scheduler,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_full,\
-                        dt = 1/sr,vis_freq=vis_freq,smoothing=smoothing)
+                        dt = 1/sr,vis_freq=vis_freq,smoothing=smoothing,\
+                            reg_weights=reg_weights)
         
         loss_plot(tl,vl,save_loc=model_path_full,show=False)
 

@@ -41,6 +41,12 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
         envelope=np.abs(analytic_signal)
     else:
         envelope=[]
+
+    if full_vocs:
+        # extend onoffs in a sensible way
+        pass
+
+        #onOffs = 
     
     for onset,offset in onOffs:
 

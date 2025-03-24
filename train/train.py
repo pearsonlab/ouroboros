@@ -129,7 +129,7 @@ def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
 
 
 def train(model,optimizer,loss_fn,loaders,scheduler=None,
-          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100,smoothing=False):
+          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100,smoothing=False,reg_weights=False):
     
     #print(f'training with trend filtering alpha = {alpha}')
 
@@ -156,7 +156,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
-            y2hat,state_pred = model(x,dt,smoothing) #state: B x L x SD
+            y2hat,weights = model(x,dt,smoothing) #state: B x L x SD
             
             # change: scaling to "true" d2y
             y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
@@ -217,13 +217,17 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             loss = loss_fn(y,yhat[:,:L,:]) 
             #alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
             l = loss# + alpha*trend_penalty
+            if reg_weights:
+                penalty =  weights.sum(dim=-1).mean()
+                l = l + penalty
             #print(l)
             l.backward()
             optimizer.step()
             tot = sst(y)
             train_losses.append(loss.item())
             writer.add_scalar('Loss/train',loss.item(),idx)
-            # writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
+            if reg_weights:
+                writer.add_scalar('Penalty/train',penalty.item(),idx)
 
         if epoch % val_freq == 0:
             model.eval()
@@ -242,7 +246,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     dy2 = deriv_approx_d2y(y)/(dt**2)
                     # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
                     
-                    y2hat,state_pred = model(x,dt,smoothing) #state: B x L x SD
+                    y2hat,weights = model(x,dt,smoothing) #state: B x L x SD
             
                     ## scaling to "true" d2y
                     y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
@@ -274,38 +278,12 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     
                     l = loss_fn(y,yhat[:,:L,:])
                     tot = sst(y)
-
+                    if reg_weights:
+                        penalty = weights.sum(dim=-1).mean()
                     vl += l.item()#1 - l.item()/tot.item()
 
-                    """
-                    ### trend filtering penalty
-                    diff = torch.diff(state_pred,dim=1)
-                    penalty = torch.abs(diff).sum(dim=-1).mean()
-                    """
-
-                    """
-                    #### norm penalty
-                    
-                    alpha = 1/(state_pred.shape[-1] * state_pred.shape[-2])
-                    norm2 = torch.linalg.vector_norm(state_pred,ord=0.5,dim=-1)
-                    norm1 = torch.linalg.vector_norm(norm2,ord=1,dim=-1)
-                    penalty = alpha * norm1.mean()
-                    #vp += alpha*penalty.item()
-                    """ 
-
-                    """
-                    #### cov penalty
-
-                    cov = state_pred.transpose(-1,-2) @ state_pred /L 
-                    sds = torch.diagonal(cov,dim1=-1,dim2=-2).sqrt()[:,:,None]
-                    denom = sds @ sds.transpose(-1,-2)
-                    abscorr = (cov/denom).abs()
-            
-                    inds = torch.triu_indices(abscorr.shape[-1],abscorr.shape[-1],offset=-1,device=abscorr.device)
-                    penalty = abscorr[:,inds[0],inds[1]].sum(dim=-1).mean()
-                    """
-                    
-                    #vp += penalty.item()
+                    if reg_weights:
+                        vp += penalty.item()
                     
                     
             if scheduler:
