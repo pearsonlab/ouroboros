@@ -100,7 +100,7 @@ class polyModule(kernelModule):
         
         return x
     
-class fullPolyModule(polyModule):
+class fullPolyModule(kernelModule):
 
     def __init__(self,nTerms,device,x_dim,z_dim,lam=10,activation=nn.ReLU(),trend_filtering=True):
 

@@ -143,7 +143,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     elif kernel_type == 'full_poly':
         kernel = fullPolyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=10,trend_filtering=use_trend)
         reg_weights=True
-        print(kernel.activation)
+        
     else:
         kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
         reg_weights=False
