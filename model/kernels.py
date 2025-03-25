@@ -130,8 +130,12 @@ class fullPolyModule(kernelModule):
         power_mat = torch.einsum('bldp,bldk -> blpk',z1,z2)
 
         x = torch.einsum('blpd,blpd -> bl',weights,power_mat)
-
-        return x[:,:,None],self.lam *weights.abs()
+        lam_mat = torch.full((B,L,self.poly_dim),self.lam,device=self.device).pow(self.powers)[:,:,:,None]
+        assert torch.all(lam_mat > 0)
+        reg_weights = torch.einsum('blpd,blkd-> blpk',lam_mat,lam_mat)
+        assert np.all(reg_weights.shape == weights.shape) 
+        assert torch.all(reg_weights >= 0), print(torch.argwhere(reg_weights < 0))
+        return x[:,:,None],(reg_weights*weights.abs()).view(B,L,self.poly_dim**2)
 
 
     def forward_given_weights(self,x,weights):

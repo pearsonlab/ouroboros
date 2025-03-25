@@ -18,7 +18,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
                 nEpochs=100, kernel_type='gauss',n_kernels=10,alpha=1e7,seed=None,\
                     save_loaders=False,smooth_len=0.005,vis_freq=100,tau=1000,
-                    lr=1e-3,oversample_prop = 1,smoothing=False,only_full=False):
+                    lr=1e-3,oversample_prop = 1,smoothing=False,only_full=False,lam=10):
 
     
     use_trend = True if trend_level > 0 else False
@@ -92,7 +92,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
         elif kernel_type == 'constant_gauss':
             kernel = constantGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
         else:
-            kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
+            kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=lam,trend_filtering=use_trend)
         
         full_model=rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
                     d_conv=4,expand_factor=1,tau=tau,\
@@ -141,11 +141,11 @@ def run_model(audio_path,seg_path='', model_path= '',\
         kernel = constantGaussModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
         reg_weights=False
     elif kernel_type == 'full_poly':
-        kernel = fullPolyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=10,trend_filtering=use_trend)
+        kernel = fullPolyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=lam,trend_filtering=use_trend)
         reg_weights=True
         
     else:
-        kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=use_trend)
+        kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=lam,trend_filtering=use_trend)
         reg_weights=False
     full_model=rkhs_ouroboros(d_data=1,n_layers=2,d_state=1,\
                 d_conv=4,expand_factor=4,tau=tau,\

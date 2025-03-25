@@ -43,8 +43,13 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
         envelope=[]
 
     if full_vocs:
-        # extend onoffs in a sensible way
-        pass
+        # extend onoffs in a sensible way -- maybe to length of max onoff
+        
+        lens = onOffs[:,1] - onOffs[:,0]
+        max_len = np.amax(lens) # or something different here like mean, median, etc
+        diffs = max_len - lens 
+        onOffs[:,1] += diffs
+        
 
         #onOffs = 
     
@@ -122,7 +127,10 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     wavs.sort()
     segs = glob.glob(os.path.join(segpath,'*' + seg_type))
     segs.sort()
-
+    assert len(wavs) == len(segs), print(f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments")
+    order = np.random.choice(len(wavs),len(wavs),replace=False)
+    wavs = [wavs[o] for o in order]
+    segs = [segs[o] for o in order]
     audio_segs = []
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
