@@ -129,7 +129,7 @@ class fullPolyModule(kernelModule):
         z2 = power_mat[:,:,1:,:]
         power_mat = torch.einsum('bldp,bldp -> blpp',z1,z2)
 
-        x = torch.einsum('blpp,blpp -> bl',weights,power_mat)
+        x = torch.einsum('blpd,blpd -> bl',weights,power_mat)
 
         return x[:,:,None],self.lam *weights.abs()
 
