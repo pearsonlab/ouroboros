@@ -18,7 +18,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
                 nEpochs=100, kernel_type='gauss',n_kernels=10,alpha=1e7,seed=None,\
                     save_loaders=False,smooth_len=0.005,vis_freq=100,tau=1000,
-                    lr=1e-3,oversample_prop = 1,smoothing=False,only_full=False,lam=10):
+                    lr=1e-3,oversample_prop = 1,smoothing=False,only_full=False,\
+                        n_layers=2,expand_factor=4,d_state=1,lam=10):
 
     
     use_trend = True if trend_level > 0 else False
@@ -30,7 +31,6 @@ def run_model(audio_path,seg_path='', model_path= '',\
         os.mkdir(model_path)
  
     print('loading data')
-    
     audios,sr = get_segmented_audio(audio_path,seg_path,envelope=False,context_len=context_len,\
                                     audio_type=audio_filetype,seg_type=seg_filetype,max_pairs=max_pairs,seed=seed)
 
@@ -53,8 +53,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
     ## if data dim = 1 and stacking on data dim, z_dim should be 4
     ## if data dim = 1 and stacking on time dim, z_dim should be 2
     if not only_full:
-        model = simple_ouroboros(d_data=1,n_layers=1,d_state=1,\
-                    d_conv=4,expand_factor=1,tau=tau,\
+        model = simple_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
+                    d_conv=4,expand_factor=expand_factor,tau=tau,\
                                 smooth_len=smooth_len)
         opt = Adam(model.parameters(),
                     lr=lr)
@@ -94,8 +94,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
         else:
             kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=lam,trend_filtering=use_trend)
         
-        full_model=rkhs_ouroboros(d_data=1,n_layers=1,d_state=1,\
-                    d_conv=4,expand_factor=1,tau=tau,\
+        full_model=rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
+                    d_conv=4,expand_factor=expand_factor,tau=tau,\
                                 smooth_len=smooth_len,kernel=kernel)
         print('loading pre-trained kernelboros')
         full_model.load_omega_gamma(save_loc)
@@ -147,8 +147,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
     else:
         kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=lam,trend_filtering=use_trend)
         reg_weights=False
-    full_model=rkhs_ouroboros(d_data=1,n_layers=2,d_state=1,\
-                d_conv=4,expand_factor=4,tau=tau,\
+    full_model=rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
+                d_conv=4,expand_factor=expand_factor,tau=tau,\
                             smooth_len=smooth_len,kernel=kernel)
 
     full_opt = Adam(full_model.parameters(),
