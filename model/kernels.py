@@ -160,7 +160,7 @@ class fullPolyModule(kernelModule):
             x = np.reshape(x,(x.shape[0],-1,2*self.d))
         B,L,d = x.shape
         #if weights.shape != (B,L,self.d,self.poly_dim-1):
-        weights = np.reshape(weights,(B,L,self.d,self.poly_dim-1))
+        weights = np.reshape(weights,(B,L,self.poly_dim,self.poly_dim))
         #weights = np.reshape(weights,(B,L,self.d,self.nTerms))
         power_mat = np.power(np.tile(x[:,:,:,None],(1,1,1,self.poly_dim)),powers)
         z1 = power_mat[:,:,:1,:]
