@@ -100,9 +100,9 @@ class polyModule(kernelModule):
         
         return x
     
-class fullPolyModule(polyModule):
+class fullPolyModule(kernelModule):
 
-    def __init__(self,nTerms,device,x_dim,z_dim,lam=0.9,activation=nn.ReLU(),trend_filtering=True):
+    def __init__(self,nTerms,device,x_dim,z_dim,lam=10,activation=nn.ReLU(),trend_filtering=True):
 
         super().__init__(nTerms,device,x_dim,z_dim,activation,trend_filtering)
         
@@ -127,46 +127,48 @@ class fullPolyModule(polyModule):
         
         z1 = power_mat[:,:,:1,:]
         z2 = power_mat[:,:,1:,:]
-        power_mat = torch.einsum('bldp,bldp -> blpp',z1,z2)
+        power_mat = torch.einsum('bldp,bldk -> blpk',z1,z2)
 
-        x = torch.einsum('blpp,blpp -> bl',weights,power_mat)
-
-        return x[:,:,None]
+        x = torch.einsum('blpd,blpd -> bl',weights,power_mat)
+        lam_mat = torch.full((B,L,self.poly_dim),self.lam,device=self.device).pow(self.powers)[:,:,:,None]
+        assert torch.all(lam_mat > 0)
+        reg_weights = torch.einsum('blpd,blkd-> blpk',lam_mat,lam_mat)
+        assert np.all(reg_weights.shape == weights.shape) 
+        assert torch.all(reg_weights >= 0), print(torch.argwhere(reg_weights < 0))
+        return x[:,:,None],(reg_weights*weights.abs()).view(B,L,self.poly_dim**2)
 
 
     def forward_given_weights(self,x,weights):
 
         B,L,d = x.shape
-        if weights.shape != (B,L,self.d,self.poly_dim-1):
-            weights = weights.view(B,L,self.d,self.poly_dim-1)
-        #weights = weights.view(self.d,self.nTerms)
+        weights=weights.view(B,L,self.poly_dim,self.poly_dim)
+        weights[:,:,0,0] = weights[:,:,0,0] * 0 
 
-        power_mat = self.lam * (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim-1) - self.mus)#[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)
-        power_mat = torch.einsum('bldp,bldp->blp',power_mat,self.prods)[:,:,None,:]
-        power_mat = power_mat.pow(self.powers)
-        #weights = weights.view(B,L,d,self.poly_dim+1,self.poly_dim+1) * self.mask
-        x = torch.einsum('blp,bldp->bld',weights,power_mat)
+        z1 = power_mat[:,:,:1,:]
+        z2 = power_mat[:,:,1:,:]
+        power_mat = (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim)).pow(self.powers)
+        power_mat = torch.einsum('bldp,bldk -> blpk',z1,z2)
+        x = torch.einsum('blpd,blpd -> bl',weights,power_mat)
         #x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
 
-        return x
+        return x[:,:,None]
     
     def forward_given_weights_numpy(self,x,weights):
         
-        mus,prods = self.mus.detach().cpu().numpy(),self.prods.detach().cpu().numpy()
         powers = self.powers.detach().cpu().numpy()
         if len(x.shape)!=3:
             x = np.reshape(x,(x.shape[0],-1,2*self.d))
         B,L,d = x.shape
-        if weights.shape != (B,L,self.d,self.poly_dim-1):
-            weights = np.reshape(weights,(B,L,self.d,self.poly_dim-1))
+        #if weights.shape != (B,L,self.d,self.poly_dim-1):
+        weights = np.reshape(weights,(B,L,self.poly_dim,self.poly_dim))
         #weights = np.reshape(weights,(B,L,self.d,self.nTerms))
-        power_mat = self.lam * (x[:,:,:,None].tile((1,1,1,self.poly_dim-1) - mus))
-        power_mat = np.einsum('bldp,bldp->blp',power_mat,prods)[:,:,None,:]
-        power_mat = np.power(power_mat,powers[None,None,:])
+        power_mat = np.power(np.tile(x[:,:,:,None],(1,1,1,self.poly_dim)),powers)
+        z1 = power_mat[:,:,:1,:]
+        z2 = power_mat[:,:,1:,:]
+        power_mat = np.einsum('blpd,bldk->blpk',z1,z2)
+        x = np.einsum('blpd,blpd->bl',weights,power_mat)
         
-        x = np.einsum('blp,bldp->bld',weights,power_mat)
-        
-        return x
+        return x[:,:,None]
 
 
         

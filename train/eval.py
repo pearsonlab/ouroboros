@@ -81,6 +81,7 @@ def eval_model_error(dls,model,dt,comparison='val'):
             #y = y.detach().cpu().numpy()
             tot = sst(y,reduction='none') #((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
             tot = tot.detach().cpu().numpy().squeeze()
+            assert tot.shape == err.shape
             test_r2.append(1 - err/tot)
             vars.append(y.detach().cpu().numpy().flatten())
             test_errors.append(err)

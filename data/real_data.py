@@ -14,7 +14,7 @@ import random
 
 def get_audio(audio,fs,onset,offset,context_len=0.3):
 
-    audiotimes = np.linspace(0,len(audio)/fs,len(audio))
+    #audiotimes = np.linspace(0,len(audio)/fs,len(audio))
     difference = (offset - onset) - context_len
     if difference <= 0:
         onset += difference #context_len//2
@@ -41,6 +41,17 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
         envelope=np.abs(analytic_signal)
     else:
         envelope=[]
+
+    if full_vocs:
+        # extend onoffs in a sensible way -- maybe to length of max onoff
+        
+        lens = onOffs[:,1] - onOffs[:,0]
+        max_len = np.amax(lens) # or something different here like mean, median, etc
+        diffs = max_len - lens 
+        onOffs[:,1] += diffs
+        
+
+        #onOffs = 
     
     for onset,offset in onOffs:
 
@@ -116,7 +127,18 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     wavs.sort()
     segs = glob.glob(os.path.join(segpath,'*' + seg_type))
     segs.sort()
+    if len(wavs) != len(segs):
+        print("different number of wavs and segs! only taking ones with overlap")
+        wav_endings = [w.split('/')[-1].split(audio_type[-4:])[0] for w in wavs]
+        seg_endings = [s.split('/')[-1].split(seg_type[-4:])[0] for s in segs]
+        all_endings = set(wav_endings).intersection(seg_endings)
+        wavs = [w for w in wavs if w.split('/')[-1].split(audio_type[-4:])[0] in all_endings]
+        segs = [s for s in segs if s.split('/')[-1].split(seg_type[-4:])[0] in all_endings]
 
+    assert len(wavs) == len(segs), print(f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments")
+    order = np.random.choice(len(wavs),len(wavs),replace=False)
+    wavs = [wavs[o] for o in order]
+    segs = [segs[o] for o in order]
     audio_segs = []
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')

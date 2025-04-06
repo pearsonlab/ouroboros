@@ -865,7 +865,7 @@ class rkhs_ouroboros(simple_ouroboros):
 
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
 
-        return yhat,torch.cat([omegaControl,gammaControl,kernelControl])
+        return yhat,weights
 
     def get_funcs(self,x,dt,scaled = True,smoothing=False):
 
