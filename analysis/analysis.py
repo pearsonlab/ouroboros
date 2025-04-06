@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from model.model_utils import smooth
 from utils import deriv_approx_d2y,deriv_approx_dy
+from data.real_data import get_segmented_audio
 
 C = 343
 L = 0.035
@@ -135,3 +136,50 @@ def integrate(model,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,u
     if with_residual:
         return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
     return obj.y,omega,gamma,weighted_kernels,obj.status
+
+def pad_with_nans(x,target_length,axis=0):
+
+    currlen = x.shape[axis]
+    currshape = list(x.shape)
+    diff = target_length - currlen
+    currshape[axis] = diff
+
+    if diff > 0:
+        padding = np.full(currshape,np.nan)
+
+        return np.concatenate([x,padding],axis=axis)
+    else:
+        return x
+
+def assess_variability(model,audio_location,seg_location,audio_filetype='.wav',seg_filetype='.txt'):
+
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,\
+                        envelope=False,context_len=0.1,max_pairs=1000,\
+                            audio_type=audio_filetype,seg_type=seg_filetype,full_vocs=True)
+    dt = 1/sr
+
+    omegas,gammas = [],[]
+    for session in audios:
+        for sample in session:
+            sample = torch.from_numpy(sample).to(model.device).to(torch.float32)[None,:,:]
+            omega,gamma, *_ = model.get_funcs(sample,dt,scaled=True,smoothing=True)
+
+            omega,gamma =omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze()
+            omegas.append(omega)
+            gammas.append(gamma)
+    max_len = max(list(map(len,omegas)))
+    padder = lambda x: pad_with_nans(x,target_length=max_len)
+
+    omegas = np.stack(list(map(padder,omegas)),axis=0)
+    gammas = np.stack(list(map(padder,gammas)),axis=0)
+
+    mu_gammas = np.nanmean(gammas,axis=0)
+    mu_omegas = np.nanmean(omegas,axis=0)
+    sd_gammas = np.nanstd(gammas,axis=0)
+    sd_omegas = np.nanstd(omegas,axis=0)
+
+
+    return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas)
+
+
