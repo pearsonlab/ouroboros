@@ -16,6 +16,7 @@ class kernelModule(nn.Module):
         self.n = z_dim
         self.activation=activation
         self.trend_filtering = trend_filtering
+        self.tau = 1
         pass
 
     @abstractmethod
@@ -210,7 +211,7 @@ class simpleGaussModule(kernelModule):
         x = torch.einsum('bldp,bldp->bld', weights,kernels)
 
 
-        return x,weights
+        return x*self.tau,weights*self.tau
     
     def forward_given_weights(self,x,weights):
 
@@ -221,7 +222,7 @@ class simpleGaussModule(kernelModule):
         gauss_mat = torch.linalg.norm((x[:,:,:,None].expand(-1,-1,-1,self.nTerms) - self.mus)/ (2*torch.exp(2*self.log_sigmas)),dim=2,keepdims=True)**2 
         kernels = torch.exp(-gauss_mat) #/(2*torch.pi * torch.exp(2*self.log_sigmas))**(d/2)
 
-        x = torch.einsum('bldp,bldp->bld', weights,kernels)
+        x = torch.einsum('bldp,bldp->bld', weights,kernels)*self.tau
 
         return x
     
@@ -237,7 +238,7 @@ class simpleGaussModule(kernelModule):
         gauss_mat = np.linalg.norm((np.tile(x[:,:,:,None],(1,1,1,self.nTerms)) - mus)/ (2*np.exp(2*log_sigmas)),axis=2,keepdims=True)**2
         kernels = np.exp(-gauss_mat)
         
-        x = np.einsum('bldp,bldp->bld', weights,kernels)
+        x = np.einsum('bldp,bldp->bld', weights,kernels)*self.tau
         
         return x
     

@@ -804,6 +804,7 @@ class rkhs_ouroboros(simple_ouroboros):
         ############ maybe make trend level an attribute as well?
         
         self.kernel = kernel
+        self.kernel.tau = self.tau
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
 
 

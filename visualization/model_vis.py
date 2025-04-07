@@ -13,6 +13,7 @@ import librosa
 from itertools import repeat
 from matplotlib.colors import ListedColormap
 import os
+import matplotlib as mpl
 plt.rcParams['text.usetex'] = True
 
 
@@ -26,6 +27,21 @@ def format_axes(ax,xlabel='',ylabel='',xlims=(),ylims=()):
     if len(ylims) == 2:
         ax.set_ylim(ylims)
     return 
+
+def r2_plot(means,sds,labels=['train,test'],saveloc='',show=False):
+
+    cm = mpl.colormaps['tab10']
+    ax = plt.gca()
+    bars = ax.bar(np.arange(0,len(means)//2+0.5,0.5)[:len(means)],means,width=0.35)
+    ebs = ax.errorbar(np.arange(0,len(means)//2+0.5,0.5)[:len(means)],means,yerr = sds,linestyle=' ',color='k',capsize=20)
+    ax.set_xticks(np.arange(0,len(means)//2+0.5,0.5)[:len(means)],labels,rotation=35)
+    for ii,b in enumerate(bars):
+        b.set_facecolor(cm(ii))
+
+    plt.savefig(os.path.join(saveloc,'r2s.svg'))
+    if show:
+        plt.show()
+    plt.close
 
 def loss_plot(train_loss,val_loss,save_loc='',show=True):
 
