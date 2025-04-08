@@ -162,7 +162,8 @@ def assess_variability(model,audio_location,seg_location,audio_filetype='.wav',s
     omegas,gammas = [],[]
     for session in audios:
         for sample in session:
-            sample = torch.from_numpy(sample).to(model.device).to(torch.float32)[None,:,:]
+            #print(sample.shape)
+            sample = torch.from_numpy(sample).to(model.device).to(torch.float32)
             omega,gamma, *_ = model.get_funcs(sample,dt,scaled=True,smoothing=True)
 
             omega,gamma =omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze()
@@ -176,10 +177,11 @@ def assess_variability(model,audio_location,seg_location,audio_filetype='.wav',s
 
     mu_gammas = np.nanmean(gammas,axis=0)
     mu_omegas = np.nanmean(omegas,axis=0)
-    sd_gammas = np.nanstd(gammas,axis=0)
-    sd_omegas = np.nanstd(omegas,axis=0)
+    sd_gammas = np.nanstd(gammas,axis=0)/np.abs(np.nanmean(mu_gammas)) # as portion of mean mean!!
+    sd_omegas = np.nanstd(omegas,axis=0)/np.abs(np.nanmean(mu_omegas)) # as portion of mean mean!!
 
+    #sd_gammas/= np.nanmean(mu_gammas)
+    #sd_omegas /= np.nansum(_omegas)
 
     return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas)
-
 
