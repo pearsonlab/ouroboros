@@ -98,10 +98,10 @@ def eval_model_error(dls,model,dt,comparison='val'):
     return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
 
 
-def assess_kernels(dataloader,model,dt):
+def assess_kernels(dataloader,model,dt,saveDir=''):
 
     ypts = np.linspace(-1,1,25)
-    dypts = np.linspace(-1/dt,1/dt,25)
+    dypts = np.linspace(-1/dt,1/dt,25)/2
     ygrid,dygrid = np.meshgrid(ypts,dypts)
     ygrid = ygrid.flatten()
     dygrid = dygrid.flatten()
@@ -110,8 +110,8 @@ def assess_kernels(dataloader,model,dt):
 
     kernels = []
     smooth_len = int(round(model.smooth_len/dt))
-    weight_samples = np.random.choice(len(dataloader),len(dataloader)//2,replace=False)
-
+    weight_samples = np.random.choice(len(dataloader),max(len(dataloader)//2,1),replace=False)
+    print(f"taking samples from batches {weight_samples}")
     for ii,batch in enumerate(dataloader):
         with torch.no_grad():
             x,y = batch
@@ -120,7 +120,7 @@ def assess_kernels(dataloader,model,dt):
 
             _,_,_,weights,_ = model.get_funcs(x,dt,scaled=True,smoothing=True)
 
-            weights = smooth(weights,smooth_len)
+            #weights = smooth(weights,smooth_len)
 
         weights = weights.detach().cpu().numpy().squeeze()
         normed_weights = weights/np.sum(weights,axis=-1,keepdims=True)
@@ -132,6 +132,7 @@ def assess_kernels(dataloader,model,dt):
         kern = model.kernel.forward_given_weights_numpy(ydy_batch,weights_sample)
 
         kern = np.reshape(kern,(B,25,25))
+        kern = np.sign(kern)*np.log(np.abs(kern) + 1e-12)
 
         kernels.append(kern)
         if ii in weight_samples:
@@ -150,21 +151,22 @@ def assess_kernels(dataloader,model,dt):
             ax1.set_title(f"weights across batch {ii} sample {batch_sample}")
             ax2.set_title("Weights across time, normed across weight channels")
 
-            plt.savefig(os.path.join(model.saveDir,f'kernel_weights_{ii}_{batch_sample}.svg'))
+            plt.savefig(os.path.join(saveDir,f'kernel_weights_{ii}_{batch_sample}.png'))
+            plt.close()
 
-    kernels = np.stack(kernels,axis=0)
+    kernels = np.vstack(kernels)
     kernels = np.nanmean(kernels,axis=0)
 
 
     ax = plt.gca()
-    g = ax.imshow(kernels,origin='lower',aspect='auto',extent=[-1,1,round(-1/dt),round(1/dt)])
+    g = ax.imshow(kernels.T,origin='lower',aspect='auto',extent=[ypts[0],ypts[-1],dypts[0],dypts[-1]])
     ax.set_xlabel("y")
     ax.set_ylabel("dy")
-    cb = ax.colorbar(g,ax=ax)
-    cb.set_label('Kernel value',rotation=270,labelpad=40)
+    cb = plt.colorbar(g,ax=ax)
+    cb.set_label('log(abs(Kernel value)) * sign(kernel value)',rotation=270,labelpad=40)
 
-    plt.show()
-    plt.savefig(os.path.join(model.saveDir, 'average_kernel_dl.svg'))
+    #plt.show()
+    plt.savefig(os.path.join(saveDir, 'average_kernel_dl.svg'))
     plt.close()
 
     return kernels
