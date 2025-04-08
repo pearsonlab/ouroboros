@@ -29,11 +29,17 @@ def load_filter(location):
 
 
 
-def save_model(model,opt,location):
+def save_model(model,opt,location,\
+               n_layers=2,d_state=1,\
+                d_conv=4,expand_factor=4):
     sd = {'ouroboros':model.state_dict(),
         'opt':opt.state_dict(),
         'tau':model.tau,
-        'smooth_len':model.smooth_len
+        'smooth_len':model.smooth_len,
+        'n_layers':n_layers,
+        'd_state':d_state,
+        'd_conv':d_conv,
+        'expand_factor':expand_factor
     }
     try:
         sd['n_kernel'] = model.kernel.nTerms
@@ -46,6 +52,16 @@ def load_model(location,kernel_type='gauss'):
 
     sd = torch.load(location,weights_only=False)
     try:
+        n_layers = sd['n_layers']
+        d_state = sd['n_state']
+        d_conv = sd['d_conv']
+        expand_factor = sd['expand_factor']
+    except:
+        n_layers = 2
+        d_state = 1
+        d_conv=4
+        expand_factor=4
+    try:
         if kernel_type == 'gauss':
             kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
         elif kernel_type == 'constant_gauss':
@@ -56,8 +72,8 @@ def load_model(location,kernel_type='gauss'):
             kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
         
 
-        model = rkhs_ouroboros(d_data=1,n_layers=2,d_state=1,\
-                    d_conv=4,expand_factor=4,tau=sd['tau'],\
+        model = rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
+                    d_conv=d_conv,expand_factor=expand_factor,tau=sd['tau'],\
                                 smooth_len=sd['smooth_len'],kernel=kernel)
     except:
         model = simple_ouroboros(d_data=1,n_layers=2,d_state=1,\
