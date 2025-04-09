@@ -129,7 +129,7 @@ def assess_kernels(dataloader,model,dt,saveDir=''):
         weights_sample = np.nanmean(normed_weights,axis=1,keepdims=True)
         weights_sample = np.tile(weights_sample,(1,L,1))
 
-        ydy_batch = np.tile(ydy[None,:,:],(B,1,1))
+        ydy_batch = np.tile(ydy,(B,1,1))
         assert weights_sample.shape[0] == ydy_batch.shape[0], print(weights_sample.shape,ydy_batch.shape)
         assert weights_sample.shape[1] == ydy_batch.shape[1], print(weights_sample.shape,ydy_batch.shape)
 
