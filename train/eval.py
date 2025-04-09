@@ -110,7 +110,7 @@ def assess_kernels(dataloader,model,dt,saveDir=''):
 
     kernels = []
     smooth_len = int(round(model.smooth_len/dt))
-    weight_samples = np.random.choice(len(dataloader),max(len(dataloader)//2,1),replace=False)
+    weight_samples = np.random.choice(len(dataloader),max(len(dataloader)//5,1),replace=False)
     print(f"taking samples from batches {weight_samples}")
     for ii,batch in enumerate(dataloader):
         with torch.no_grad():

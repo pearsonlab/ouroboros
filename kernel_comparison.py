@@ -128,7 +128,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     r2_plot([train_mu_poly,test_mu_poly,train_mu_rbf,test_mu_rbf],\
             [train_sd_poly,test_sd_poly,train_sd_rbf,test_sd_rbf],\
             labels=['Train (poly)', 'Test (poly)', 'Train (RBF)', 'Test (RBF)'],\
-                saveloc=model_path,show=True)
+                saveloc=model_path,show=False)
 
     return
 

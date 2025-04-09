@@ -17,6 +17,7 @@ import matplotlib as mpl
 import analysis.analysis as analysis
 import seaborn as sns
 plt.rcParams['text.usetex'] = True
+plt.rcParams['font.size'] = 22
 
 
 def format_axes(ax,xlabel='',ylabel='',xlims=(),ylims=()):
@@ -199,7 +200,7 @@ def make_gif(model,syllable,ages,audio_paths,segment_paths,audio_filetype='.wav'
     
         format_axes(ax,ylabel=r'$\omega$',xlabel=r'$\gamma$',ylims=(min_o - 1000,max_o + 1000),xlims = (min_g - 1000,max_g + 1000))
         cb1 = plt.colorbar(sm,ax=ax)
-        cb1.set_label("Age of bird (days post hatch)",rotation=270,labelpad=40)
+        cb1.set_label("Age of bird (days post hatch)",rotation=270,labelpad=80)
     
         return dayLines
     fig = plt.figure(figsize=(15,15))
