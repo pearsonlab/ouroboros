@@ -111,7 +111,7 @@ def assess_kernels(dataloader,model,dt,saveDir=''):
     kernels = []
     smooth_len = int(round(model.smooth_len/dt))
     weight_samples = np.random.choice(len(dataloader),max(len(dataloader)//2,1),replace=False)
-    print(f"taking samples from batches {weight_samples}")
+    #print(f"taking samples from batches {weight_samples}")
     for ii,batch in enumerate(dataloader):
         with torch.no_grad():
             x,y = batch
@@ -128,6 +128,8 @@ def assess_kernels(dataloader,model,dt,saveDir=''):
         weights_sample = np.tile(weights_sample,(1,L,1))
 
         ydy_batch = np.tile(ydy[None,:,:],(B,1,1))
+        assert weights_sample.shape[0] == ydy_batch.shape[0], print(weights_sample.shape,ydy_batch.shape)
+        assert weights_sample.shape[1] == ydy_batch.shape[1], print(weights_sample.shape,ydy_batch.shape)
 
         kern = model.kernel.forward_given_weights_numpy(ydy_batch,weights_sample)
 
