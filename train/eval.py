@@ -118,7 +118,7 @@ def assess_kernels(dataloader,model,dt,saveDir=''):
         with torch.no_grad():
             x,y = batch
             B,_,_  = x.shape
-            print(x.shape)
+            #print(x.shape)
             x = x.to('cuda').to(torch.float32)
 
             _,_,_,weights,_ = model.get_funcs(x,dt,scaled=True,smoothing=True)

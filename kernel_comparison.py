@@ -19,7 +19,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
                 nEpochs=100, kernel_type='gauss',n_kernels=10,alpha=1e7,seed=None,\
                     save_loaders=False,smooth_len=0.005,vis_freq=100,tau=1000,
                     lr=1e-3,oversample_prop = 1,smoothing=False,only_full=False,\
-                        n_layers=2,expand_factor=4,d_state=1,lam=1.5,mult_factor_kernels=4):
+                        n_layers=2,expand_factor=4,d_conv=4,d_state=1,lam=1.5,mult_factor_kernels=4):
 
     
     use_trend = True if trend_level > 0 else False
@@ -60,12 +60,12 @@ def run_model(audio_path,seg_path='', model_path= '',\
     reg_weights=True
     
     full_model_poly=rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
-                d_conv=4,expand_factor=expand_factor,tau=tau,\
+                d_conv=d_conv,expand_factor=expand_factor,tau=tau,\
                             smooth_len=smooth_len,kernel=kernel)
 
     full_opt_poly = Adam(full_model_poly.parameters(),
                 lr=lr)
-    full_scheduler_poly = ReduceLROnPlateau(full_opt_poly,factor=0.5,patience=5,min_lr=1e-10)
+    full_scheduler_poly = ReduceLROnPlateau(full_opt_poly,factor=0.5,patience=max(nEpochs//25,2),min_lr=1e-10)
     model_path_full_poly = model_path + f'/kernelborous_poly_{voctype}_end_to_end'
     save_loc_poly = model_path_full_poly + '/checkpoint_100.tar'
     if os.path.isfile(save_loc_poly):
@@ -84,21 +84,21 @@ def run_model(audio_path,seg_path='', model_path= '',\
         loss_plot(tl,vl,save_loc=model_path_full_poly,show=False)
 
         
-        save_model(full_model_poly,full_opt_poly,save_loc_poly,n_layers=n_layers,d_state=d_state,expand_factor=expand_factor,d_conv=4)
+        save_model(full_model_poly,full_opt_poly,save_loc_poly,n_layers=n_layers,d_state=d_state,expand_factor=expand_factor,d_conv=d_conv)
     print('evaluating end-to-end model poly....')
-    (train_mu_poly,test_mu_poly),(train_sd_poly,test_sd_poly) = eval_model_error(dls,full_model_poly,dt=1/sr)
+    (train_mu_poly,test_mu_poly),(train_sd_poly,test_sd_poly) = eval_model_error(dls,full_model_poly,dt=1/sr,comparison='test')
     assess_kernels(dls['train'],full_model_poly,dt=1/sr,saveDir=model_path_full_poly)
     print("training comparison models end to end: then rbf kernel")
     kernel = simpleGaussModule(nTerms=mult_factor_kernels*n_kernels,device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=use_trend)
     reg_weights=False
 
     full_model_gauss=rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
-                d_conv=4,expand_factor=expand_factor,tau=tau,\
+                d_conv=d_conv,expand_factor=expand_factor,tau=tau,\
                             smooth_len=smooth_len,kernel=kernel)
 
     full_opt_gauss = Adam(full_model_gauss.parameters(),
                 lr=lr)
-    full_scheduler_gauss = ReduceLROnPlateau(full_opt_gauss,factor=0.5,patience=5,min_lr=1e-10)
+    full_scheduler_gauss = ReduceLROnPlateau(full_opt_gauss,factor=0.5,patience=max(nEpochs//25,2),min_lr=1e-10)
     model_path_full_gauss = model_path + f'/kernelborous_gauss_{voctype}_end_to_end'
     save_loc_gauss = model_path_full_gauss + '/checkpoint_100.tar'
     if os.path.isfile(save_loc_gauss):
@@ -117,10 +117,10 @@ def run_model(audio_path,seg_path='', model_path= '',\
         loss_plot(tl,vl,save_loc=model_path_full_gauss,show=False)
 
         
-        save_model(full_model_gauss,full_opt_gauss,save_loc_gauss,n_layers=n_layers,d_state=d_state,expand_factor=expand_factor,d_conv=4)
+        save_model(full_model_gauss,full_opt_gauss,save_loc_gauss,n_layers=n_layers,d_state=d_state,expand_factor=expand_factor,d_conv=d_conv)
 
     print('evaluating end-to-end model rbf....')
-    (train_mu_rbf,test_mu_rbf),(train_sd_rbf,test_sd_rbf) = eval_model_error(dls,full_model_gauss,dt=1/sr)
+    (train_mu_rbf,test_mu_rbf),(train_sd_rbf,test_sd_rbf) = eval_model_error(dls,full_model_gauss,dt=1/sr,comparison='test')
     assess_kernels(dls['train'],full_model_poly,dt=1/sr,saveDir=model_path_full_gauss)
 
     #(train_coef,test_coef),(train_coef_sd,test_coef_sd) = eval_model_integration(dls,full_model,dt=1/sr,n_segs=25,st=0)

@@ -127,6 +127,7 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     wavs.sort()
     segs = glob.glob(os.path.join(segpath,'*' + seg_type))
     segs.sort()
+    #print(wavs,segs)
     if len(wavs) != len(segs):
         print("different number of wavs and segs! only taking ones with overlap")
         wav_endings = [w.split('/')[-1].split(audio_type[-4:])[0] for w in wavs]
@@ -134,6 +135,7 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
         all_endings = set(wav_endings).intersection(seg_endings)
         wavs = [w for w in wavs if w.split('/')[-1].split(audio_type[-4:])[0] in all_endings]
         segs = [s for s in segs if s.split('/')[-1].split(seg_type[-4:])[0] in all_endings]
+
 
     assert len(wavs) == len(segs), print(f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments")
     order = np.random.choice(len(wavs),len(wavs),replace=False)
@@ -174,7 +176,7 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
                 
                 current_total += len(audios)
                 #assert len(audio_segs) >= current_total,print("wtf")
-                if len(audio_segs) >= max_pairs:
+                if current_total >= max_pairs:
                     return audio_segs[:max_pairs],sr
     else:
         random.shuffle(wavs)

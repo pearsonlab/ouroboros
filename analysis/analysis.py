@@ -151,11 +151,13 @@ def pad_with_nans(x,target_length,axis=0):
     else:
         return x
 
-def assess_variability(model,audio_location,seg_location,audio_filetype='.wav',seg_filetype='.txt'):
+def assess_variability(model,audio_location,seg_location,\
+                       audio_filetype='.wav',seg_filetype='.txt',max_samples=5000,\
+                        norm_sd=True,return_all=False):
 
 
     audios,sr = get_segmented_audio(audio_location,seg_location,\
-                        envelope=False,context_len=0.1,max_pairs=1000,\
+                        envelope=False,context_len=0.1,max_pairs=max_samples,\
                             audio_type=audio_filetype,seg_type=seg_filetype,full_vocs=True)
     dt = 1/sr
 
@@ -177,11 +179,16 @@ def assess_variability(model,audio_location,seg_location,audio_filetype='.wav',s
 
     mu_gammas = np.nanmean(gammas,axis=0)
     mu_omegas = np.nanmean(omegas,axis=0)
-    sd_gammas = np.nanstd(gammas,axis=0)/np.abs(np.nanmean(mu_gammas)) # as portion of mean mean!!
-    sd_omegas = np.nanstd(omegas,axis=0)/np.abs(np.nanmean(mu_omegas)) # as portion of mean mean!!
+    sd_gammas = np.nanstd(gammas,axis=0)#/np.abs(np.nanmean(mu_gammas)) # as portion of mean mean!!
+    sd_omegas = np.nanstd(omegas,axis=0)#/np.abs(np.nanmean(mu_omegas)) # as portion of mean mean!!
 
-    #sd_gammas/= np.nanmean(mu_gammas)
-    #sd_omegas /= np.nansum(_omegas)
+    if norm_sd:
 
-    return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas)
+        sd_gammas/= np.abs(np.nanmean(mu_gammas))
+        sd_omegas /= np.abs(np.nanmean(mu_omegas))
+
+    if return_all:
+        return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas),(omegas,gammas)
+    else:
+        return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas)
 
