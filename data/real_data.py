@@ -3,6 +3,7 @@ from tqdm import tqdm
 import warnings
 
 from scipy.signal import hilbert
+from scipy.interpolate import make_smoothing_spline
 #from acoustic_features_torch import get_features
 import os
 import glob
@@ -56,7 +57,8 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
     for onset,offset in onOffs:
 
         aud = get_audio(audio,fs,onset,offset,context_len)
-        
+        ts = np.arange(0,(len(aud)+1)/fs,1/fs)[:len(aud)]
+        #spl = make_smoothing_spline(ts,aud)
         cut_len = np.mod(aud.shape[0],chunk_len)
         #print(aud[:minLen].shape)
         
@@ -123,8 +125,10 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     #days = [d.split('/')[-1] for d in wav_dirs]
     #print("running this code")
     #assert False
+    #print(f"searching for audio in {os.path.join(audiopath,'*' + audio_type)}")
     wavs = glob.glob(os.path.join(audiopath,'*' + audio_type))
     wavs.sort()
+    #print(f"searching for segments in {os.path.join(segpath,'*' + seg_type)}")
     segs = glob.glob(os.path.join(segpath,'*' + seg_type))
     segs.sort()
     #print(wavs,segs)
