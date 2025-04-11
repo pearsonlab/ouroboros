@@ -4,6 +4,7 @@ import torch
 from model.model_utils import smooth
 from utils import deriv_approx_d2y,deriv_approx_dy
 from data.real_data import get_segmented_audio
+import vocalpy as voc
 
 C = 343
 L = 0.035
@@ -191,4 +192,42 @@ def assess_variability(model,audio_location,seg_location,\
         return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas),(omegas,gammas)
     else:
         return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas)
+    
+def feature_variability(audio_location,seg_location,\
+                       audio_filetype='.wav',seg_filetype='.txt',max_samples=5000,\
+                        norm_sd=True,return_all=False):
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,\
+                        envelope=False,context_len=0.1,max_pairs=max_samples,\
+                            audio_type=audio_filetype,seg_type=seg_filetype,full_vocs=True)
+
+    
+    features = {}
+    for session in audios:
+        for audio in session:
+            #print(len(audio))
+            a = voc.Sound(audio.squeeze(),samplerate=sr)
+            feats = voc.feature.sat.similarity_features(a)
+
+            for vn,da in feats.data.items():
+                try:
+                    features[vn].append(da.to_numpy().squeeze())
+                except:
+                    features[vn] = [da.to_numpy().squeeze()]
+                    t_len = len(audio.squeeze())/sr
+                    #print(len,int,round)
+                    sr_new = int(round(len(features[vn])/t_len))
+                    #print(t_len,sr_new)
+        
+    for feat in features.keys():
+        features[feat] = np.stack(features[feat],axis=0)
+    return features,features.keys(),sr_new
+
+def calc_vi(data):
+
+    # expects data to be nsamples x time x nfeatures
+    median = np.nanmedian(data,axis=0,keepdims=True)
+    VI = np.amin(np.linalg.norm(data - median,axis=-1)**2,axis=0)
+
+    return VI
 
