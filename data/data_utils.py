@@ -4,25 +4,29 @@ import numpy as np
 from sklearn.model_selection import train_test_split
 from scipy.interpolate import make_interp_spline,make_smoothing_spline
 from tqdm import tqdm
+from scipy.signal import savgol_filter
 
 
 class aud_neur_ds(Dataset):
 
     def __init__(self,data):
-        self.data = data
+        self.x = data
+        self.dxdt = savgol_filter(self.x,window_length=5,polyorder=3,deriv=1)
+        self.dx2dt2 = savgol_filter(self.x,window_length=5,polyorder=3,deriv=2)
 
     def __len__(self):
 
-        return self.data.shape[0]
+        return self.x.shape[0]
 
     def __getitem__(self, idx):
 
-        sample = self.data[idx]
-        x,y = sample[:-1,:],sample[1:,:]
+        x = self.x[idx]
+        dxdt = self.dxdt[idx]
+        dx2dt2 = self.dx2dt2[idx]
 
-        x,y = torch.from_numpy(x).type(torch.DoubleTensor),torch.from_numpy(y).type(torch.DoubleTensor)
+        x,dxdt,dx2dt2 = torch.from_numpy(x).type(torch.DoubleTensor),torch.from_numpy(dxdt).type(torch.DoubleTensor),torch.from_numpy(dx2dt2).type(torch.DoubleTensor)
 
-        return x,y
+        return x,dxdt,dx2dt2
     
     def interpolate_oversample(self,oversample_prop,dt):
 
