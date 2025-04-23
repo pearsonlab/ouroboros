@@ -825,7 +825,7 @@ class rkhs_ouroboros(simple_ouroboros):
             param.requires_grad=False
         return
 
-    def forward(self,x,dt,smoothing=False):
+    def forward(self,x,dxdt,dt,smoothing=False):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
@@ -837,9 +837,9 @@ class rkhs_ouroboros(simple_ouroboros):
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
-        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        #xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        z = torch.cat([x,dxdt],dim=-1)
         L = z.shape[1]
         #x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) # stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
@@ -868,15 +868,15 @@ class rkhs_ouroboros(simple_ouroboros):
 
         return yhat,weights
 
-    def get_funcs(self,x,dt,scaled = True,smoothing=False):
+    def get_funcs(self,x,dxdt,dt,scaled = True,smoothing=False):
 
         B,L,D = x.shape
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
-        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        # this gives: dxdt (currently unitless)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        z = torch.cat([x,dxdt],dim=-1)
         L = z.shape[1]
         if L > int(round(8/dt)):
             print('using step by step functions')
@@ -910,16 +910,16 @@ class rkhs_ouroboros(simple_ouroboros):
 
         return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],weights[:,:L,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
     
-    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
+    def integrate(self,x,dxdt,dx2,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
 
         smooth_len = int(round(self.smooth_len/dt))
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
-        xdot= deriv_approx_dy(x)
+        #xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-        xddot = deriv_approx_d2y(x)
+        #xddot = deriv_approx_d2y(x)
 
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        z = torch.cat([x,dxdt],dim=-1)
         L = z.shape[1]
 
         #if L > int(round(1/dt)):
@@ -935,7 +935,7 @@ class rkhs_ouroboros(simple_ouroboros):
         #weights = np.zeros(weights.shape)
         weightsTerp = []
     
-        residual = xddot - yhat 
+        residual = dx2 - yhat 
         smoothed_residual = smooth(residual,smooth_len).detach().cpu().numpy().squeeze()
 
         

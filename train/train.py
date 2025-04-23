@@ -163,32 +163,33 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
         for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
 
             optimizer.zero_grad()
-            x,y = batch # each is bsz x seq len x n neurons + 1
+            x,dxdt,dx2dt2 = batch # each is bsz x seq len x n neurons + 1
             bsz,_,n = x.shape
 
             x = x.to('cuda').to(torch.float32)
-            y = y.to('cuda').to(torch.float32)
+            dxdt = dxdt.to('cuda').to(torch.float32)
+            dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2)
 
-            dy = deriv_approx_dy(x)
+            #dy = deriv_approx_dy(x)
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
             #change: scaling to "true" d2y
-            dy2 = deriv_approx_d2y(x)/(dt**2)
+            #dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
-            y2hat,weights = model(x,dt,smoothing) #state: B x L x SD
+            dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
             # change: scaling to "true" d2y
-            y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
+            dx2hat = dx2hat * model.tau**2 #* (model.tau*dt)**2
             
             #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
             
             #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
             
-            yhat = y2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
+            yhat = dx2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
             #print(yhat.shape)
             # y starts as x[1:0]
-            y = dy2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
-            L = y.shape[1]
+            y = dx2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
+            L = x.shape[1]
 
             if vis_freq > 0:
                 if (idx % vis_freq) == 0:
@@ -205,31 +206,6 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     ax.legend()
                     plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
                     plt.close()
-
-            """    
-            ### trend filtering penalty
-            diff = torch.diff(state_pred,dim=1)
-            penalty = torch.abs(diff).sum(dim=-1).mean()
-            """
-            
-            """
-            ### sparsity penalty
-            alpha = 1/(state_pred.shape[-1] * state_pred.shape[-2])
-            norm2 = torch.linalg.vector_norm(state_pred,ord=0.5,dim=-1)
-            norm1 = torch.linalg.vector_norm(norm2,ord=1,dim=-1)
-            penalty = alpha*norm1.mean()
-            """
-
-            """
-            ### covariance penalty
-            cov = state_pred.transpose(-1,-2) @ state_pred /L 
-            sds = torch.diagonal(cov,dim1=-1,dim2=-2).sqrt()[:,:,None]
-            denom = sds @ sds.transpose(-1,-2)
-            abscorr = (cov/denom).abs()
-    
-            inds = torch.triu_indices(abscorr.shape[-1],abscorr.shape[-1],offset=-1,device=abscorr.device)
-            penalty = abscorr[:,inds[0],inds[1]].sum(dim=-1).mean()
-            """
 
             ##################################
             
@@ -255,29 +231,26 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             vn = 0.
             for idx,batch in enumerate(loaders['val'],start=epoch*len(loaders['train'])):
                 with torch.no_grad():
-                    x,y = batch
+                    x,dxdt,dx2dt2 = batch # each is bsz x seq len x n neurons + 1
+                    bsz,_,n = x.shape
+
                     x = x.to('cuda').to(torch.float32)
-                    y = y.to('cuda').to(torch.float32)
+                    dxdt = dxdt.to('cuda').to(torch.float32)
+                    dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2)
                     
-                    dy = deriv_approx_dy(y)
-                    # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-                    #scaling to "true" d2y
-                    dy2 = deriv_approx_d2y(y)/(dt**2)
-                    # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
-                    
-                    y2hat,weights = model(x,dt,smoothing) #state: B x L x SD
+                    dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
                     ## scaling to "true" d2y
-                    y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
+                    dx2hat = dx2hat * model.tau **2 #(model.tau*dt)**2
                     
                     #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
                     
                     #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
                     
-                    yhat = y2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
+                    yhat = dx2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
                     #print(yhat.shape)
                     # y starts as x[1:0]
-                    y = dy2 #torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
+                    y = dx2 #torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
                     L = y.shape[1]
                     if vis_freq > 0:
                         if idx == epoch*len(loaders['train']):
