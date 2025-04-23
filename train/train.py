@@ -196,7 +196,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
                     sst_sample = sst(y[:1,:,:1])
                     r2_sample = (1 - sse_sample/sst_sample).item()
-                    model.visualize(x,dt)
+                    model.visualize(x,dxdt,dt)
                 
                     on = np.random.choice(L-45)
                     ax = plt.gca()
@@ -257,7 +257,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                             sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
                             sst_sample = sst(y[:1,:,:1])
                             r2_sample = (1 - sse_sample/sst_sample).item()
-                            model.visualize(x,dt)
+                            model.visualize(x,dxdt,dt)
                         
                             on = np.random.choice(L-45)
                             ax = plt.gca()

@@ -626,12 +626,12 @@ class simple_ouroboros(nn.Module):
         return omega[:,L:,:],gamma[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:]],dim=-1)
     
 
-    def visualize(self,x,dt):
+    def visualize(self,x,dxdt,dt):
 
         B,L,D = x.shape
         L = 1000 - 8
         with torch.no_grad():
-            terms = self.get_funcs(x[:1,:1000,:],dt)
+            terms = self.get_funcs(x[:1,:1000,:],dxdt[:1,:1000,:],dt)
             terms = [t.detach().cpu().numpy().squeeze() for t in terms]
             
             torch.cuda.empty_cache()
