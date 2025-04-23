@@ -11,8 +11,8 @@ class aud_neur_ds(Dataset):
 
     def __init__(self,data):
         self.x = data
-        self.dxdt = savgol_filter(self.x,window_length=5,polyorder=3,deriv=1)
-        self.dx2dt2 = savgol_filter(self.x,window_length=5,polyorder=3,deriv=2)
+        self.dxdt = savgol_filter(self.x,window_length=5,polyorder=3,deriv=1,axis=1)
+        self.dx2dt2 = savgol_filter(self.x,window_length=5,polyorder=3,deriv=2,axis=1)
 
     def __len__(self):
 
