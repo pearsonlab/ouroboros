@@ -20,7 +20,22 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     audio_tags = [a.split('/')[-1] for a in audio_dirs]
     seg_tags = [s.split('/')[-2] for s in seg_dirs]
-    print(audio_tags,seg_tags)
+    valid = True
+    for tag in seg_tags:
+        try:
+            assert tag in audio_tags
+        except:
+            print(f"{tag} not in audio tags")
+            valid = False
+    for tag in audio_tags:
+        try:
+            assert tag in seg_tags
+        except:
+            print(f"{tag} not in seg tags")
+            valid = False 
+
+    assert valid
+    
 
     #print(audio_dirs[:5],seg_dirs[:5])
     audio_files = sum([glob.glob(os.path.join(a,'*' + audio_ext)) for a in audio_dirs],[])
