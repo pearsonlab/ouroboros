@@ -18,7 +18,11 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     seg_dirs = glob.glob(os.path.join(seg_loc,seg_subdirs))
     out_dirs = [os.path.join(o,out_ext) for o in audio_dirs]
 
-    print(audio_dirs[:5],seg_dirs[:5])
+    audio_tags = [a.split('/')[-1] for a in audio_dirs]
+    seg_tags = [s.split('/')[-2] for s in seg_dirs]
+    print(audio_tags,seg_tags)
+
+    #print(audio_dirs[:5],seg_dirs[:5])
     audio_files = sum([glob.glob(os.path.join(a,'*' + audio_ext)) for a in audio_dirs],[])
     seg_files = sum([glob.glob(os.path.join(s,'*' + seg_ext)) for s in seg_dirs],[])
     #print(audio_files,seg_files)
