@@ -60,7 +60,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     assert valid
     #print(audio_files,seg_files)
-    print(audio_files[:5],seg_files[:5])
+    #print(audio_files[:5],seg_files[:5])
     hps = tune_preprocessing(audio_files,seg_files,HP_DICT)
 
     preprocess(audio_dirs,out_dirs,hps,audio_ext=audio_ext)
