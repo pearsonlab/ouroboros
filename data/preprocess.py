@@ -246,6 +246,8 @@ def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav'):
 	assert len(audio_dirs) == len(out_dirs), print(f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs")
 	#print(hp_dict)
 	for in_dir,out_dir in zip(audio_dirs,out_dirs):
+		if not os.path.isdir(out_dir):
+			os.mkdir(out_dir)
 
 		afs = glob.glob(os.path.join(in_dir,'*' + audio_ext))
 
