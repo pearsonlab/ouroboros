@@ -53,7 +53,7 @@ def load_model(location,kernel_type='gauss'):
     sd = torch.load(location,weights_only=False)
     try:
         n_layers = sd['n_layers']
-        d_state = sd['n_state']
+        d_state = sd['d_state']
         d_conv = sd['d_conv']
         expand_factor = sd['expand_factor']
     except:
