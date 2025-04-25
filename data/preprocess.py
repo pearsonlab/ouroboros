@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import soundfile as sf
 import glob
 import os
+from itertools import repeat
+from joblib import Parallel,delayed
 
 ### wavelets:
 #morlet: higher mu -> greater frequency, lesser time resolution. for mu > 6
@@ -49,17 +51,18 @@ def viz(x, Tx, Wx,vmin=None,vmax=None,axs=True):
 
 def lin_band(Tx,slope,offset,bw,show=True,**kw):
 
-    na, N = Tx.shape
-    tcs = np.linspace(0, 1, N)
-    Cs       = (slope*tcs + offset) * na
-    freqband = bw * na * np.ones(N)
-    Cs, freqband = Cs.astype('int32'), freqband.astype('int32')
-
-    if show:
-        imshow(Tx, abs=1, aspect='auto', show=0, **kw)
-        plot(Cs + freqband, color='r')
-        plot(Cs - freqband, color='r', show=1)
-    return Cs, freqband
+	na, N = Tx.shape
+	tcs = np.linspace(0, 1, N)
+	Cs       = (slope*tcs + offset) * na
+	freqband = bw * na * np.ones(N)
+	Cs, freqband = Cs.astype('int32'), freqband.astype('int32')
+	#print(Cs[0],freqband[0])
+	#print("")
+	if show:
+		imshow(Tx, abs=1, aspect='auto', show=0, **kw)
+		plot(Cs + freqband, color='r')
+		plot(Cs - freqband, color='r', show=1)
+	return Cs, freqband
 
 def ssq_preprocess(data,tn,kw,chunk_len,show=True,min_band=0.01,max_band=0.35,return_full_ssq=True):
 	
@@ -78,13 +81,20 @@ def ssq_preprocess(data,tn,kw,chunk_len,show=True,min_band=0.01,max_band=0.35,re
 	#print(data.shape,tn.shape)
 	
 	for ii,on in enumerate(chunk_ons):
-		print(f"running chunk {ii+1}/{len(chunk_ons)}",end='\r')
+		#print(f"running chunk {ii+1}/{len(chunk_ons)}",end='\r')
 		off = min(len(data),on + chunk_len)
 		nrec = np.zeros(data.shape)
-		Tn, _,ssq_freqs,*_ = ssq_cwt(data[on:off], t=tn[on:off], **kw)
+		Tn, _,ssq_freqs,scales,*_ = ssq_cwt(data[on:off], t=tn[on:off], **kw)
 		if max_band > 1:
-			max_band = max_band/(ssq_freqs[0]) 
-			min_band = min_band/(ssq_freqs[0])
+			#print(max_band,min_band)
+			nf = Tn.shape[0]
+
+			max_band_new = np.sum(ssq_freqs >= min_band)/nf
+			min_band_new = np.sum(ssq_freqs >= max_band)/nf
+			
+			min_band = min_band_new
+			max_band = max_band_new
+			#assert False
 		bwn = (max_band - min_band)/2
 		offsetn = (min_band + max_band)/2
 		Csn, freqbandn = lin_band(Tn, slopen, offsetn, bwn, norm=(0, 4e-1),show=show)
@@ -105,7 +115,12 @@ def ssq_preprocess(data,tn,kw,chunk_len,show=True,min_band=0.01,max_band=0.35,re
 		Tsx, Sx, *_ = ssq_stft(full_rec)
 		viz(full_rec, np.flipud(Tsx), np.flipud(Sx),vmin = np.amin(np.abs(Sxo)),vmax=np.amax(np.abs(Sxo)))
 	if return_full_ssq:
-		return full_rec,ssq_freqs, ssq_cwt(data,t=tn,**kw)[0]
+		#print(full_rec.shape)
+		
+		full_ssq,_,full_freqs,full_scales,*_ = ssq_cwt(data,t=tn,**kw)
+		#print(full_freqs[-1],full_freqs[0],ssq_freqs[-1],ssq_freqs[0])
+		#assert full_ssq.shape[0] == Tn.shape[0]
+		return full_rec,full_freqs,full_ssq
 	else:
 		return full_rec,ssq_freqs,None
 
@@ -134,32 +149,51 @@ def _tune_input_helper(p):
 			p[key] = temp
 	return p
 
-def _tuning_plot(orig_spec,cleaned_spec,spec_extent,\
-				 scaleogram,min_band,max_band,scale_extent,vmin=0,vmax=1,\
+def _tuning_plot(orig_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
+				 scaleogram,min_band,max_band,vmin=0,vmax=1,\
 					save_loc='./pp.pdf'):
 
 	
-	ns,T = scaleogram.shape
-
+	nf,T = scaleogram.shape
+	#assert len(scale_freqs) == ns, print(ns,len(scale_freqs))
+	#scale_extent[2] = 0
+	#scale_extent[3] = ns
 	if max_band > 1:
-		max_band = max_band/scale_extent[2]
-		min_band = min_band/scale_extent[2]
+		
+		max_band_new = np.sum(scale_freqs >= min_band)/nf
+		min_band_new = np.sum(scale_freqs >= max_band)/nf
+		
+		min_band = min_band_new
+		max_band = max_band_new
 	bw = (max_band - min_band)/2
 	offset = (max_band + min_band)/2
-
-	ts = np.linspace(0,1,T) * scale_extent[1]
-	band = bw * np.ones(T) * scale_extent[2]
-	Cs = offset*scale_extent[2] *np.ones(T)
+	#print(offset,bw)
 	
-	fig,axs = plt.subplots(nrows=1,ncols=3,figsize=(12,4))
+	band = bw * np.ones(T) *nf
+	Cs = offset*nf *np.ones(T)
+	#print(Cs[0])
+	#print(band[0])
+
+	vmin_scale = np.amin(scaleogram)
+	vmax_scale = np.amax(scaleogram)
+	vmax_scale = (vmax_scale - vmin_scale)/10 + vmin_scale
+	fig,axs = plt.subplots(nrows=1,ncols=3,figsize=(13,4))
+	spec_extent = [ts[0],ts[-1],spec_freqs[0],spec_freqs[-1]]
+	scale_extent = [ts[0],ts[-1],nf,0]
 	axs[0].imshow(orig_spec,origin='lower',aspect='auto',vmin=vmin,vmax=vmax,extent=spec_extent)
 	axs[1].imshow(cleaned_spec,origin='lower',aspect='auto',vmin=vmin,vmax=vmax,extent=spec_extent)
-	axs[2].imshow(scaleogram,aspect='auto',cmap='bone',extent=scale_extent)
+	axs[2].imshow(scaleogram,aspect='auto',cmap='bone',vmin=vmin_scale,vmax=vmax_scale,extent=scale_extent)
+	#axs[2].set_xticks(np.arange(0,len(ts),len(ts)/10),ts[::int(round(len(ts)/10))])
+	axs[2].set_yticks(np.arange(0,nf,25),np.round(scale_freqs[::25]).astype(np.int32))
 	axs[2].plot(ts,Cs - band,color='r')
 	axs[2].plot(ts,Cs + band,color='r')
+	axs[0].set_ylabel("Frequency (Hz)")
 	axs[0].set_title("Original spectrogram")
 	axs[1].set_title("Reconstructed spectrogram")
 	axs[2].set_title("CWT with reconstruction boundaries")
+	for ax in axs:
+		ax.set_xlabel("Time (s)")
+	plt.tight_layout
 	plt.savefig(save_loc)
 	plt.close('all')
 
@@ -204,9 +238,10 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,img_fn='./pp.pdf'):
 
 			if '.wav' in audio_fn:
 				sr,a = wavfile.read(audio_fn)
+				
 			elif '.flac' in audio_fn:
 				a,sr = sf.read(audio_fn)
-
+			orig_dtype = a.dtype
 			on_ind,off_ind = int(round(on*sr)),int(round(off*sr))
 
 			curr_len = off_ind - on_ind
@@ -223,53 +258,70 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,img_fn='./pp.pdf'):
 			orig_spec = np.abs(sx_orig)
 			vmin = np.amin(orig_spec)
 			vmax = np.amax(orig_spec)
-			vmax = vmax - (vmax-vmin)/2
+			vmax = (vmax - vmin)/10 + vmin
 
 			cwt_kws = {'wavelet': (p['wavelet'],WAVELET_HP_DICT[p['wavelet']]),'nv':p['nv'],'scales':p['scales']}
 			# processing ssq cwt
 			recon_a,cwt_freqs,ssq_scaleogram = ssq_preprocess(orig_audio,t,cwt_kws,\
 													 p['chunk length'],show=False,\
 														min_band=p['band min'],max_band=p['band max'])
-
+			recon_a = recon_a.astype(orig_dtype)
+			wavfile.write('./test_wav.wav',rate=sr,data=recon_a)
 			_,sx_recon,*_ = ssq_stft(recon_a,fs=sr)
 			recon_spec = np.abs(sx_recon)
-			_tuning_plot(orig_spec,recon_spec,[t[0],t[-1],sx_freqs[0],sx_freqs[-1]],\
-						np.abs(ssq_scaleogram),p['band min'],p['band max'],[t[0],t[-1],cwt_freqs[0],cwt_freqs[-1]],\
+			_tuning_plot(orig_spec,recon_spec,t,sx_freqs,cwt_freqs,\
+						np.abs(ssq_scaleogram),p['band min'],p['band max'],\
 							vmin=vmin,vmax=vmax,save_loc=img_fn)
 			
 			resp = input('Continue? [y] or [s]top tuning or [r]etune params: ')
 			if resp == 's':
 				return p
 			
-def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav'):
+
+def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext):
+
+	print(f"processing directory {in_dir} \n")
+		
+	if not os.path.isdir(out_dir):
+		os.mkdir(out_dir)
+
+	afs = glob.glob(os.path.join(in_dir,'*' + audio_ext))
+
+	for af in afs:
+
+		new_fn = af.split('/')[-1].split(audio_ext)[0] + '_cleaned.wav'
+		new_fn = os.path.join(out_dir,new_fn)
+		if '.wav' in af:
+			sr,orig_audio = wavfile.read(af)
+		elif '.flac' in af:
+			orig_audio,sr = sf.read(af)
+
+		cwt_kws = {'wavelet': (hyperparameters['wavelet'],WAVELET_HP_DICT[hyperparameters['wavelet']]),
+					'nv':hyperparameters['nv'],
+					'scales':hyperparameters['scales']}
+		t = np.arange(0,len(orig_audio)/sr,1/sr)[:len(orig_audio)]
+		recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
+													hyperparameters['chunk length'],show=False,\
+													min_band=hyperparameters['band min'],\
+													max_band=hyperparameters['band max'],\
+														return_full_ssq=False)
+		wavfile.write(new_fn,rate=sr,data=recon_a)
+
+def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False):
 
 	assert len(audio_dirs) == len(out_dirs), print(f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs")
 	#print(hp_dict)
-	for in_dir,out_dir in zip(audio_dirs,out_dirs):
-		if not os.path.isdir(out_dir):
-			os.mkdir(out_dir)
+	if parallel:
+		n_jobs = int(os.cpu_count() // 2)
+		gen = zip(audio_dirs,out_dirs,repeat(hp_dict),repeat(audio_ext))
+		Parallel(n_jobs = n_jobs)(delayed(preprocess_helper)(*args) for args in gen)
+		
+	else:
+		for ii,(in_dir,out_dir) in enumerate(zip(audio_dirs,out_dirs)):
 
-		afs = glob.glob(os.path.join(in_dir,'*' + audio_ext))
+			preprocess_helper(in_dir,out_dir,hp_dict,audio_ext)
 
-		for af in afs:
-
-			new_fn = af.split('/')[-1].split(audio_ext)[0] + '_cleaned.wav'
-			new_fn = os.path.join(out_dir,new_fn)
-			if '.wav' in af:
-				sr,orig_audio = wavfile.read(af)
-			elif '.flac' in af:
-				orig_audio,sr = sf.read(af)
-
-			cwt_kws = {'wavelet': (hp_dict['wavelet'],WAVELET_HP_DICT[hp_dict['wavelet']]),
-			  			'nv':hp_dict['nv'],
-						'scales':hp_dict['scales']}
-			t = np.arange(0,len(orig_audio)/sr,1/sr)[:len(orig_audio)]
-			recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
-													 hp_dict['chunk length'],show=False,\
-														min_band=hp_dict['band min'],\
-														max_band=hp_dict['band max'],\
-															return_full_ssq=False)
-			wavfile.write(new_fn,rate=sr,data=recon_a)
+		
 
 
 
