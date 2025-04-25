@@ -40,6 +40,25 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     #print(audio_dirs[:5],seg_dirs[:5])
     audio_files = sum([glob.glob(os.path.join(a,'*' + audio_ext)) for a in audio_dirs],[])
     seg_files = sum([glob.glob(os.path.join(s,'*' + seg_ext)) for s in seg_dirs],[])
+    audio_tags = [a.split('.wav')[0].split('/')[-1] for a in audio_files]
+    seg_tags = [s.split('nrd.txt')[0].split('/')[-1] for s in seg_files]
+
+
+    valid = True
+    for tag in seg_tags:
+        try:
+            assert tag in audio_tags
+        except:
+            print(f"{tag} not in audio tags")
+            valid = False
+    for tag in audio_tags:
+        try:
+            assert tag in seg_tags
+        except:
+            print(f"{tag} not in seg tags")
+            valid = False 
+
+    assert valid
     #print(audio_files,seg_files)
     print(audio_files[:5],seg_files[:5])
     hps = tune_preprocessing(audio_files,seg_files,HP_DICT)
