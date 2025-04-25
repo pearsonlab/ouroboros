@@ -28,7 +28,7 @@ def get_audio(audio,fs,onset,offset,context_len=0.3):
     #print(a.shape)
     return a[:,None]
 
-def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,current_total=0,full_vocs=False):
+def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,current_total=0,full_vocs=False,extend=True):
 
     spikes = []
     auds = []
@@ -43,7 +43,7 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
     else:
         envelope=[]
 
-    if full_vocs:
+    if full_vocs and extend:
         # extend onoffs in a sensible way -- maybe to length of max onoff
         
         lens = onOffs[:,1] - onOffs[:,0]
@@ -118,7 +118,7 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
     return vocal_data, d[1]
 
 def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
-                        seg_type='.txt',seed=None,full_vocs=False):
+                        seg_type='.txt',seed=None,full_vocs=False,extend=True):
 
     random.seed(seed)
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
@@ -171,7 +171,7 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
                 
                 audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
                                        context_len=context_len,env=envelope,\
-                                        current_total=current_total,full_vocs=full_vocs)
+                                        current_total=current_total,full_vocs=full_vocs,extend=extend)
                 if not full_vocs:
                     audio_segs += audios
 
