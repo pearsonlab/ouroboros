@@ -223,7 +223,7 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,img_fn='./pp.pdf'):
 			orig_spec = np.abs(sx_orig)
 			vmin = np.amin(orig_spec)
 			vmax = np.amax(orig_spec)
-			vmax = vmax - (vmax-vmin)/4
+			vmax = vmax - (vmax-vmin)/2
 
 			cwt_kws = {'wavelet': (p['wavelet'],WAVELET_HP_DICT[p['wavelet']]),'nv':p['nv'],'scales':p['scales']}
 			# processing ssq cwt
