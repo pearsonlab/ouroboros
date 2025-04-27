@@ -44,7 +44,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     
 
     #print(audio_dirs[:5],seg_dirs[:5])
-    print(audio_ext,seg_ext)
+    #print(audio_ext,seg_ext)
     audio_files = sum([glob.glob(os.path.join(a,'*' + audio_ext)) for a in audio_dirs],[])
     seg_files = sum([glob.glob(os.path.join(s,'*' + seg_ext)) for s in seg_dirs],[])
     audio_files.sort()
