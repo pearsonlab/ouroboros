@@ -25,6 +25,9 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
+    
+    audio_tags.sort()
+    seg_tags.sort()
     valid = True
     for tag in seg_tags:
         try:
@@ -63,6 +66,8 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
             print(f"{tag} not in seg tags")
             valid = False 
 
+    true_segs = []
+    
     assert valid
     #print(audio_files,seg_files)
     #print(audio_files[:5],seg_files[:5])
