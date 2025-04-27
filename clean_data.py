@@ -25,9 +25,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
-    
-    audio_tags.sort()
-    seg_tags.sort()
+
     valid = True
     for tag in seg_tags:
         try:
@@ -48,10 +46,12 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     #print(audio_dirs[:5],seg_dirs[:5])
     audio_files = sum([glob.glob(os.path.join(a,'*' + audio_ext)) for a in audio_dirs],[])
     seg_files = sum([glob.glob(os.path.join(s,'*' + seg_ext)) for s in seg_dirs],[])
+    audio_files.sort()
+    seg_files.sort()
     audio_tags = [a.split('.wav')[0].split('/')[-1] for a in audio_files]
     seg_tags = [s.split('.txt')[0].split('/')[-1] for s in seg_files]
 
-
+    
     valid = True
     for tag in seg_tags:
         try:
