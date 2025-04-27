@@ -233,9 +233,10 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,img_fn='./pp.pdf'):
 			onoffs = np.loadtxt(seg_fn)
 			if len(onoffs.shape) == 1:
 				onoffs = onoffs[None,:]
+			
 			a_ind = np.random.choice(len(onoffs))
 			on,off = onoffs[a_ind,0],onoffs[a_ind,1]
-
+			print(on,off)
 			if '.wav' in audio_fn:
 				sr,a = wavfile.read(audio_fn)
 				
