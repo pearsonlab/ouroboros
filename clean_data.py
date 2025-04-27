@@ -46,7 +46,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     audio_files = sum([glob.glob(os.path.join(a,'*' + audio_ext)) for a in audio_dirs],[])
     seg_files = sum([glob.glob(os.path.join(s,'*' + seg_ext)) for s in seg_dirs],[])
     audio_tags = [a.split('.wav')[0].split('/')[-1] for a in audio_files]
-    seg_tags = [s.split('nrd.txt')[0].split('/')[-1] for s in seg_files]
+    seg_tags = [s.split('.txt')[0].split('/')[-1] for s in seg_files]
 
 
     valid = True
