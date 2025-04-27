@@ -296,6 +296,8 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext):
 		elif '.flac' in af:
 			orig_audio,sr = sf.read(af)
 
+		orig_dtype = orig_audio.dtype
+
 		cwt_kws = {'wavelet': (hyperparameters['wavelet'],WAVELET_HP_DICT[hyperparameters['wavelet']]),
 					'nv':hyperparameters['nv'],
 					'scales':hyperparameters['scales']}
@@ -305,6 +307,7 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext):
 													min_band=hyperparameters['band min'],\
 													max_band=hyperparameters['band max'],\
 														return_full_ssq=False)
+		recon_a = recon_a.astype(orig_dtype)
 		wavfile.write(new_fn,rate=sr,data=recon_a)
 
 def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False):
