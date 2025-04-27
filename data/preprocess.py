@@ -252,6 +252,8 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,img_fn='./pp.pdf'):
 				off += diff/sr
 				print(f'extending segment by {diff/sr:.2f}s')
 			orig_audio = a[on_ind:off_ind]
+			print(orig_audio.shape)
+			print(len(orig_audio)/sr, off-on)
 
 			t = np.arange(0,off-on,1/sr)[:len(orig_audio)]
 			
