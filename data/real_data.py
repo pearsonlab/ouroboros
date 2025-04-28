@@ -138,6 +138,8 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
         print("different number of wavs and segs! only taking ones with overlap")
         wav_endings = [w.split('/')[-1].split(audio_type[-4:])[0] for w in wavs]
         seg_endings = [s.split('/')[-1].split(seg_type[-4:])[0] for s in segs]
+        print(wav_endings[:5])
+        print(seg_endings[:5])
         all_endings = set(wav_endings).intersection(seg_endings)
         wavs = [w for w in wavs if w.split('/')[-1].split(audio_type[-4:])[0] in all_endings]
         segs = [s for s in segs if s.split('/')[-1].split(seg_type[-4:])[0] in all_endings]
