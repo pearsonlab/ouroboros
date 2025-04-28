@@ -131,6 +131,8 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
     #print(f"searching for segments in {os.path.join(segpath,'*' + seg_type)}")
     segs = glob.glob(os.path.join(segpath,'*' + seg_type))
     segs.sort()
+    print(len(wavs))
+    print(len(segs))
     #print(wavs,segs)
     if len(wavs) != len(segs):
         print("different number of wavs and segs! only taking ones with overlap")
@@ -140,7 +142,8 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
         wavs = [w for w in wavs if w.split('/')[-1].split(audio_type[-4:])[0] in all_endings]
         segs = [s for s in segs if s.split('/')[-1].split(seg_type[-4:])[0] in all_endings]
 
-
+    print(len(wavs))
+    print(len(segs))
     assert len(wavs) == len(segs), print(f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments")
     order = np.random.choice(len(wavs),len(wavs),replace=False)
     wavs = [wavs[o] for o in order]
