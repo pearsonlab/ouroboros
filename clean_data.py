@@ -1,4 +1,4 @@
-from data.preprocess import tune_preprocessing, preprocess,HP_DICT
+from data.preprocess import tune_preprocessing, preprocess,filter_by_tags,HP_DICT
 
 import glob
 import os
@@ -12,12 +12,14 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     ## default: grabs all subdirs
 
-
-
     audio_dirs = glob.glob(os.path.join(audio_loc,audio_subdirs))
     seg_dirs = glob.glob(os.path.join(seg_loc,seg_subdirs))
-    out_dirs = [os.path.join(o,out_ext) for o in audio_dirs]
+    audio_dirs.sort()
+    seg_dirs.sort()
+    #out_dirs = [os.path.join(o,out_ext) for o in audio_dirs]
 
+    ## this part assumes that the top subdirectory in audio_subdirs is the one matched across 
+    ## audio, seg
     split_aud_sub = audio_subdirs.split('/')
     split_seg_sub = seg_subdirs.split('/')
     aud_sub_depth=len(split_aud_sub)
@@ -25,24 +27,9 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
-
-    valid = True
-    for tag in seg_tags:
-        try:
-            assert tag in audio_tags
-        except:
-            print(f"{tag} not in audio tags")
-            valid = False
-    for tag in audio_tags:
-        try:
-            assert tag in seg_tags
-        except:
-            print(f"{tag} not in seg tags")
-            valid = False 
-
-    assert valid
     
-
+    audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
+    out_dirs = [os.path.join(o,out_ext) for o in audio_dirs]
     #print(audio_dirs[:5],seg_dirs[:5])
     #print(audio_ext,seg_ext)
     audio_files = sum([glob.glob(os.path.join(a,'*' + audio_ext)) for a in audio_dirs],[])
@@ -52,24 +39,25 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     audio_tags = [a.split(audio_ext)[0].split('/')[-1] for a in audio_files]
     seg_tags = [s.split(seg_ext)[0].split('/')[-1] for s in seg_files]
 
+    audio_files,seg_files = filter_by_tags(audio_files,seg_files,audio_tags,seg_tags)
     
-    valid = True
-    for tag in seg_tags:
-        try:
-            assert tag in audio_tags
-        except:
-            print(f"{tag} not in audio tags")
-            valid = False
-    for tag in audio_tags:
-        try:
-            assert tag in seg_tags
-        except:
-            print(f"{tag} not in seg tags")
-            valid = False 
+    #valid = True
+    #for tag in seg_tags:
+    #    try:
+    #        assert tag in audio_tags
+    #    except:
+    #        print(f"{tag} not in audio tags")
+    #        valid = False
+    #for tag in audio_tags:
+    #    try:
+    #        assert tag in seg_tags
+    #    except:
+    #        print(f"{tag} not in seg tags")
+    #        valid = False 
 
     true_segs = []
     
-    assert valid
+    #sassert valid
     #print(audio_files,seg_files)
     #print(audio_files[:5],seg_files[:5])
     hps = tune_preprocessing(audio_files,seg_files,HP_DICT)
