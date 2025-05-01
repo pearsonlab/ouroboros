@@ -12,6 +12,7 @@ import soundfile as sf
 from scipy.io import loadmat
 from utils import butter_filter
 import random
+from data.preprocess import filter_by_tags
 
 def get_audio(audio,fs,onset,offset,context_len=0.3):
 
@@ -117,33 +118,53 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
 
     return vocal_data, d[1]
 
-def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
+def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
+                        max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
                         seg_type='.txt',seed=None,full_vocs=False,extend=True):
 
     random.seed(seed)
+    audio_dirs = glob.glob(os.path.join(audiopath,audio_subdir))
+    seg_dirs = glob.glob(os.path.join(segpath,seg_subdir))
+    audio_dirs.sort()
+    seg_dirs.sort()
+    split_aud_sub = audio_subdir.split('/')
+    split_seg_sub = seg_subdir.split('/')
+    aud_sub_depth=len(split_aud_sub)
+    seg_sub_depth=len(split_seg_sub)
+
+    audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
+    seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
+    
+    audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
+
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
     #days = [d.split('/')[-1] for d in wav_dirs]
     #print("running this code")
     #assert False
     #print(f"searching for audio in {os.path.join(audiopath,'*' + audio_type)}")
-    wavs = glob.glob(os.path.join(audiopath,'*' + audio_type))
+    wavs = sum([glob.glob(os.path.join(a,'*' + audio_type)) for a in audio_dirs],[])
     wavs.sort()
     #print(f"searching for segments in {os.path.join(segpath,'*' + seg_type)}")
-    segs = glob.glob(os.path.join(segpath,'*' + seg_type))
+    segs = sum([glob.glob(os.path.join(s,'*' + seg_type)) for s in seg_dirs],[])
     segs.sort()
+    audio_tags = [a.split(audio_type)[0].split('/')[-1] for a in wavs]
+    seg_tags = [s.split(seg_type)[0].split('/')[-1] for s in segs]
+
     #print(len(wavs))
     #print(len(segs))
     #print(wavs,segs)
+    wavs,segs = filter_by_tags(wavs,segs,audio_tags,seg_tags)
+    """
     if len(wavs) != len(segs):
         print("different number of wavs and segs! only taking ones with overlap")
-        wav_endings = [w.split('/')[-1].split(audio_type[-4:])[0].split('_cleaned')[0] for w in wavs]
-        seg_endings = [s.split('/')[-1].split(seg_type[-4:])[0] for s in segs]
+        wav_endings = [w.split('/')[-1].split(audio_type)[0] for w in wavs]
+        seg_endings = [s.split('/')[-1].split(seg_type)[0] for s in segs]
         #print(wav_endings[:5])
         #print(seg_endings[:5])
         all_endings = set(wav_endings).intersection(seg_endings)
         wavs = [w for w in wavs if w.split('/')[-1].split(audio_type[-4:])[0].split('_cleaned')[0] in all_endings]
         segs = [s for s in segs if s.split('/')[-1].split(seg_type[-4:])[0] in all_endings]
-
+    """
     #print(len(wavs))
     #print(len(segs))
     assert len(wavs) == len(segs), print(f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments")
