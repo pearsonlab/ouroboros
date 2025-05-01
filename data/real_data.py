@@ -81,6 +81,29 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
     #print(f"kept {ii}/{total_vocs} vocalizations more than 20 ms long")
     return auds
 
+def make_marmo_seg_file(matfile,savedir = ''):
+
+    d = loadmat(matfile)
+    vocal = d['vocal'][0][0]
+    aud = vocal[0]
+    L = len(aud)
+    fs = vocal[1].squeeze()
+    onset,offset = 0, L/fs
+    voctype = vocal[5]
+    savedir = ''.join(matfile.split('/')[:-1]) if savedir == '' else savedir
+    fn = matfile.split('/')[-1].split('.mat')[0]    
+
+    new_fn_wav = fn + '_' + voctype + '.wav'
+    new_fn_seg = fn + '_' + voctype + '.txt'
+
+    with open(new_fn_seg,'w') as f:
+        f.write(str(onset) + '\t' + str(offset) + '\t' + str(voctype))
+
+    wavfile.write(new_fn_wav,rate=fs,data=aud)
+
+    return new_fn_wav,new_fn_seg
+
+
 def get_audio_from_mat(matfile,context_len=0.02,max_pairs=600,env=False):
 
     d = loadmat(matfile)
