@@ -27,8 +27,9 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
-    
+    #print(audio_tags,seg_tags)
     audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
+    #print(audio_dirs,seg_dirs)
     out_dirs = [os.path.join(o,out_ext) for o in audio_dirs]
     #print(audio_dirs[:5],seg_dirs[:5])
     #print(audio_ext,seg_ext)
@@ -60,6 +61,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     #sassert valid
     #print(audio_files,seg_files)
     #print(audio_files[:5],seg_files[:5])
+    assert len(audio_files) > 0, print("no audio files! check your directories & subdirs")
     hps = tune_preprocessing(audio_files,seg_files,HP_DICT)
 
     preprocess(audio_dirs,out_dirs,hps,audio_ext=audio_ext,parallel=parallel)
