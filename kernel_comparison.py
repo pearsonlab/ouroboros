@@ -14,6 +14,7 @@ from train.eval import eval_model_error,assess_kernels
 from utils import sse
 
 def run_model(audio_path,seg_path='', model_path= '',\
+              audio_subdir='',seg_subdir='',\
               seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
                 context_len=0.3,max_pairs=1000,trend_level=1,
                 nEpochs=100, kernel_type='gauss',n_kernels=10,alpha=1e7,seed=None,\
@@ -31,7 +32,8 @@ def run_model(audio_path,seg_path='', model_path= '',\
         os.mkdir(model_path)
  
     print(f'loading data from {audio_path}, {seg_path}')
-    audios,sr = get_segmented_audio(audio_path,seg_path,envelope=False,context_len=context_len,\
+    audios,sr = get_segmented_audio(audio_path,seg_path,audio_subdir=audio_subdir,\
+                                    seg_subdir=seg_subdir,envelope=False,context_len=context_len,\
                                     audio_type=audio_filetype,seg_type=seg_filetype,max_pairs=max_pairs,seed=seed)
 
     print(f"splitting {len(audios)} samples into dataloaders")
