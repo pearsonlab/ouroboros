@@ -51,12 +51,12 @@ def loss_plot(train_loss,val_loss,save_loc='',show=True):
     train_loss,val_loss = np.array(train_loss),np.array(val_loss)
 
     ax = plt.gca()
-    ax.plot(train_loss,color='tab:blue',label="Train loss")
-    ax.plot(val_loss[:,0],val_loss[:,1],color='tab:orange',label ='Validation loss')
+    ax.plot(np.log(train_loss),color='tab:blue',label="Train loss")
+    ax.plot(val_loss[:,0],np.log(val_loss[:,1]),color='tab:orange',label ='Validation loss')
     #ax.set_xlabel("Gradient steps")
     #ax.set_ylabel("Loss (MSE)")
 
-    format_axes(ax,xlabel="Gradient steps",ylabel="Model performance")
+    format_axes(ax,xlabel="Gradient steps",ylabel="Model performance (log MSE)")
     plt.legend()
     plt.savefig(os.path.join(save_loc,'train_test_loss.svg'))
     if show:
