@@ -211,7 +211,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                onoffs = np.loadtxt(v)
+                onoffs = np.loadtxt(v,usecols=(0,1))
             if len(onoffs) > 0:
                 if len(onoffs.shape)==1:
                     onoffs = onoffs[None,:]
