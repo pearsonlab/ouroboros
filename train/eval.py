@@ -38,7 +38,7 @@ def eval_model_error(dls,model,dt,comparison='val'):
             y = dx2
             L = y.shape[1]
 
-            err = sse(yhat[:,:L,:],y,reduction='none')#((y - yhat[:,:L,:])**2).sum(dim=1)
+            err = sse(yhat,y,reduction='none')#((y - yhat[:,:L,:])**2).sum(dim=1)
             err = err.detach().cpu().numpy().squeeze()
             #y = y.detach().cpu().numpy()
             tot = sst(y,reduction='none')
@@ -68,7 +68,7 @@ def eval_model_error(dls,model,dt,comparison='val'):
             y = dx2 
             
             L = y.shape[1]
-            err = sse(yhat[:,:L,:],y,reduction='none') #((y - yhat[:,:L,:])**2).sum(dim=1)
+            err = sse(yhat,y,reduction='none') #((y - yhat[:,:L,:])**2).sum(dim=1)
             err = err.detach().cpu().numpy().squeeze()
             #y = y.detach().cpu().numpy()
             tot = sst(y,reduction='none') #((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
