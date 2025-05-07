@@ -159,7 +159,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
     
     audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
-
+    #print(audio_dirs,seg_dirs)
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
     #days = [d.split('/')[-1] for d in wav_dirs]
     #print("running this code")
@@ -173,10 +173,12 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     audio_tags = [a.split(audio_type)[0].split('/')[-1] for a in wavs]
     seg_tags = [s.split(seg_type)[0].split('/')[-1] for s in segs]
 
+    #print(audio_tags,seg_tags)
     #print(len(wavs))
     #print(len(segs))
     #print(wavs,segs)
     wavs,segs = filter_by_tags(wavs,segs,audio_tags,seg_tags)
+    #print(wavs,segs)
     """
     if len(wavs) != len(segs):
         print("different number of wavs and segs! only taking ones with overlap")
