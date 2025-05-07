@@ -199,31 +199,42 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     model.visualize(x,dxdt,dt)
                 
                     on = np.random.choice(L-600)
-                    fig,(ax1,ax2,ax3,ax4) = plt.subplots(nrows=1,ncols=4,sharey=False,figsize=(15,5))
-                    #ax1 = fig.add_subplot(1,2,1,sharey=True)
-                    #ax2 = fig.add_subplot(1,2,2,sharey=True)
-                    #ax3 = fig.add_subplot(223)
-                    #ax4 = fig.add_subplot(224)
-                    ax1.plot(yhat[0,:,0].detach().cpu().numpy(),label='model')
+                    resids = (y[0,:,0] - yhat[0,:,0]).detach().cpu().numpy()*dt**2
+                    fig,(ax1,ax2,ax3,ax4,ax5,ax6) = plt.subplots(nrows=1,ncols=6,sharey=False,figsize=(20,5))
+
+                    ax1.plot(yhat[0,:,0].detach().cpu().numpy()*dt**2,label='model')
                     ax1.set_title('model')
                     ax1.set_ylabel('a.u.')
-                    ax2.plot(y[0,:,0].detach().cpu().numpy(),label='data',color='tab:orange')
+                    ax2.plot(y[0,:,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
                     ax2.set_title('data')
                     ylims = ax2.get_ylim()
-                   
-                    ax3.plot((y[0,on:on+600,0] - yhat[0,on:on+600,0]).detach().cpu().numpy(),label='res',color='tab:red')
-                    ax3.set_title('residuals')
-                    ax4.plot(y[0,on+300:on+350,0].detach().cpu().numpy(),label='data',color='tab:orange')
-                    ax4.plot(y[0,on+300:on+350,0].detach().cpu().numpy(),label='model',color='tab:blue')
+                    l1,=ax3.plot(y[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
+                    l2,=ax3.plot(yhat[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='model',color='tab:blue')
+                    ax4.spines[['left','right','top','bottom']].set_visible(False)
+                    ax4.set_xticks([])
+                    ax4.set_yticks([])
+                    ax4.legend([l1,l2],['Data','Model'])
+
+                    ax5.plot(resids,label='res',color='tab:red')
+                    ax5.set_title('residuals')
+                    ax6.hist(resids,bins=100,density=True)
+                    xlims = ax6.get_xlim()
+                    sd = np.nanstd(resids)
+                    px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
+                    xax = np.linspace(xlims[0],xlims[1],1000)
+                    yax = px(xax)
+                    ax6.plot(xax,yax,color='tab:red')
                     
                     ax1.set_ylim(ylims)
                     ax2.set_ylim(ylims)
-                    ax4.set_ylim(ylims)
-                    ax4.legend()
-
+                    ax3.set_ylim(ylims)
+                    ax5.set_ylim(ylims)
+                    ax6.set_xlim(xlims)
+                    
 
                     fig.suptitle(f"sample r2: {r2_sample: 0.4f}")
                     #ax.legend()
+                    plt.tight_layout()
                     plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
                     plt.close()
 
@@ -233,7 +244,15 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             #alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
             l = loss# + alpha*trend_penalty
             if reg_weights:
-                penalty =  weights.sum(dim=-1).mean()
+                B,L,P,P = weights.shape
+                lam_mat = torch.arange(P,\
+                                       dtype=torch.float32,\
+                                        device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
+                #print(lam_mat.shape)
+                #assert torch.all(lam_mat >= 0)
+                w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam
+
+                penalty =  (w**2 *weights**2).sum(dim=(-1,-2)).mean()
                 l = l + penalty
             #print(l)
             l.backward()
@@ -280,34 +299,56 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                             model.visualize(x,dxdt,dt)
                         
                             on = np.random.choice(L-600)
-                            fig,(ax1,ax2,ax3,ax4) = plt.subplots(nrows=1,ncols=2,sharey=True,figsize=(15,5))
-                            #ax1 = fig.add_subplot(1,2,1,sharey=True)
-                            #ax2 = fig.add_subplot(1,2,2,sharey=True)
-                            #ax3 = fig.add_subplot(223)
-                            #ax4 = fig.add_subplot(224)
-                            ax1.plot(yhat[0,on:on+600,0].detach().cpu().numpy() * dt**2,label='model')
+                            
+                            resids = (y[0,on:on+600,0] - yhat[0,on:on+600,0]).detach().cpu().numpy()*dt**2
+                            fig,(ax1,ax2,ax3,ax4,ax5,ax6) = plt.subplots(nrows=1,ncols=6,sharey=False,figsize=(20,5))
+
+                            ax1.plot(yhat[0,on:on+600,0].detach().cpu().numpy()*dt**2,label='model')
                             ax1.set_title('model')
-                            ax1.set_ylabel('a.u')
-                            ax2.plot(y[0,on:on+600,0].detach().cpu().numpy(),label='data',color='tab:orange')
+                            ax1.set_ylabel('a.u.')
+                            ax2.plot(y[0,on:on+600,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
                             ax2.set_title('data')
-                            ax3.plot((y[0,on:on+600,0] - yhat[0,on:on+600,0]).detach().cpu().numpy(),label='res',color='tab:red')
-                            ax3.set_title('residuals')
-                            ax4.plot(y[0,on+300:on+350,0].detach().cpu().numpy(),label='data',color='tab:orange')
-                            ax4.plot(y[0,on+300:on+350,0].detach().cpu().numpy(),label='model',color='tab:blue')
-                            ax4.legend()
+                            ylims = ax2.get_ylim()
+                            l1,=ax3.plot(y[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
+                            l2,=ax3.plot(yhat[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='model',color='tab:blue')
+                            ax4.spines[['left','right','top','bottom']].set_visible(False)
+                            ax4.set_xticks([])
+                            ax4.set_yticks([])
+                            ax4.legend([l1,l2],['Data','Model'])
+
+                            ax5.plot(resids,label='res',color='tab:red')
+                            ax5.set_title('residuals')
+                            ax6.hist(resids,bins=100,density=True)
+                            xlims = ax6.get_xlim()
+                            sd = np.nanstd(resids)
+                            px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
+                            xax = np.linspace(xlims[0],xlims[1],1000)
+                            yax = px(xax)
+                            ax6.plot(xax,yax,color='tab:red')
+                            
+                            ax1.set_ylim(ylims)
+                            ax2.set_ylim(ylims)
+                            ax3.set_ylim(ylims)
+                            ax5.set_ylim(ylims)
+                            ax6.set_xlim(xlims)
                             fig.suptitle(f"sample r2: {r2_sample: 0.4f}")
-                            #ax = plt.gca()
-                            #ax.plot(yhat[0,on:on+600,0].detach().cpu().numpy(),label='model')
-                            #ax.plot(y[0,on:on+600,0].detach().cpu().numpy(),label='data')
-                            #ax.set_title(f"sample r2: {r2_sample: 0.4f}")
-                            #ax.legend()
+                            plt.tight_layout()
                             plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}_test.svg"))
                             plt.close()
                     
                     l = loss_fn(y,yhat[:,:L,:])
                     tot = sst(y)
                     if reg_weights:
-                        penalty = weights.sum(dim=-1).mean()
+                        B,L,P,P = weights.shape
+                        lam_mat = torch.arange(P,\
+                                            dtype=torch.float32,\
+                                                device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
+                        #print(lam_mat.shape)
+                        #assert torch.all(lam_mat >= 0)
+                        w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam
+
+                        penalty =  (w**2 *weights**2).sum(dim=(-1,-2)).mean()
+                        #l = l + penalty
                     vl += l.item()#1 - l.item()/tot.item()
 
                     if reg_weights:
