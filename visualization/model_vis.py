@@ -51,12 +51,12 @@ def loss_plot(train_loss,val_loss,save_loc='',show=True):
     train_loss,val_loss = np.array(train_loss),np.array(val_loss)
 
     ax = plt.gca()
-    ax.plot(np.log(train_loss),color='tab:blue',label="Train loss")
-    ax.plot(val_loss[:,0],np.log(val_loss[:,1]),color='tab:orange',label ='Validation loss')
+    ax.plot(np.log10(train_loss),color='tab:blue',label="Train loss")
+    ax.plot(val_loss[:,0],np.log10(val_loss[:,1]),color='tab:orange',label ='Validation loss')
     #ax.set_xlabel("Gradient steps")
     #ax.set_ylabel("Loss (MSE)")
 
-    format_axes(ax,xlabel="Gradient steps",ylabel="Model performance (log MSE)")
+    format_axes(ax,xlabel="Gradient steps",ylabel="Model performance (log10 MSE)")
     plt.legend()
     plt.savefig(os.path.join(save_loc,'train_test_loss.svg'))
     if show:
@@ -64,20 +64,68 @@ def loss_plot(train_loss,val_loss,save_loc='',show=True):
     
     plt.close()
 
-def visualize_kernel(model,y,dt):
+def get_kernel_grid(weights,grid_points,kernel):
+
+    # weights should be 1 x L x P x P
+    # grid points should be B x 1 x D
+    # kernel should be a kernel
+    _,L,P,P = weights.shape
+    B,_,d = grid_points.shape
+
+    kerns = []
+    for ind in range(L):
+
+        w = weights[:,ind:ind+1,:,:]
+        w= np.tile(w,[B,1,1,1])
+        kern = kernel.forward_given_weights_numpy(grid_points,w)
+        kerns.append(kern.squeeze()) # should append a B member
+
+
+    return np.stack(kerns,axis=0) # should now be L x B
+
+
+
+def visualize_kernel(model,y,dy,dt):
 
     # y: B x L x d
     y = y[None,:,:]
     smooth_len = int(round(model.smooth_len/dt))
-    dy = deriv_approx_dy(y)
-    z = torch.cat([y[:,4:-4,:],dy],dim=-1)
+    #dy = deriv_approx_dy(y)
+    z = torch.cat([y,dy],dim=-1)
     x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
 
     weight_control = model.kernel_mamba(x_in)
-    weighted_kernels = model.kernel(z,weight_control,smooth_len)/model.tau
-    y,dy = y.detach().cpu().numpy().squeeze()[4:-4],dy.detach().cpu().numpy().squeeze()/dt
+    weighted_kernels,weights = model.kernel(z,weight_control,smooth_len)*model.tau
+    y,dy = y.detach().cpu().numpy().squeeze(),dy.detach().cpu().numpy().squeeze()/dt
     spec,t,f, _ = get_spec(y,int(round(1/dt)),onset=0,offset=len(y)*dt,shoulder=0.0,interp=False,win_len=1028,min=-2,max=3.5)
     weighted_kernels = weighted_kernels.detach().cpu().numpy().squeeze()
+    weights = weights.detach().cpu().numpy().squeeze() #should be 1 x L x P x P
+    assert weights.shape == (1,z.shape[1],model.kernel.nTerms+1,model.kernel.nTerms+1), print(weights.shape)
+
+    ygrid = np.linspace(-1,1,50)
+    dygrid = np.linspace(-1,1,50)/dt
+    ygrid,dygrid = np.meshgrid(ygrid,dygrid)
+    ygrid,dygrid = ygrid.flatten(),dygrid.flatten()
+    zgrid = np.stack([ygrid,dygrid],axis=-1)[:,None,:] # now B x 1x 2d
+    kerns = get_kernel_grid(weights,zgrid,model.kernel)
+    kerns = np.reshape(kerns,[kerns.shape[0],50,50])
+    fig = plt.figure(figsize=(10,10))
+    ax1=fig.add_subplot(211)
+    ax2=fig.add_subplot(223)
+    ax3 = fig.add_subplot(224)
+
+    kmax = np.amax(kerns.abs())
+    def init():
+        
+        s = ax1.imshow(spec,aspect='auto',origin='lower',extent=[t[0],t[-1],f[0],f[-1]])
+        l, = ax1.vlines(0,ymin=f[0],ymax=f[-1],color='tab:red')
+        ax1.set_title('Song')
+        w = ax2.matshow(weights[0,0,:,:])
+        ax2.set_title('Weights at time 0.0')
+        k = ax3.imshow(kerns[0,:,:],vmin=-kmax,vmax=kmax)
+        ax3.set_title('Kernel at time 0.0')
+        return s,l,w,k
+    
 
     fig,axs = plt.subplots(nrows=2,ncols=1,figsize=(6,10))
     g = axs[1].scatter(y,dy,c=weighted_kernels)
