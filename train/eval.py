@@ -35,7 +35,10 @@ def deriv_approx_d2y(data):
 
     return savgol_filter(data,window_length=5,polyorder=3,deriv=2,axis=1)
 
-def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,smoothing=True,strategy='interp',oversample_prop=1,burn_in_length=0.001):
+def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
+                             smoothing=True,strategy='interp',\
+                                oversample_prop=1,burn_in_length=0.001,\
+                                    save_dir = '.'):
 
         # general integration params
         B,L,D = x.shape
@@ -202,15 +205,32 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,smoothing=
         hat1Err = ((y2_corr - xTrue[burn_in_start:])**2).sum()
         #hat2Err = ((y3_corr - xTrue[burn_in_start:])**2).sum()
 
+        ##### y plot ####
         ax = plt.gca()
         ax.plot(xTrue,label='true')
-        ax.plot(y1_corr,label='integrated empirical')
-        ax.plot(y2_corr,label='integrated predicted 2nd derivative')
+        ax.plot(y1_corr,label='integrated, corrected empirical')
+        ax.plot(y2_corr,label='integrated,corrected predicted 2nd derivative')
         #ax.plot(y3_corr,label='full integration')
         #ax.plot(y2,label='integrated predicted d2')
         plt.legend()
-        plt.show()
+        plt.savefig(os.path.join(save_dir,'integrations_y.svg'))
+        #plt.show()
         plt.close()
+
+        ##### dy plot #######
+        dxTrue = xdot.detach().cpu().numpy().squeeze()[:int_length_samples][burn_in_start:]/dt
+        ax = plt.gca()
+        ax.plot(dxTrue,label='empirical 1st derivative')
+        ax.plot(dy1,label='integrated, corrected empirical')
+        ax.plot(dy2,label='integrated,corrected predicted 2nd derivative')
+        #ax.plot(y3_corr,label='full integration')
+        #ax.plot(y2,label='integrated predicted d2')
+        plt.legend()
+        plt.savefig(os.path.join(save_dir,'integrations_dy.svg'))
+        #plt.show()
+        plt.close()
+
+        ##### spectrograms  ######
         truspec,ittr,iftr,*_ = get_spec(xTrue.squeeze(),int(round(1/dt)),onset=0,offset=xTrue.shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
@@ -227,14 +247,18 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,smoothing=
                                     
         fig,axs = plt.subplots(nrows=1,ncols=3)
         axs[0].imshow(truspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
+        axs[0].set_title("Original data")
         axs[1].imshow(intspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
         axs[1].set_yticks([])
+        axs[1].set_title("Integrated, \n corrected empirical")
         axs[2].imshow(int2spec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
         axs[2].set_yticks([])
+        axs[2].set_title("Integrated, corrected\n predicted 2nd derivative")
         #axs[3].imshow(modelspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
         #axs[3].set_yticks([])
         
-        plt.show()
+        #plt.show()
+        plt.savefig(os.path.join(save_dir,'integrated_spectrograms.svg'))
         plt.close()
         return (trueErr,hat1Err),(y1,y2),(y1_corr,y2_corr) #hat2Err,y3,y3_corr
 
