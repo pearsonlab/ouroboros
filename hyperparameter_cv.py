@@ -42,7 +42,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     print(f'getting dataloaders with seed {seed}')
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
-    lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) * 10**2.5
+    lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
     #im going to ASSUME that with lambda = 1, regularization is 
     # on the order of 10^13, loss on the order of 10^18 -- so multiply all these by 10^2.5 (since we end up multiplying by lambda^2)
     lambda_xaxis = np.arange(len(lambdas))
