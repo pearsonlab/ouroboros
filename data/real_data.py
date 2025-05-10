@@ -159,6 +159,8 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
     
     audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
+    assert len(audio_dirs) >0, \
+        print(f"something went wrong with filtering! i recieved {audiopath},{segpath} as paths,{audio_subdir},{seg_subdir} as subdirs")
     #print(audio_dirs,seg_dirs)
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
     #days = [d.split('/')[-1] for d in wav_dirs]

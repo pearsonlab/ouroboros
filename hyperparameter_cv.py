@@ -95,7 +95,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
         lam_test_cv_sd.append(test_sd)
 
     min_err_ind = np.argmax(lam_test_cv_err) # argmax, since 'err' is actually r2
-    print(f"best R2 alpha for {30} kernels: {lambdas[min_err_ind]}")
+    print(f"best R2 alpha for {n_kernels} kernels: {lambdas[min_err_ind]}")
     ax = plt.gca()
     ax.bar(lambda_xaxis,lam_train_cv_err,0.25,color='tab:blue',label='train')
     ax.bar(lambda_xaxis+0.5,lam_test_cv_err,0.25,color='tab:orange',label='validation')
