@@ -6,7 +6,7 @@ from jax import lax
 import diffrax 
 
 import os
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.2'
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.1'
 
 from scipy.signal import stft
 import scipy.io as sio
@@ -24,24 +24,39 @@ def make_pulse_sequence(pulse_fun, arg_list):
 
     return scan_and_sum
 
+###### vS tension function #####
+kshape = 5  # shape parameter of gamma function
+kscale = 0.025  # rate parameter of gamma function (s)
+kpeak = 0.06  # peak value (Volts)
+klocs = jnp.array([0, 0.5, 1, 1.5])
 def make_tension_pulse_fn(shape=1, scale=1, peak=1):
     norm = peak * jnp.exp(shape - shape * jnp.log(shape) - shape * jnp.log(scale)) 
 
     fn = lambda t, loc: norm * jnp.exp((t - loc)/scale) * jnp.maximum((loc - t), 0)**shape 
 
     return fn
+####################################
 
+### dTb tension function ###########
+dfreq = 2 
+#dlocs1 = jnp.arange(0.1, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
+#dlocs2 = jnp.arange(0.45, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
+#dlocs = jnp.sort(jnp.concatenate([dlocs1, dlocs2]))
+dA = jnp.array([0.05, 0.02, 0.01, 0.05, 0.03,])
 dwid=0.01
 def gpulse(t,loc,amp):
 
     return amp*jnp.exp(-0.5 * (t - loc)**2/dwid**2)
+########################################
 
+##### Pressure functions ######
 pA = 0.025
 p0 = -0.005
 pwid=0.08
 def ppulse(t,loc):
 
     return pA * jnp.exp(-0.5 * (t - loc)**2/pwid**2) + p0
+####################################
 
 def gradfun(t, y, args):
     # params: eps1, eps2, beta1, beta2, C, delta
@@ -70,6 +85,8 @@ beta2 = 5.3e5  # NOTE: 10x higher than in paper!
 C = 2e8
 delta = 15e6
 params_true = jnp.array([eps1/1e8, eps2/1e8, beta1/1e3, beta2/1e3, C/1e8, delta/1e7])
+
+
 def generate_vocalization(key,length=1.2,n_p=4,n_k=6,dA_max=0.1,dA_min=0.01,save=True,saveloc=''):
 
     t_axis = jnp.arange(0, length, 1/SR)
