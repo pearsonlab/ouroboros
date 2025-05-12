@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from tqdm import tqdm
-from utils import remove_rm,integrate_d2y,sst,sse,get_spec #deriv_approx_d2y,deriv_approx_dy
+from utils import remove_rm,integrate_d2y,sst,sse,get_spec,deriv_approx_d2y,deriv_approx_dy,butter_filter
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression as lr
 from itertools import repeat
@@ -10,14 +10,15 @@ import os
 from torchdiffeq import odeint_adjoint
 from scipy.signal import savgol_filter,hilbert
 import time
-
+from scipy.interpolate import make_interp_spline
 
 def correct(data,scale_env=False,env_data=[],n_rounds=1):
     corrected = data.copy()
-    
-    for _ in range(n_rounds):
-        smoothed = savgol_filter(corrected,window_length=10,polyorder=3)
-        corrected = corrected - smoothed
+    low_pass = butter_filter(data,cutoff=100,fs=len(data),btype='low')
+    corrected = data - low_pass
+    #for _ in range(n_rounds):
+    #    smoothed = savgol_filter(corrected,window_length=10,polyorder=3)
+    #    corrected = corrected - smoothed
     if scale_env:
         assert data.shape == env_data.shape,print(data.shape,env_data.shape)
         x_env = smooth(np.abs(hilbert(env_data))[None,:],smooth_len=10).squeeze()
@@ -28,17 +29,7 @@ def correct(data,scale_env=False,env_data=[],n_rounds=1):
 
     return corrected
 
-def deriv_approx_dy(data):
-
-    return savgol_filter(data,window_length=5,polyorder=3,deriv=1,axis=1)
-def deriv_approx_d2y(data):
-
-    return savgol_filter(data,window_length=5,polyorder=3,deriv=2,axis=1)
-
-def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
-                             smoothing=True,strategy='interp',\
-                                oversample_prop=1,burn_in_length=0.001,\
-                                    save_dir = '.'):
+def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,smoothing=True,strategy='interp',oversample_prop=1,burn_in_length=0.001,int_start=0):
 
         # general integration params
         B,L,D = x.shape
@@ -48,6 +39,8 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
         int_length_samples = int(round(int_length/dt))
 
         burn_in_start = int(round(burn_in_length/dt))
+        int_start_samples = int(round(int_start/dt))
+        x = x[:,int_start_samples:,:]
     
         ### set up x, y
         # x: x_0, x_dt, x_2dt,...
@@ -58,7 +51,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
         xddot = torch.from_numpy(deriv_approx_d2y(x)).to(model.device).to(torch.float32)/dt**2
         sample_ax = np.arange(0,xddot.shape[1]*dt + dt/2,dt)[:xddot.shape[1]]
-        #xddot_hat = make_interp_spline(sample_ax,xddot.detach().cpu().numpy().squeeze())
+        xddot_hat = make_interp_spline(sample_ax,xddot.detach().cpu().numpy().squeeze())
 
         x = torch.from_numpy(x).to(model.device).to(torch.float32)
         z = torch.cat([x,xdot],dim=-1)
@@ -72,6 +65,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
                         weighted_kernels.detach().cpu().numpy().squeeze()
         weights = weights.detach().cpu().numpy().reshape([weights.shape[0],weights.shape[1],-1]).squeeze()
         #print(weights.shape)
+        #assert False    
         #weights = np.zeros(weights.shape)
         #print(np.amax(weights),np.amin(weights))
         """
@@ -91,17 +85,20 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
         t_eval = torch.arange(0,int_length,dt/oversample_prop,device=model.device)[:int_length_samples*oversample_prop]
         dt_used = dt/oversample_prop
 
-        omegaTerp = lambda t: np.interp(t,t_steps,omega)
-        gammaTerp = lambda t: np.interp(t,t_steps,gamma)
+        omegaTerp = make_interp_spline(t_steps,omega)#lambda t: np.interp(t,t_steps,omega)
+        gammaTerp = make_interp_spline(t_steps,gamma)#lambda t: np.interp(t,t_steps,gamma)
         weighted_kernelsTerp = lambda t: np.interp(t,t_steps,weighted_kernels)
-        weightsTerp = [lambda t: np.interp(t,t_steps,weights[:,ii]) for ii in range(weights.shape[1])]
+        weightsTerp = [make_interp_spline(t_steps,weights[:,ii]) for ii in range(weights.shape[1])] #[lambda t,n=ii: np.interp(t,t_steps,weights[:,n]) for ii in range(weights.shape[1])]
+        #for ii in range(weights.shape[1]):
+        #    print(weights[0,ii],weightsTerp[ii](t_steps[0]))
+        #assert False
 
         z0 = z[0,0,:]
         
         z0[-1] /= dt
 
         #tau = self.tau#.detach().cpu().numpy()
-        xddot_terp = lambda t: np.interp(t,t_steps,xddot.detach().cpu().numpy().squeeze())
+        xddot_terp = make_interp_spline(t_steps,xddot.detach().cpu().numpy().squeeze()) #lambda t: np.interp(t,t_steps,xddot.detach().cpu().numpy().squeeze())
 
         def dz_true(t,z):
 
@@ -111,7 +108,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
             if strategy=='interp':
                 dz2_step = torch.from_numpy(np.array([xddot_terp(t)])).to(model.device).to(torch.float32)
             else:
-                dz2_step = torch.from_numpy(np.array([xddot[s_ind]])).to(model.device).to(torch.float32)
+                dz2_step = xddot[0,s_ind,0] #torch.from_numpy(xddot[s_ind]])).to(model.device).to(torch.float32)
 
             dz1_step = z[1]
             return torch.hstack([dz1_step,dz2_step])
@@ -136,7 +133,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
             return torch.hstack([dz1_step,dz2_step])
 
         P = model.kernel.nTerms + 1
-        
+        max_dz2 = np.amax(xddot.abs().detach().cpu().numpy().squeeze())
         def dz_hat2(t,z):
 
             # t: time, should have a timestep of roughly dt. treat as ZOH
@@ -152,6 +149,12 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
                 omega_step= omega[b_ind]
                 gamma_step = gamma[b_ind]
                 weights_step=np.reshape(weights[b_ind],(1,1,P,P))
+                #print(weights_step.shape)
+                #print(omega_step.shape)
+                #print(gamma_step.shape)
+
+            #print(omegaTerp(t),gammaTerp(t),np.reshape(np.stack([terp(t) for terp in weightsTerp]),[1,1,P,P])[0,0,:,0])
+            #print(omega_step,gamma_step,weights_step[0,0,:,0])
 
 
             z1 = z[:1].detach().cpu().numpy()
@@ -167,11 +170,14 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
             weighted_kernels_step = model.kernel.forward_given_weights_numpy(z[None,:].detach().cpu().numpy(),weights_step).squeeze()
             #print(omega_step,gamma_step,weighted_kernels_step)
             #print(z1,z2)
-            #if t/t_eval[-1].detach().cpu().numpy()>0.05: assert False
+            #if t/t_eval[-1].detach().cpu().numpy()>0.01: assert False
 
             dz2 = torch.from_numpy(np.array([-(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step])).to(model.device).to(torch.float32).squeeze()
+            #dz2 = np
             dz1 = z[1]/dt
             #print(z1,z2)
+            #print(dz1,dz2)
+            
             #print(-(omega_step**2)*z1)
             #print(-gamma_step*z2)
             #print(weighted_kernels_step)
@@ -182,55 +188,64 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
         print('done! integrating model dz2...')
         y2 = odeint_adjoint(dz_hat1,z0,t_eval,adjoint_params=(),method=method,options = dict()).transpose(0,1)
         print('done! integrating model functions....')
-        #s = time.time()
-        #y3 = odeint_adjoint(dz_hat2,z0,t_eval,adjoint_params=(),method=method,options = dict()).transpose(0,1)
-        #print(f'integrated {int_length:0.2f}s of data in {time.time() - s:0.2f}s')
-        #ax = plt.gca()
-        #ax.plot()
-        
-        
+        s = time.time()
+        y3 = odeint_adjoint(dz_hat2,z0,t_eval,adjoint_params=(),method=method,options = dict()).transpose(0,1)
+        print(f'integrated {int_length:0.2f}s of data in {time.time() - s:0.2f}s')
+        ax = plt.gca()
+        ax.plot()
+        #obj1 = solve_ivp(dz_true,(0,int_length),z0.squeeze().detach().cpu().numpy(),t_eval=t_eval,method=method,atol=1e-5)
+        #obj2 = solve_ivp(dz_hat1,(0,int_length),z0.squeeze().detach().cpu().numpy(),t_eval=t_eval,method=method,atol=1e-5)
+        #obj3 = solve_ivp(dz_hat2,(0,int_length),z0.squeeze().detach().cpu().numpy(),t_eval=t_eval,method=method,atol=1e-5)
         dy1 = y1[1,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
         dy2 = y2[1,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
-        #dy3 = y3[1,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
+        dy3 = y3[1,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
         y1 = y1[0,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
         y2 = y2[0,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
-        #y3 = y3[0,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
-        
+        y3 = y3[0,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
+        #y1,y2,y3 = obj1.y[0,::oversample_prop],obj2.y[0,::oversample_prop],obj3.y[0,::oversample_prop]
+
+        ax = plt.gca()
+        ax.plot(y3)
+        ax.set_title("Integrated model, pre correction")
+        plt.show()
+        plt.close()
+        ax = plt.gca()
+        ax.plot(y1,label='integrated empirical d2y')
+        ax.plot(y2,label='integrated model predicted d2y')
+        ax.plot(y3,label='integrated model functions')
+        plt.legend()
+        ax.set_title("pre correction")
+        plt.show()
+        plt.close()
     
     
-        y1_corr,y2_corr = correct(y1),correct(y2)#,y3_corr,correct(y3)
-        
+        y1_corr,y2_corr,y3_corr = correct(y1),correct(y2),correct(y3)
+        ax = plt.gca()
+        ax.plot(y3_corr)
+        ax.set_title("Integrated model, post correction")
+        plt.show()
+        plt.close()
+        ax = plt.gca()
+        ax.plot(y1_corr,label='integrated empirical d2y')
+        ax.plot(y2_corr,label='integrated model predicted d2y')
+        ax.plot(y3_corr,label='integrated model functions')
+        ax.set_title("post correction")
+        plt.legend()
+        plt.show()
+        plt.close()
         xTrue = x.detach().cpu().numpy().squeeze()[:int_length_samples]
         trueErr = ((y1_corr - xTrue[burn_in_start:])**2).sum()
         hat1Err = ((y2_corr - xTrue[burn_in_start:])**2).sum()
-        #hat2Err = ((y3_corr - xTrue[burn_in_start:])**2).sum()
+        hat2Err = ((y3_corr - xTrue[burn_in_start:])**2).sum()
 
-        ##### y plot ####
         ax = plt.gca()
         ax.plot(xTrue,label='true')
-        ax.plot(y1_corr,label='integrated, corrected empirical')
-        ax.plot(y2_corr,label='integrated,corrected predicted 2nd derivative')
-        #ax.plot(y3_corr,label='full integration')
+        ax.plot(y1_corr,label='integrated empirical')
+        ax.plot(y3_corr,label='full integration')
         #ax.plot(y2,label='integrated predicted d2')
         plt.legend()
-        plt.savefig(os.path.join(save_dir,'integrations_y.svg'))
-        #plt.show()
+        plt.show()
         plt.close()
-
-        ##### dy plot #######
-        dxTrue = xdot.detach().cpu().numpy().squeeze()[:int_length_samples][burn_in_start:]/dt
-        ax = plt.gca()
-        ax.plot(dxTrue,label='empirical 1st derivative')
-        ax.plot(dy1,label='integrated, corrected empirical')
-        ax.plot(dy2,label='integrated,corrected predicted 2nd derivative')
-        #ax.plot(y3_corr,label='full integration')
-        #ax.plot(y2,label='integrated predicted d2')
-        plt.legend()
-        plt.savefig(os.path.join(save_dir,'integrations_dy.svg'))
-        #plt.show()
-        plt.close()
-
-        ##### spectrograms  ######
         truspec,ittr,iftr,*_ = get_spec(xTrue.squeeze(),int(round(1/dt)),onset=0,offset=xTrue.shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
@@ -240,27 +255,23 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.05,\
         int2spec,*_ = get_spec(y2_corr.squeeze(),int(round(1/dt)),onset=0,offset=y2.squeeze().shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
-        #modelspec,*_ = get_spec(y3_corr.squeeze(),int(round(1/dt)),onset=0,offset=y3.squeeze().shape[0]*dt,\
-        #                 shoulder=0.0,interp=False,win_len=1028,normalize=False,\
-        #                 min=-2,max=3.5,spec_type='log')
+        modelspec,*_ = get_spec(y3_corr.squeeze(),int(round(1/dt)),onset=0,offset=y3.squeeze().shape[0]*dt,\
+                         shoulder=0.0,interp=False,win_len=1028,normalize=False,\
+                         min=-2,max=3.5,spec_type='log')
         
                                     
-        fig,axs = plt.subplots(nrows=1,ncols=3)
+        fig,axs = plt.subplots(nrows=1,ncols=4)
         axs[0].imshow(truspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
-        axs[0].set_title("Original data")
         axs[1].imshow(intspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
         axs[1].set_yticks([])
-        axs[1].set_title("Integrated, \n corrected empirical")
         axs[2].imshow(int2spec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
         axs[2].set_yticks([])
-        axs[2].set_title("Integrated, corrected\n predicted 2nd derivative")
-        #axs[3].imshow(modelspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
-        #axs[3].set_yticks([])
+        axs[3].imshow(modelspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
+        axs[3].set_yticks([])
         
-        #plt.show()
-        plt.savefig(os.path.join(save_dir,'integrated_spectrograms.svg'))
+        plt.show()
         plt.close()
-        return (trueErr,hat1Err),(y1,y2),(y1_corr,y2_corr) #hat2Err,y3,y3_corr
+        return (trueErr,hat1Err,hat2Err),(y1,y2,y3),(y1_corr,y2_corr,y3_corr)
 
 def eval_model_error(dls,model,dt,comparison='val'):
 

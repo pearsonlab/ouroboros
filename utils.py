@@ -5,7 +5,9 @@ from scipy.signal.windows import hann
 from scipy.signal import ShortTimeFFT as STFFT
 from scipy.interpolate import RegularGridInterpolator
 from scipy.integrate import solve_ivp
+from scipy.signal import savgol_filter
 
+"""
 def deriv_approx_dy(y):
 
     B,L,d = y.shape
@@ -19,6 +21,14 @@ def deriv_approx_d2y(y):
     assert L >= 5, print(f"y is not long enough to approximate with 9 points! needs 9 points, has {L}")
     return (-9 * y[:,:-8,:] + 128*y[:,1:-7,:] -1008*y[:,2:-6,:] + 8064*y[:,3:-5,:]- 14350*y[:,4:-4,:] + \
             8064*y[:,5:-3,:] - 1008*y[:,6:-2,:] + 128* y[:,7:-1,:] - 9*y[:,8:,:])/5040
+"""
+
+def deriv_approx_dy(data):
+
+    return savgol_filter(data,window_length=5,polyorder=3,deriv=1,axis=1)
+def deriv_approx_d2y(data):
+
+    return savgol_filter(data,window_length=5,polyorder=3,deriv=2,axis=1)
 
 def sse(yhat,y,reduction='mean'):
     if reduction == 'mean':
