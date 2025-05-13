@@ -2,7 +2,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from scipy.special import gamma
-
+import glob
+import os
 
 def gen_pure_tones(n_samples=8000,sample_rate=44100,frequency=5000,sample_length=0.3,random_phase=True):
 
@@ -121,3 +122,33 @@ def gen_stacks(n_samples,alpha=8.,theta=2.,sample_rate=44100,noise_sd=0.025):
     data=s + noise_sd * np.random.randn(n_samples,len(s))
 
     return data,d_true,d2_true
+
+### Data from Coen Elemans & group
+
+descriptions = {'3':'400Hz: (1) spike train, constant interval',
+               '4.2':'400Hz: (3) no spike after 10ms',
+               '4': '400Hz: (2) no spike 15-20ms',
+               '5': '400Hz: (4) varied ISI: … 10, 11, 15… 25, 26, 30 … ',
+               '6': '200Hz: (1) spike train, constant interval',
+               '7': '200Hz: (2) no spike 15-20ms',
+               '8': '200Hz: (3) varied ISI: … 10, 12, 20… 30, 32, 40 ',
+               '9':'50Hz, spike train, constant interval'
+               }
+def load_coen_data(data_path,target_fs):
+
+    ######### TO DO: ADD IN DOWNSAMPLING FOR THESE DATA #########
+
+    audio_files = glob.glob(os.path.join(data_path,'UTF-8*.dat'))
+    audio_files.sort()
+    sim_nums = [a.split('_')[-1].split('.dat')[0] for a in audio_files]
+    inputs = [os.path.join(data_path,s + '.inp') for s in sim_nums]
+    flows = [os.path.join(data_path,f'qc_t1_0.5_1.1_0vs_{s}.dat') for s in sim_nums]
+    descs = [descriptions[s] for s in sim_nums]
+    ad = [np.genfromtxt(fn) for fn in audio_files]
+    ts = [d[:,0]/1000 for d in ad]
+    ys = [d[:,1] for d in ad]
+    flws = [np.genfromtxt(fn) for fn in flows]
+    spikes = [np.genfromtxt(fn,skip_header=2) for fn in inputs]
+    srs = [int(round(1/(t[1] - t[0]))) for t in ts]
+    return ts,ys,flws,spikes,srs,descs
+
