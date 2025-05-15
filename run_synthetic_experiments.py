@@ -1,7 +1,12 @@
 import fire
 from data.real_data import get_segmented_audio
+from data.toy_data import gen_stacks,load_coen_data
+from data.data_utils import get_loaders
+from train.model_cv import model_cv_lambdas
+from train.train import load_model
 import os
 import numpy as np
+
 
 def run_experiments(gabo_data_path='',coen_data_path='',\
                     adult_zf_model_path='',\
@@ -33,7 +38,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
     sr_stack=44100
     stacks,d_stack,d2_stack = gen_stacks(n_samples=2000,sample_rate=sr_stack)
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
-    stack_model = model_cv_lambda(dls,1/sr)
+    stack_model = model_cv_lambdas(dls,1/sr)
     full_eval_model(stack_model,dls,stacks,1/sr_stack)
 
     coen_data = load_coen_data(coen_data_path)
