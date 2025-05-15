@@ -4,13 +4,14 @@ from data.toy_data import gen_stacks,load_coen_data
 from data.data_utils import get_loaders
 from train.model_cv import model_cv_lambdas
 from train.train import load_model
+from train.eval import full_eval_model
 import os
 import numpy as np
 
 
 def run_experiments(gabo_data_path='',coen_data_path='',\
                     adult_zf_model_path='',\
-                        generate=False,seed=92):
+                        generate=False,seed=92,synth_model_path=''):
 
     audio_path =os.path.join(gabo_data_path,'audio')
     seg_path =os.path.join(gabo_data_path,'segs')
@@ -25,25 +26,31 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
                                    seg_loc=seg_path,
                                    func_loc=func_path)
 
-   
+    if not os.path.isdir(synth_model_path):
+        os.mkdir(synth_model_path)
     audios,sr = get_segmented_audio(audio_path,seg_path,audio_subdir='',\
                                 seg_subdir='',envelope=False,context_len=0.1,\
                                 audio_type='.wav',seg_type='.txt',max_pairs=3000,seed=seed)
 
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
-    gabo_model = model_cv_lambdas(dls,1/sr)
+    gabo_model = model_cv_lambdas(dls,1/sr,\
+                        nEpochs=1,model_path=os.path.join(synth_model_path,'gabo_model'))
 
-    full_eval_model(gabo_model,dls,audios,1/sr)
+    full_eval_model(gabo_model,dls,audios,1/sr,use_results=False,\
+                    n_int=100)
 
     sr_stack=44100
     stacks,d_stack,d2_stack = gen_stacks(n_samples=2000,sample_rate=sr_stack)
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
-    stack_model = model_cv_lambdas(dls,1/sr)
-    full_eval_model(stack_model,dls,stacks,1/sr_stack)
+    stack_model = model_cv_lambdas(dls,1/sr,\
+                            nEpochs=1,model_path=os.path.join(synth_model_path,'stackies'))
+    full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
+                    n_int=100)
 
-    coen_data = load_coen_data(coen_data_path)
-    adult_model,*_=load_model(adult_zf_model_path)
-    full_eval_model(adult_model,None,coen_data[1],coen_data[4])
+    coen_data = load_coen_data(coen_data_path,target_fs=44100)
+    adult_model,*_=load_model(adult_zf_model_path) # here, let's use use cv_better_weighed_adultzf_92 0.05
+    full_eval_model(adult_model,None,coen_data[1],coen_data[4],use_results=False,\
+                    n_int=100)
 
 if __name__ == '__main__':
 
