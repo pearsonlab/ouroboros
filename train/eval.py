@@ -273,7 +273,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,smoothing=
         plt.close()
         return (trueErr,hat1Err,hat2Err),(y1,y2,y3),(y1_corr,y2_corr,y3_corr)
 
-def eval_model_error(dls,model,dt,comparison='val'):
+def eval_model_error(dls,model,dt,comparison='val',return_all=False):
 
     #tf = model.trend_filtering
 
@@ -351,8 +351,10 @@ def eval_model_error(dls,model,dt,comparison='val'):
     print(f"Train r2: {mean_r2_train} +- {sd_r2_train}")
     print(f"{comparison} r2: {mean_r2_test} +- {sd_r2_test}")
     #model.trend_filtering=tf
-    
-    return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
+    if return_all:
+        return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test),(np.hstack(train_r2),np.hstack(test_r2))
+    else:
+        return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
 
 
 def assess_kernels(dataloader,model,dt,saveDir=''):
@@ -534,4 +536,43 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
     #model.trend_filtering=tf
 
     return (mu_train_coef,mu_test_coef),(sd_train_coef,sd_test_coef)
+
+def full_eval_model(model,loaders=None,original_data=None,dt=1/44100,plot_dir=''):
+
+
+    r2_mosaic = """
+    ABB
+    ACC
+    """
+    if loaders == None:
+        r2s = []
+        predictions =[]
+        reals = []
+        for o in original_data:
+            dx2dt2 = torch.from_numpy(deriv_approx_d2y(o)).to(model.device).to(torch.float32)
+            dxdt = torch.from_numpy(deriv_approx_dy(o)).to(model.device).to(torch.float32)
+            dx2 = dx2dt2/(dt**2)
+            x = torch.from_numpy(o).to(model.device).to(torch.float32)
+            dx2hat,_ = model(x,dxdt,dt,False)
+            dx2hat *= model.tau**2
+
+            errs = sse(dx2hat,dx2,reduction='sum').detach().cpu().numpy().squeeze()
+            totals = sst(dx2,reduction='sum').detach().cpu().numpy().squeeze()
+
+            r2 = 1- errs/totals
+            r2s.append(r2)
+
+            predictions.append(dx2hat.detach().cpu().numpy().squeeze())
+            reals.append(dx2.detach().cpu().numpy().squeeze())
+
+        best = np.argmax(r2s)
+        worst = np.argmin(r2s)
+        fig=plt.figure(layout='constrained')
+        ax_dict=fig.subplot_mosaic(r2_mosaic)
+
+
+        
+
+        
+
 
