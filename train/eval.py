@@ -29,7 +29,9 @@ def correct(data,scale_env=False,env_data=[],n_rounds=1):
 
     return corrected
 
-def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,smoothing=True,strategy='interp',oversample_prop=1,burn_in_length=0.001,int_start=0):
+def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
+                             smoothing=True,strategy='interp',oversample_prop=1,\
+                                burn_in_length=0.001,int_start=0,plot=False):
 
         # general integration params
         B,L,D = x.shape
@@ -68,19 +70,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,smoothing=
         #assert False    
         #weights = np.zeros(weights.shape)
         #print(np.amax(weights),np.amin(weights))
-        """
-        ax = plt.gca()
-        ax.plot(omega)
-        ax.plot(gamma)
-        plt.show()
-        plt.close()
-        ax = plt.gca()
-        for w in weights.T:
-            ax.plot(w)
-        plt.show()
-        plt.close()
-        assert False
-        """
+        
         t_steps = np.arange(0,L*dt+dt/2,dt)[:L]
         t_eval = torch.arange(0,int_length,dt/oversample_prop,device=model.device)[:int_length_samples*oversample_prop]
         dt_used = dt/oversample_prop
@@ -203,49 +193,53 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,smoothing=
         y2 = y2[0,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
         y3 = y3[0,::oversample_prop].detach().cpu().numpy().squeeze()[burn_in_start:]
         #y1,y2,y3 = obj1.y[0,::oversample_prop],obj2.y[0,::oversample_prop],obj3.y[0,::oversample_prop]
-
-        ax = plt.gca()
-        ax.plot(y3)
-        ax.set_title("Integrated model, pre correction")
-        plt.show()
-        plt.close()
-        ax = plt.gca()
-        ax.plot(y1,label='integrated empirical d2y')
-        ax.plot(y2,label='integrated model predicted d2y')
-        ax.plot(y3,label='integrated model functions')
-        plt.legend()
-        ax.set_title("pre correction")
-        plt.show()
-        plt.close()
-    
+        if plot:
+            ax = plt.gca()
+            ax.plot(y3)
+            ax.set_title("Integrated model, pre correction")
+            plt.show()
+            plt.close()
+            ax = plt.gca()
+            ax.plot(y1,label='integrated empirical d2y')
+            ax.plot(y2,label='integrated model predicted d2y')
+            ax.plot(y3,label='integrated model functions')
+            plt.legend()
+            ax.set_title("pre correction")
+            plt.show()
+            plt.close()
+        
     
         y1_corr,y2_corr,y3_corr = correct(y1),correct(y2),correct(y3)
-        ax = plt.gca()
-        ax.plot(y3_corr)
-        ax.set_title("Integrated model, post correction")
-        plt.show()
-        plt.close()
-        ax = plt.gca()
-        ax.plot(y1_corr,label='integrated empirical d2y')
-        ax.plot(y2_corr,label='integrated model predicted d2y')
-        ax.plot(y3_corr,label='integrated model functions')
-        ax.set_title("post correction")
-        plt.legend()
-        plt.show()
-        plt.close()
+        if plot:
+            ax = plt.gca()
+            ax.plot(y3_corr)
+            ax.set_title("Integrated model, post correction")
+            plt.show()
+            plt.close()
+            ax = plt.gca()
+            ax.plot(y1_corr,label='integrated empirical d2y')
+            ax.plot(y2_corr,label='integrated model predicted d2y')
+            ax.plot(y3_corr,label='integrated model functions')
+            ax.set_title("post correction")
+            plt.legend()
+            plt.show()
+            plt.close()
+        
         xTrue = x.detach().cpu().numpy().squeeze()[:int_length_samples]
         trueErr = ((y1_corr - xTrue[burn_in_start:])**2).sum()
         hat1Err = ((y2_corr - xTrue[burn_in_start:])**2).sum()
         hat2Err = ((y3_corr - xTrue[burn_in_start:])**2).sum()
+        if plot:
+            ax = plt.gca()
+            ax.plot(xTrue,label='true')
+            ax.plot(y1_corr,label='integrated empirical')
+            ax.plot(y3_corr,label='full integration')
+            #ax.plot(y2,label='integrated predicted d2')
+            plt.legend()
+            plt.show()
+            plt.close()
+        
 
-        ax = plt.gca()
-        ax.plot(xTrue,label='true')
-        ax.plot(y1_corr,label='integrated empirical')
-        ax.plot(y3_corr,label='full integration')
-        #ax.plot(y2,label='integrated predicted d2')
-        plt.legend()
-        plt.show()
-        plt.close()
         truspec,ittr,iftr,*_ = get_spec(xTrue.squeeze(),int(round(1/dt)),onset=0,offset=xTrue.shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
@@ -259,19 +253,25 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,smoothing=
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
         
-                                    
-        fig,axs = plt.subplots(nrows=1,ncols=4)
-        axs[0].imshow(truspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
-        axs[1].imshow(intspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
-        axs[1].set_yticks([])
-        axs[2].imshow(int2spec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
-        axs[2].set_yticks([])
-        axs[3].imshow(modelspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
-        axs[3].set_yticks([])
-        
-        plt.show()
-        plt.close()
-        return (trueErr,hat1Err,hat2Err),(y1,y2,y3),(y1_corr,y2_corr,y3_corr)
+
+        if plot:                        
+            fig,axs = plt.subplots(nrows=1,ncols=4)
+            axs[0].imshow(truspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
+            axs[1].imshow(intspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
+            axs[1].set_yticks([])
+            axs[2].imshow(int2spec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
+            axs[2].set_yticks([])
+            axs[3].imshow(modelspec,origin='lower',aspect='auto',extent=[ittr[0],ittr[-1],iftr[0],iftr[-1]])
+            axs[3].set_yticks([])
+            
+            plt.show()
+            plt.close()
+        pix_errs_emp = np.linalg.norm(truspec - intspec)
+        pix_errs_d2 = np.linalg.norm(truspec - int2spec)
+        pix_errs_mod = np.linalg.norm(truspec-modelspec)
+        return (trueErr,hat1Err,hat2Err),(y1,y2,y3),\
+            (y1_corr,y2_corr,y3_corr),(truspec,intspec,int2spec,modelspec,(ittr,iftr)),\
+            (pix_errs_emp,pix_errs_d2,pix_errs_mod)
 
 def eval_model_error(dls,model,dt,comparison='val',return_all=False):
 
@@ -281,7 +281,7 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
 
     train_errors = []
     test_errors = []
-    vars = []
+    preds,reals,data = [],[],[]
     train_r2 = []
     test_r2 = []
     #model.trend_filtering=False
@@ -311,7 +311,7 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
             #mse = np.nanmean(se,axis=1)
             train_r2.append(1 - err/tot)
             
-            vars.append(y.detach().cpu().numpy().flatten())
+            #vars.append(y.detach().cpu().numpy().flatten())
             train_errors.append(err)
             
 
@@ -335,12 +335,14 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
             L = y.shape[1]
             err = sse(yhat,y,reduction='none') #((y - yhat[:,:L,:])**2).sum(dim=1)
             err = err.detach().cpu().numpy().squeeze()
-            #y = y.detach().cpu().numpy()
             tot = sst(y,reduction='none') #((y - y.mean(dim=1,keepdim=True))**2).sum(dim=1)
             tot = tot.detach().cpu().numpy().squeeze()
             assert tot.shape == err.shape
             test_r2.append(1 - err/tot)
-            vars.append(y.detach().cpu().numpy().flatten())
+            reals.append(y.detach().cpu().numpy().squeeze())
+            preds.append(dx2hat.detach().cpu().numpy().squeeze())
+            y = y.detach().cpu().numpy()
+            data.append(y.squeeze())
             test_errors.append(err)
 
     mean_r2_train = np.nanmean(np.hstack(train_r2))
@@ -352,7 +354,8 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
     print(f"{comparison} r2: {mean_r2_test} +- {sd_r2_test}")
     #model.trend_filtering=tf
     if return_all:
-        return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test),(np.hstack(train_r2),np.hstack(test_r2))
+        return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test),\
+            (np.hstack(train_r2),np.hstack(test_r2)),(np.vstack(preds),np.vstack(reals),np.vstack(data))
     else:
         return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
 
@@ -537,41 +540,173 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
 
     return (mu_train_coef,mu_test_coef),(sd_train_coef,sd_test_coef)
 
-def full_eval_model(model,loaders=None,original_data=None,dt=1/44100,plot_dir=''):
+def full_eval_model(model,loaders=None,original_data=None,\
+                    dt=1/44100,plot_dir='',use_results=False,
+                    n_int=100):
 
 
+    ### Characterize R2 and reconstructions #################
     r2_mosaic = """
-    ABB
-    ACC
+    ABBDDF
+    ACCEEG
     """
-    if loaders == None:
-        r2s = []
-        predictions =[]
-        reals = []
-        for o in original_data:
-            dx2dt2 = torch.from_numpy(deriv_approx_d2y(o)).to(model.device).to(torch.float32)
-            dxdt = torch.from_numpy(deriv_approx_dy(o)).to(model.device).to(torch.float32)
-            dx2 = dx2dt2/(dt**2)
-            x = torch.from_numpy(o).to(model.device).to(torch.float32)
-            dx2hat,_ = model(x,dxdt,dt,False)
-            dx2hat *= model.tau**2
+    fig_r2=plt.figure(layout='constrained',figsize=(15,8))
+    r2_ax_dict=fig_r2.subplot_mosaic(r2_mosaic)
+    if not use_results:
+        ### if we've already done this, just load results (maybe from saved csv?) and re-plot
+        # implement once the basic stuff is all working
+        if loaders == None:
+            r2s = []
+            predictions =[]
+            reals = []
+            for o in original_data:
+                dx2dt2 = torch.from_numpy(deriv_approx_d2y(o)).to(model.device).to(torch.float32)
+                dxdt = torch.from_numpy(deriv_approx_dy(o)).to(model.device).to(torch.float32)
+                dx2 = dx2dt2/(dt**2)
+                x = torch.from_numpy(o).to(model.device).to(torch.float32)
+                dx2hat,_ = model(x,dxdt,dt,False)
+                dx2hat *= model.tau**2
 
-            errs = sse(dx2hat,dx2,reduction='sum').detach().cpu().numpy().squeeze()
-            totals = sst(dx2,reduction='sum').detach().cpu().numpy().squeeze()
+                errs = sse(dx2hat,dx2,reduction='sum').detach().cpu().numpy().squeeze()
+                totals = sst(dx2,reduction='sum').detach().cpu().numpy().squeeze()
 
-            r2 = 1- errs/totals
-            r2s.append(r2)
+                r2 = 1- errs/totals
+                r2s.append(r2)
 
-            predictions.append(dx2hat.detach().cpu().numpy().squeeze())
-            reals.append(dx2.detach().cpu().numpy().squeeze())
+                predictions.append(dx2hat.detach().cpu().numpy().squeeze())
+                reals.append(dx2.detach().cpu().numpy().squeeze())
 
-        best = np.argmax(r2s)
-        worst = np.argmin(r2s)
-        fig=plt.figure(layout='constrained')
-        ax_dict=fig.subplot_mosaic(r2_mosaic)
+            r2s = np.array(r2s)
+            best = np.argmax(r2s)
+            worst = np.argmin(r2s)
 
+            best_traj_pred,best_traj_real = predictions[best],reals[best]
+            worst_traj_pred,worst_traj_real = predictions[worst],reals[worst]
+            
+        
+            r2_ax_dict['A'].boxplot(np.array(r2s),zorder=1)
+            r2_ax_dict['A'].scatter(np.ones(r2s.shape)+np.random.randn(r2s.shape)*0.1,r2s,s=1,zorder=2)
+        else:
+
+            _,_,(_,test_r2s),(test_preds,test_reals,original_data)= eval_model_error(loaders,model,dt,\
+                                                                                comparison='test',return_all=True)
+            test_r2s = np.array(test_r2s)
+            best = np.argmax(test_r2s)
+            worst = np.argmin(test_r2s)
+            reals = test_reals
+            preds = test_preds
+
+            best_traj_pred,best_traj_real = test_preds[best],test_reals[best]
+            worst_traj_pred,worst_traj_real = test_preds[worst],test_reals[worst]
+            r2_ax_dict['A'].boxplot(test_r2s,zorder=1)
+            r2_ax_dict['A'].scatter(np.ones(test_r2s.shape)+np.random.randn(test_r2s.shape)*0.1,test_r2s,zorder=2,s=1)
+
+        best_res = best_traj_real - best_traj_pred
+        worst_res = worst_traj_real - worst_traj_pred
+
+        r2_ax_dict['B'].plot(best_traj_real)
+        r2_ax_dict['B'].plot(best_traj_pred,alpha=0.3)
+
+        r2_ax_dict['C'].plot(worst_traj_real)
+        r2_ax_dict['C'].plot(worst_traj_pred,alpha=0.3)
+
+        r2_ax_dict['D'].plot(best_res)
+        r2_ax_dict['E'].plot(worst_res)
+
+        r2_ax_dict['F'].hist(best_res,bins=100,density=True)
+        sd = np.nanstd(best_res)
+        px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
+        xlims=r2_ax_dict['F'].get_xlim()
+        xax = np.linspace(xlims[0],xlims[1],1000)
+        yax = px(xax)
+        r2_ax_dict['F'].plot(xax,yax,color='tab:red')
+
+        r2_ax_dict['G'].hist(worst_res,bins=100,density=True)
+        sd = np.nanstd(worst_res)
+        px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
+        xlims=r2_ax_dict['G'].get_xlim()
+        xax = np.linspace(xlims[0],xlims[1],1000)
+        yax = px(xax)
+        r2_ax_dict['G'].plot(xax,yax,color='tab:red')
+
+        plt.savefig(os.path.join(plot_dir,'residuals_plot.svg'))
+        plt.close()
 
         
+    #################### Characterize integration ######################
+
+    n_to_integrate = min(n_int,len(reals))
+    order = np.random.choice(len(reals),n_to_integrate,replace=False)
+    pix_err_real,pix_err_predd2,pix_err_predmod = [],[],[]
+    specs_real,specs_int1,specs_int2,specs_int3,bounds = [],[],[],[],[]
+    for o in order:
+        sample = original_data[o]
+        if len(sample.shape) == 1:
+            sample = sample[None,:,None]
+        elif len(sample.shape) == 2:
+            sample = sample.shape[None,:,:]
+        
+        
+        _,_,_,(truspec,intspec,int2spec,modelspec,(ittr,iftr)),\
+        (pix_errs_emp,pix_errs_d2,pix_errs_mod) = assess_integration_torch(model,\
+                                            sample,dt,method='RK45',int_length=0.15,\
+                                            smoothing=True, strategy='interp',\
+                                            oversample_prop=5,burn_in_length=0.001,\
+                                            int_start=0)
+        pix_err_real.append(pix_errs_emp)
+        pix_err_predd2.append(pix_errs_d2)
+        pix_err_predmod.append(pix_errs_mod)
+        specs_real.append(truspec)
+        specs_int1.append(intspec)
+        specs_int2.append(int2spec)
+        specs_int3.append(modelspec)
+        bounds.append((ittr[0],ittr[-1],iftr[0],iftr[-1]))
+
+    best = np.argmin(pix_err_predd2)
+    best_err_d2_ratio = pix_err_predd2[best]/pix_err_real[best]
+    best_spec_real = specs_real[best]
+    best_spec_int1 = specs_int1[best]
+    best_spec_int2 = specs_int2[best]
+    best_spec_int3 = specs_int3[best]
+    best_ext = bounds[best]
+    worst = np.argmax(pix_err_predd2)
+    worst_err_d2_ratio = pix_err_predd2[worst]/pix_err_real[worst]
+    worst_spec_real = specs_real[worst]
+    worst_spec_int1 = specs_int1[worst]
+    worst_spec_int2 = specs_int2[worst]
+    worst_spec_int3 = specs_int3[worst]
+    worst_ext = bounds[worst]
+
+    int_mosaic = """
+    ABCDE
+    AFGHI
+    """
+    fig_int=plt.figure(layout='constrained',figsize=(15,8))
+    int_ax_dict=fig_int.subplot_mosaic(int_mosaic)
+
+    pix_err_real,pix_err_predd2,pix_err_predmod = np.array(pix_err_real),np.array(pix_err_predd2),np.array(pix_err_predmod)
+    
+    errs = [pix_err_real,pix_err_predd2,pix_err_predmod]
+    labels=['Empirical d2','Model predicted d2', 'Model functions']
+    int_ax_dict['A'].boxplot(errs,tick_labels=labels,zorder=1)
+    int_ax_dict['A'].scatter(np.ones(pix_err_real.shape)+np.random.randn(pix_err_real.shape)*0.1,pix_err_real,zorder=2,s=1)
+    int_ax_dict['A'].scatter(2*np.ones(pix_err_predd2.shape)+np.random.randn(pix_err_predd2.shape)*0.1,pix_err_predd2,zorder=2,s=1)
+    int_ax_dict['A'].scatter(3*np.ones(pix_err_predmod.shape)+np.random.randn(pix_err_predmod.shape)*0.1,pix_err_predmod,zorder=2,s=1)
+    
+    int_ax_dict['B'].imshow(best_spec_real,origin='lower',aspect='auto',extent=best_ext)
+    int_ax_dict['C'].imshow(best_spec_int1,origin='lower',aspect='auto',extent=best_ext)
+    int_ax_dict['D'].imshow(best_spec_int2,origin='lower',aspect='auto',extent=best_ext)
+    int_ax_dict['E'].imshow(best_spec_int3,origin='lower',aspect='auto',extent=best_ext)
+    int_ax_dict['D'].set_title(f"Integration spec error ratio to integrated empirical: {best_err_d2_ratio*100:.2f}%")
+
+    int_ax_dict['E'].imshow(worst_spec_real,origin='lower',aspect='auto',extent=worst_ext)
+    int_ax_dict['F'].imshow(worst_spec_int1,origin='lower',aspect='auto',extent=worst_ext)
+    int_ax_dict['G'].imshow(worst_spec_int2,origin='lower',aspect='auto',extent=worst_ext)
+    int_ax_dict['H'].imshow(worst_spec_int3,origin='lower',aspect='auto',extent=worst_ext)
+    int_ax_dict['G'].set_title(f"Integration spec error ratio to integrated empirical: {worst_err_d2_ratio*100:.2f}%")
+    plt.savefig(os.path.join(plot_dir,'integration_plot.svg'))
+    plt.close()
+
 
         
 
