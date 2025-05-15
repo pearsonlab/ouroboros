@@ -24,9 +24,11 @@ def deriv_approx_d2y(y):
 """
 
 def deriv_approx_dy(data):
+    ### only works on numpy now, not on torch anymore
 
     return savgol_filter(data,window_length=5,polyorder=3,deriv=1,axis=1)
 def deriv_approx_d2y(data):
+    ### only works on numpy now, not on torch anymore
 
     return savgol_filter(data,window_length=5,polyorder=3,deriv=2,axis=1)
 
