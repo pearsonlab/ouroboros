@@ -2,6 +2,7 @@ from data.real_data import *
 from data.data_utils import get_loaders
 from train.train import train,load_model,save_model
 from train.eval import eval_model_error
+from train.model_cv import model_cv_lambdas
 from model.constrained_model import rkhs_ouroboros
 from model.kernels import *
 import matplotlib.pyplot as plt
@@ -42,6 +43,13 @@ def run_model(audio_path,seg_path='', model_path= '',\
     print(f'getting dataloaders with seed {seed}')
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
+    model_cv_lambdas(dls,1/sr,nEpochs=nEpochs,lr=lr,\
+                    n_kernels=n_kernels,expand_factor=expand_factor,\
+                    n_layers=n_layers,d_state=d_state,d_conv=d_conv,\
+                    tau=tau,smooth_len=smooth_len,\
+                    model_path=model_path)
+    """
+    ## model cv lambda here
     lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
     #im going to ASSUME that with lambda = 1, regularization is 
     # on the order of 10^13, loss on the order of 10^18 -- so multiply all these by 10^2.5 (since we end up multiplying by lambda^2)
@@ -120,7 +128,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
         'test MSE': lam_test_cv_err
     })
     data_df.to_csv(os.path.join(model_path,'cv_errs.csv'))        
-    
+    """
     return
 
 
