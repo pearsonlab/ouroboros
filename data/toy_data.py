@@ -4,6 +4,7 @@ from torch.utils.data import Dataset, DataLoader
 from scipy.special import gamma
 import glob
 import os
+from scipy.interpolate import make_interp_spline
 
 def gen_pure_tones(n_samples=8000,sample_rate=44100,frequency=5000,sample_length=0.3,random_phase=True):
 
@@ -134,7 +135,7 @@ descriptions = {'3':'400Hz: (1) spike train, constant interval',
                '8': '200Hz: (3) varied ISI: … 10, 12, 20… 30, 32, 40 ',
                '9':'50Hz, spike train, constant interval'
                }
-def load_coen_data(data_path,target_fs):
+def load_coen_data(data_path,target_fs=0):
 
     ######### TO DO: ADD IN DOWNSAMPLING FOR THESE DATA #########
 
@@ -150,5 +151,16 @@ def load_coen_data(data_path,target_fs):
     flws = [np.genfromtxt(fn) for fn in flows]
     spikes = [np.genfromtxt(fn,skip_header=2) for fn in inputs]
     srs = [int(round(1/(t[1] - t[0]))) for t in ts]
-    return ts,ys,flws,spikes,srs,descs
+    if target_fs > 0:
+        new_ts,new_ys = [],[]
+        for t,y in zip(ts,ys):
+
+            new_t = np.arange(t[0],t[-1],1/target_fs)
+            yspl = make_interp_spline(t,y)
+            new_y = yspl(new_t)
+            new_ts.append(new_t)
+            new_ys.append(new_y)
+        return new_ts,new_ys,flws,spikes,target_fs,descs
+    else:
+        return ts,ys,flws,spikes,srs[0],descs
 
