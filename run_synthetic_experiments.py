@@ -7,6 +7,8 @@ from train.train import load_model
 from train.eval import full_eval_model
 import os
 import numpy as np
+import matplotlib.pyplot as plt
+from visualization.model_vis import format_axes
 
 
 def run_experiments(gabo_data_path='',coen_data_path='',\
@@ -28,29 +30,119 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
 
     if not os.path.isdir(synth_model_path):
         os.mkdir(synth_model_path)
+    
     audios,sr = get_segmented_audio(audio_path,seg_path,audio_subdir='',\
                                 seg_subdir='',envelope=False,context_len=0.1,\
                                 audio_type='.wav',seg_type='.txt',max_pairs=3000,seed=seed)
 
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+    gabo_path = os.path.join(synth_model_path,'gabo_model')
     gabo_model = model_cv_lambdas(dls,1/sr,\
-                        nEpochs=1,model_path=os.path.join(synth_model_path,'gabo_model'))
+                        nEpochs=1,model_path=gabo_path)
 
-    full_eval_model(gabo_model,dls,audios,1/sr,use_results=False,\
-                    n_int=100)
+    gabo_r2s,gabo_best,gabo_resids,gabo_spec_ratio,gabo_specs,gabo_ext = full_eval_model(gabo_model,dls,audios,1/sr,use_results=False,\
+                    n_int=1,plot_dir=gabo_path,plot_steps=False)
+    #assert False
 
     sr_stack=44100
     stacks,d_stack,d2_stack = gen_stacks(n_samples=2000,sample_rate=sr_stack)
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+    stack_path = os.path.join(synth_model_path,'stackies')
     stack_model = model_cv_lambdas(dls,1/sr,\
-                            nEpochs=1,model_path=os.path.join(synth_model_path,'stackies'))
-    full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
-                    n_int=100)
-
+                            nEpochs=5,model_path=stack_path)
+    stack_r2s,stack_best,stack_resids,stack_spec_ratio,stack_specs,stack_ext = full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
+                   n_int=1,plot_dir=stack_path,plot_steps=False)
+    
     coen_data = load_coen_data(coen_data_path,target_fs=44100)
-    adult_model,*_=load_model(adult_zf_model_path) # here, let's use use cv_better_weighed_adultzf_92 0.05
-    full_eval_model(adult_model,None,coen_data[1],coen_data[4],use_results=False,\
-                    n_int=100)
+    #print(coen_data[4])
+    adult_model,*_=load_model(os.path.join(adult_zf_model_path,'checkpoint_100.tar'),kernel_type='full_poly') # here, let's use use cv_better_weighed_adultzf_92 0.05
+    coen_r2s,coen_best,coen_resids,coen_spec_ratio,coen_specs,coen_ext = full_eval_model(adult_model,None,coen_data[1],1/coen_data[4],use_results=False,\
+                    n_int=1,plot_dir=synth_model_path,plot_steps=False)
+    
+    
+    full_mosaic = \
+    [['r2_stack','d2_stack_real','d2_stack_real','d2_stack_pred','d2_stack_pred','d2_stack_resid','d2_stack_resid','stack_resid_hist','stack_resid_hist'],
+     ['pix_ratio_stack','spec_stack_real','spec_stack_real','spec_stack_emp','spec_stack_emp','spec_stack_md2','spec_stack_md2','spec_stack_m','spec_stack_m'],
+     ['r2_g','d2_g_real','d2_g_real','d2_g_pred','d2_g_pred','d2_g_resid','d2_g_resid','g_resid_hist','g_resid_hist'],
+     ['pix_ratio_g','spec_g_real','spec_g_real','spec_g_emp','spec_g_emp','spec_g_md2','spec_g_md2','spec_g_m','spec_g_m'],
+     ['r2_c','d2_c_real','d2_c_real','d2_c_pred','d2_c_pred','d2_c_resid','d2_c_resid','c_resid_hist','c_resid_hist'],
+     ['pix_ratio_c','spec_c_real','spec_c_real','spec_c_emp','spec_c_emp','spec_c_md2','spec_c_md2','spec_c_m','spec_c_m']]
+    fig_full = plt.figure(layout='constrained',figsize=(7.2,5.33))
+    full_ax_dict = fig_full.subplot_mosaic(full_mosaic)
+    
+    ####### stack plots ##########
+    ############# 2nd derivs ##########
+    full_ax_dict['r2_stack'].hist(stack_r2s,bins=100,density=True)
+    full_ax_dict['d2_stack_real'].plot(stack_best[0][0],stack_best[0][1],color='tab:blue')
+    ylim_real_s = full_ax_dict['d2_stack_real'].get_ylim()
+    full_ax_dict['d2_stack_pred'].plot(stack_best[1][0],stack_best[1][1],color='tab:orange')
+    full_ax_dict['d2_stack_pred'].set_ylim(ylim_real_s)
+    full_ax_dict['d2_stack_resid'].plot(stack_resids[0],stack_resids[1])
+    full_ax_dict['d2_stack_resid'].set_ylim(ylim_real_s)
+    full_ax_dict['stack_resid_hist'].hist(stack_resids[1],bins=100,density=True)
+
+    ############# specs ###############
+    full_ax_dict['pix_ratio_stack'].hist(stack_spec_ratio[0],bins=100,density=True)
+    full_ax_dict['pix_ratio_stack'].hist(stack_spec_ratio[1],bins=100,density=True)
+    full_ax_dict['spec_stack_real'].imshow(stack_specs[0],origin='lower',aspect='auto',extent=stack_ext)
+    full_ax_dict['spec_stack_emp'].imshow(stack_specs[1],origin='lower',aspect='auto',extent=stack_ext)
+    full_ax_dict['spec_stack_md2'].imshow(stack_specs[2],origin='lower',aspect='auto',extent=stack_ext)
+    full_ax_dict['spec_stack_m'].imshow(stack_specs[3],origin='lower',aspect='auto',extent=stack_ext)
+    #sd = np.nanstd(stack_resids[1])
+    #px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
+    #xlims = full_ax_dict['stack_resid_hist'].get_xlim()
+    #xax = np.linspace(xlims[0],xlims[1],1000)
+    #yax = px(xax)
+    #full_ax_dict['stack_resid_hist'].plot(xax,yax,color='tab:red')
+
+    ####### gabo plots ###########
+    ############# 2nd derivs ##########
+    full_ax_dict['r2_g'].hist(gabo_r2s,bins=100,density=True)
+    full_ax_dict['d2_g_real'].plot(gabo_best[0][0],gabo_best[0][1],color='tab:blue')
+    ylim_real_g = full_ax_dict['d2_g_real'].get_ylim()
+    full_ax_dict['d2_g_pred'].plot(gabo_best[1][0],gabo_best[1][1],color='tab:orange')
+    full_ax_dict['d2_g_pred'].set_ylim(ylim_real_g)
+    full_ax_dict['d2_g_resid'].plot(gabo_resids[0],gabo_resids[1])
+    full_ax_dict['d2_g_resid'].set_ylim(ylim_real_g)
+    full_ax_dict['g_resid_hist'].hist(gabo_resids[1],bins=100,density=True)
+
+    ############# specs ###############
+    full_ax_dict['pix_ratio_g'].hist(gabo_spec_ratio[0],bins=100,density=True)
+    full_ax_dict['pix_ratio_g'].hist(gabo_spec_ratio[1],bins=100,density=True)
+    full_ax_dict['spec_g_real'].imshow(gabo_specs[0],origin='lower',aspect='auto',extent=gabo_ext)
+    full_ax_dict['spec_g_emp'].imshow(gabo_specs[1],origin='lower',aspect='auto',extent=gabo_ext)
+    full_ax_dict['spec_g_md2'].imshow(gabo_specs[2],origin='lower',aspect='auto',extent=gabo_ext)
+    full_ax_dict['spec_g_m'].imshow(gabo_specs[3],origin='lower',aspect='auto',extent=gabo_ext)
+
+
+    ####### coen plots ###########
+    ############# 2nd derivs ##########
+    full_ax_dict['r2_stack'].hist(coen_r2s,bins=100,density=True)
+    full_ax_dict['d2_c_real'].plot(coen_best[0][0],coen_best[0][1],color='tab:blue')
+    ylim_real_c = full_ax_dict['d2_c_real'].get_ylim()
+    full_ax_dict['d2_c_pred'].plot(coen_best[1][0],coen_best[1][1],color='tab:orange')
+    full_ax_dict['d2_c_pred'].set_ylim(ylim_real_c)
+    full_ax_dict['d2_c_resid'].plot(coen_resids[0],coen_resids[1])
+    full_ax_dict['d2_c_resid'].set_ylim(ylim_real_c)
+    full_ax_dict['c_resid_hist'].hist(coen_resids[1],bins=100,density=True)
+
+    ############# specs ###############
+    full_ax_dict['pix_ratio_c'].hist(coen_spec_ratio[0],bins=100,density=True)
+    full_ax_dict['pix_ratio_c'].hist(coen_spec_ratio[1],bins=100,density=True)
+    full_ax_dict['spec_c_real'].imshow(coen_specs[0],origin='lower',aspect='auto',extent=coen_ext)
+    full_ax_dict['spec_c_emp'].imshow(coen_specs[1],origin='lower',aspect='auto',extent=coen_ext)
+    full_ax_dict['spec_c_md2'].imshow(coen_specs[2],origin='lower',aspect='auto',extent=coen_ext)
+    full_ax_dict['spec_c_m'].imshow(coen_specs[3],origin='lower',aspect='auto',extent=coen_ext)
+
+    for key in full_ax_dict.keys():
+        format_axes(full_ax_dict[key])
+        if 'spec' in key:
+            full_ax_dict[key].set_xticks([])
+            full_ax_dict[key].set_yticks([])
+    plt.tight_layout()
+    plt.savefig(os.path.join(synth_model_path,'big_full_plot.svg'))
+    plt.close()
+
 
 if __name__ == '__main__':
 
