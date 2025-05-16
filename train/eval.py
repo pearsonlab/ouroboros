@@ -11,6 +11,7 @@ from torchdiffeq import odeint_adjoint
 from scipy.signal import savgol_filter,hilbert
 import time
 from scipy.interpolate import make_interp_spline
+from visualization.model_vis import format_axes
 
 def correct(data,scale_env=False,env_data=[],n_rounds=1):
     corrected = data.copy()
@@ -53,7 +54,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
         xddot = torch.from_numpy(deriv_approx_d2y(x)).to(model.device).to(torch.float32)/dt**2
         sample_ax = np.arange(0,xddot.shape[1]*dt + dt/2,dt)[:xddot.shape[1]]
-        xddot_hat = make_interp_spline(sample_ax,xddot.detach().cpu().numpy().squeeze())
+        #xddot_hat = make_interp_spline(sample_ax,xddot.detach().cpu().numpy().squeeze())
 
         x = torch.from_numpy(x).to(model.device).to(torch.float32)
         z = torch.cat([x,xdot],dim=-1)
@@ -61,6 +62,9 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
         
 
         #### get functions from model (assumes we only get one x at a time
+        #print(torch.amax(xdot))
+        #print(torch.amin(xdot))
+        #print(torch.amax(x),torch.amin(x))
         omega,gamma,weighted_kernels,weights,states = model.get_funcs(x,xdot,dt,scaled=True,smoothing=smoothing)
         
         omega,gamma,weighted_kernels= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
@@ -104,8 +108,16 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
             return torch.hstack([dz1_step,dz2_step])
         
         yhat,*_ = model.forward(x[:1,:,:],xdot[:1,:,:],dt)
+        
         yhat = yhat.detach().cpu().numpy().squeeze()*model.tau**2
-        yhat_terp = lambda t: np.interp(t,t_steps,yhat)
+        assert np.sum(np.isnan(yhat)) == 0, print(np.sum(np.isnan(yhat))/np.prod(yhat.shape))
+        if plot:
+            ax = plt.gca()
+            ax.plot(xddot.detach().cpu().numpy().squeeze())
+            ax.plot(yhat)
+            plt.show()
+            
+        yhat_terp = make_interp_spline(t_steps,yhat)#lambda t: np.interp(t,t_steps,yhat)
         #print(yhat.shape)
         #print(np.sum(np.isnan(yhat)))
         #print(yhat.shape)
@@ -206,10 +218,15 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
             plt.legend()
             ax.set_title("pre correction")
             plt.show()
-            plt.close()
+            #plt.close()
         
-    
+        #print(np.sum(np.isnan(y1))/np.prod(y1.shape))
+        #print(np.sum(np.isnan(y2))/np.prod(y2.shape))
+        #print(np.sum(np.isnan(y3))/np.prod(y3.shape))
         y1_corr,y2_corr,y3_corr = correct(y1),correct(y2),correct(y3)
+        #print(np.sum(np.isnan(y1_corr))/np.prod(y1_corr.shape))
+        #print(np.sum(np.isnan(y2_corr))/np.prod(y2_corr.shape))
+        #print(np.sum(np.isnan(y3_corr))/np.prod(y3_corr.shape))
         if plot:
             ax = plt.gca()
             ax.plot(y3_corr)
@@ -223,12 +240,15 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
             ax.set_title("post correction")
             plt.legend()
             plt.show()
-            plt.close()
+            #plt.close()
         
-        xTrue = x.detach().cpu().numpy().squeeze()[:int_length_samples]
-        trueErr = ((y1_corr - xTrue[burn_in_start:])**2).sum()
-        hat1Err = ((y2_corr - xTrue[burn_in_start:])**2).sum()
-        hat2Err = ((y3_corr - xTrue[burn_in_start:])**2).sum()
+        xTrue = x.detach().cpu().numpy().squeeze()[:int_length_samples][burn_in_start:]
+        y1_corr = y1_corr.squeeze()
+        y2_corr = y2_corr.squeeze()
+        y3_corr = y3_corr.squeeze()
+        trueErr = ((y1_corr - xTrue)**2).sum()
+        hat1Err = ((y2_corr - xTrue)**2).sum()
+        hat2Err = ((y3_corr - xTrue)**2).sum()
         if plot:
             ax = plt.gca()
             ax.plot(xTrue,label='true')
@@ -237,19 +257,20 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
             #ax.plot(y2,label='integrated predicted d2')
             plt.legend()
             plt.show()
-            plt.close()
+            #plt.close()
         
-
-        truspec,ittr,iftr,*_ = get_spec(xTrue.squeeze(),int(round(1/dt)),onset=0,offset=xTrue.shape[0]*dt,\
+        min_len = np.amin(list(map(len,[xTrue,y1_corr,y2_corr,y3_corr])))
+        xTrue,y1_corr,y2_corr,y3_corr = xTrue[:min_len],y1_corr[:min_len],y2_corr[:min_len],y3_corr[:min_len]
+        truspec,ittr,iftr,*_ = get_spec(xTrue,int(round(1/dt)),onset=0,offset=xTrue.shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
-        intspec,*_ = get_spec(y1_corr.squeeze(),int(round(1/dt)),onset=0,offset=y1.squeeze().shape[0]*dt,\
+        intspec,*_ = get_spec(y1_corr,int(round(1/dt)),onset=0,offset=y1.shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
-        int2spec,*_ = get_spec(y2_corr.squeeze(),int(round(1/dt)),onset=0,offset=y2.squeeze().shape[0]*dt,\
+        int2spec,*_ = get_spec(y2_corr,int(round(1/dt)),onset=0,offset=y2.shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
-        modelspec,*_ = get_spec(y3_corr.squeeze(),int(round(1/dt)),onset=0,offset=y3.squeeze().shape[0]*dt,\
+        modelspec,*_ = get_spec(y3_corr,int(round(1/dt)),onset=0,offset=y3.squeeze().shape[0]*dt,\
                          shoulder=0.0,interp=False,win_len=1028,normalize=False,\
                          min=-2,max=3.5,spec_type='log')
         
@@ -265,7 +286,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
             axs[3].set_yticks([])
             
             plt.show()
-            plt.close()
+            #plt.close()
         pix_errs_emp = np.linalg.norm(truspec - intspec)
         pix_errs_d2 = np.linalg.norm(truspec - int2spec)
         pix_errs_mod = np.linalg.norm(truspec-modelspec)
@@ -341,8 +362,8 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
             test_r2.append(1 - err/tot)
             reals.append(y.detach().cpu().numpy().squeeze())
             preds.append(dx2hat.detach().cpu().numpy().squeeze())
-            y = y.detach().cpu().numpy()
-            data.append(y.squeeze())
+            #y = y.detach().cpu().numpy()
+            data.append(x.detach().cpu().numpy().squeeze())
             test_errors.append(err)
 
     mean_r2_train = np.nanmean(np.hstack(train_r2))
@@ -542,16 +563,17 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
 
 def full_eval_model(model,loaders=None,original_data=None,\
                     dt=1/44100,plot_dir='',use_results=False,
-                    n_int=100):
+                    n_int=100,plot_steps=False):
 
 
     ### Characterize R2 and reconstructions #################
-    r2_mosaic = """
-    ABBDDF
-    ACCEEG
-    """
-    fig_r2=plt.figure(layout='constrained',figsize=(15,8))
-    r2_ax_dict=fig_r2.subplot_mosaic(r2_mosaic)
+    # removing plots here
+    #r2_mosaic = """
+    #ABBCCDDEEF
+    #AEEG
+    #"""
+    #fig_r2=plt.figure(layout='constrained',figsize=(15,8))
+    #r2_ax_dict=fig_r2.subplot_mosaic(r2_mosaic)
     if not use_results:
         ### if we've already done this, just load results (maybe from saved csv?) and re-plot
         # implement once the basic stuff is all working
@@ -560,12 +582,21 @@ def full_eval_model(model,loaders=None,original_data=None,\
             predictions =[]
             reals = []
             for o in original_data:
+                if len(o.shape) == 1:
+                    o = o[None,:,None]
+                elif len(o.shape) == 2:
+                    o = o.shape[None,:,:]
+                #print(o.shape)
                 dx2dt2 = torch.from_numpy(deriv_approx_d2y(o)).to(model.device).to(torch.float32)
                 dxdt = torch.from_numpy(deriv_approx_dy(o)).to(model.device).to(torch.float32)
                 dx2 = dx2dt2/(dt**2)
                 x = torch.from_numpy(o).to(model.device).to(torch.float32)
+                #print(x.shape)
+                #print(dx2.shape)
+                #print(dxdt.shape)
                 dx2hat,_ = model(x,dxdt,dt,False)
                 dx2hat *= model.tau**2
+                
 
                 errs = sse(dx2hat,dx2,reduction='sum').detach().cpu().numpy().squeeze()
                 totals = sst(dx2,reduction='sum').detach().cpu().numpy().squeeze()
@@ -584,53 +615,59 @@ def full_eval_model(model,loaders=None,original_data=None,\
             worst_traj_pred,worst_traj_real = predictions[worst],reals[worst]
             
         
-            r2_ax_dict['A'].boxplot(np.array(r2s),zorder=1)
-            r2_ax_dict['A'].scatter(np.ones(r2s.shape)+np.random.randn(r2s.shape)*0.1,r2s,s=1,zorder=2)
         else:
 
             _,_,(_,test_r2s),(test_preds,test_reals,original_data)= eval_model_error(loaders,model,dt,\
                                                                                 comparison='test',return_all=True)
-            test_r2s = np.array(test_r2s)
-            best = np.argmax(test_r2s)
-            worst = np.argmin(test_r2s)
+            r2s = np.array(test_r2s)
+            best = np.argmax(r2s)
+            worst = np.argmin(r2s)
             reals = test_reals
             preds = test_preds
 
             best_traj_pred,best_traj_real = test_preds[best],test_reals[best]
             worst_traj_pred,worst_traj_real = test_preds[worst],test_reals[worst]
-            r2_ax_dict['A'].boxplot(test_r2s,zorder=1)
-            r2_ax_dict['A'].scatter(np.ones(test_r2s.shape)+np.random.randn(test_r2s.shape)*0.1,test_r2s,zorder=2,s=1)
+            
+        
+        #r2_ax_dict['A'].boxplot(np.array(r2s),zorder=1)
+        #r2_ax_dict['A'].scatter(np.ones(r2s.shape)+np.random.randn(*r2s.shape)*0.1,r2s,s=3,zorder=2)
 
-        best_res = best_traj_real - best_traj_pred
-        worst_res = worst_traj_real - worst_traj_pred
+        #r2_ax_dict['A'].set_ylim([0,1])
+        best_res = (best_traj_real - best_traj_pred)*(dt**2)
+        worst_res = (worst_traj_real - worst_traj_pred)*(dt**2)
 
-        r2_ax_dict['B'].plot(best_traj_real)
-        r2_ax_dict['B'].plot(best_traj_pred,alpha=0.3)
+        #r2_ax_dict['B'].plot(best_traj_real*(dt**2))
+        #r2_ax_dict['B'].plot(best_traj_pred*(dt**2),alpha=0.3)
+        #ylim_b = r2_ax_dict['B'].get_ylim()
 
-        r2_ax_dict['C'].plot(worst_traj_real)
-        r2_ax_dict['C'].plot(worst_traj_pred,alpha=0.3)
+        #r2_ax_dict['C'].plot(worst_traj_real*(dt**2))
+        #r2_ax_dict['C'].plot(worst_traj_pred*(dt**2),alpha=0.3)
+        #ylim_w = r2_ax_dict['C'].get_ylim()
 
-        r2_ax_dict['D'].plot(best_res)
-        r2_ax_dict['E'].plot(worst_res)
+        #r2_ax_dict['D'].plot(best_res)
+        #r2_ax_dict['D'].set_ylim(ylim_b)
+        #r2_ax_dict['E'].plot(worst_res)
+        #r2_ax_dict['E'].set_ylim(ylim_w)
 
-        r2_ax_dict['F'].hist(best_res,bins=100,density=True)
+        #r2_ax_dict['F'].hist(best_res,bins=100,density=True)
         sd = np.nanstd(best_res)
         px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
-        xlims=r2_ax_dict['F'].get_xlim()
-        xax = np.linspace(xlims[0],xlims[1],1000)
-        yax = px(xax)
-        r2_ax_dict['F'].plot(xax,yax,color='tab:red')
+        #xlims=r2_ax_dict['F'].get_xlim()
+        #xax = np.linspace(xlims[0],xlims[1],1000)
+        #yax = px(xax)
+        #r2_ax_dict['F'].plot(xax,yax,color='tab:red')
 
-        r2_ax_dict['G'].hist(worst_res,bins=100,density=True)
+        #r2_ax_dict['G'].hist(worst_res,bins=100,density=True)
         sd = np.nanstd(worst_res)
         px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
-        xlims=r2_ax_dict['G'].get_xlim()
-        xax = np.linspace(xlims[0],xlims[1],1000)
-        yax = px(xax)
-        r2_ax_dict['G'].plot(xax,yax,color='tab:red')
-
-        plt.savefig(os.path.join(plot_dir,'residuals_plot.svg'))
-        plt.close()
+        #xlims=r2_ax_dict['G'].get_xlim()
+        #xax = np.linspace(xlims[0],xlims[1],1000)
+        #yax = px(xax)
+        #r2_ax_dict['G'].plot(xax,yax,color='tab:red')
+        #for key in r2_ax_dict.keys():
+        #    format_axes(r2_ax_dict[key])
+        #plt.savefig(os.path.join(plot_dir,'residuals_plot.svg'))
+        #plt.close()
 
         
     #################### Characterize integration ######################
@@ -641,6 +678,7 @@ def full_eval_model(model,loaders=None,original_data=None,\
     specs_real,specs_int1,specs_int2,specs_int3,bounds = [],[],[],[],[]
     for o in order:
         sample = original_data[o]
+        #print(np.amax(o),np.amin(o))
         if len(sample.shape) == 1:
             sample = sample[None,:,None]
         elif len(sample.shape) == 2:
@@ -649,10 +687,10 @@ def full_eval_model(model,loaders=None,original_data=None,\
         
         _,_,_,(truspec,intspec,int2spec,modelspec,(ittr,iftr)),\
         (pix_errs_emp,pix_errs_d2,pix_errs_mod) = assess_integration_torch(model,\
-                                            sample,dt,method='RK45',int_length=0.15,\
+                                            sample,dt,method='rk4',int_length=0.15,\
                                             smoothing=True, strategy='interp',\
                                             oversample_prop=5,burn_in_length=0.001,\
-                                            int_start=0)
+                                            int_start=0,plot=plot_steps)
         pix_err_real.append(pix_errs_emp)
         pix_err_predd2.append(pix_errs_d2)
         pix_err_predmod.append(pix_errs_mod)
@@ -661,6 +699,13 @@ def full_eval_model(model,loaders=None,original_data=None,\
         specs_int2.append(int2spec)
         specs_int3.append(modelspec)
         bounds.append((ittr[0],ittr[-1],iftr[0],iftr[-1]))
+
+    #print(len(pix_err_real))
+    #print(len(specs_int1))
+    #print(len(specs_int2))
+    #print(len(specs_int3))
+    #print(len(pix_err_predd2))
+    #print(len(pix_err_predmod))
 
     best = np.argmin(pix_err_predd2)
     best_err_d2_ratio = pix_err_predd2[best]/pix_err_real[best]
@@ -676,36 +721,45 @@ def full_eval_model(model,loaders=None,original_data=None,\
     worst_spec_int2 = specs_int2[worst]
     worst_spec_int3 = specs_int3[worst]
     worst_ext = bounds[worst]
-
-    int_mosaic = """
-    ABCDE
-    AFGHI
-    """
-    fig_int=plt.figure(layout='constrained',figsize=(15,8))
-    int_ax_dict=fig_int.subplot_mosaic(int_mosaic)
+    #print(best,worst)
+    #int_mosaic = """
+    #ABCDE
+    #AFGHI
+    #"""
+    #fig_int=plt.figure(layout='constrained',figsize=(15,8))
+    #int_ax_dict=fig_int.subplot_mosaic(int_mosaic)
 
     pix_err_real,pix_err_predd2,pix_err_predmod = np.array(pix_err_real),np.array(pix_err_predd2),np.array(pix_err_predmod)
     
     errs = [pix_err_real,pix_err_predd2,pix_err_predmod]
     labels=['Empirical d2','Model predicted d2', 'Model functions']
-    int_ax_dict['A'].boxplot(errs,tick_labels=labels,zorder=1)
-    int_ax_dict['A'].scatter(np.ones(pix_err_real.shape)+np.random.randn(pix_err_real.shape)*0.1,pix_err_real,zorder=2,s=1)
-    int_ax_dict['A'].scatter(2*np.ones(pix_err_predd2.shape)+np.random.randn(pix_err_predd2.shape)*0.1,pix_err_predd2,zorder=2,s=1)
-    int_ax_dict['A'].scatter(3*np.ones(pix_err_predmod.shape)+np.random.randn(pix_err_predmod.shape)*0.1,pix_err_predmod,zorder=2,s=1)
-    
-    int_ax_dict['B'].imshow(best_spec_real,origin='lower',aspect='auto',extent=best_ext)
-    int_ax_dict['C'].imshow(best_spec_int1,origin='lower',aspect='auto',extent=best_ext)
-    int_ax_dict['D'].imshow(best_spec_int2,origin='lower',aspect='auto',extent=best_ext)
-    int_ax_dict['E'].imshow(best_spec_int3,origin='lower',aspect='auto',extent=best_ext)
-    int_ax_dict['D'].set_title(f"Integration spec error ratio to integrated empirical: {best_err_d2_ratio*100:.2f}%")
+    #int_ax_dict['A'].boxplot(errs,tick_labels=labels,zorder=1)
+    #int_ax_dict['A'].scatter(np.ones(pix_err_real.shape)+np.random.randn(*pix_err_real.shape)*0.1,pix_err_real,zorder=2,s=1)
+    #int_ax_dict['A'].scatter(2*np.ones(pix_err_predd2.shape)+np.random.randn(*pix_err_predd2.shape)*0.1,pix_err_predd2,zorder=2,s=1)
+    #int_ax_dict['A'].scatter(3*np.ones(pix_err_predmod.shape)+np.random.randn(*pix_err_predmod.shape)*0.1,pix_err_predmod,zorder=2,s=1)
+    #int_ax_dict['A'].set_ylim([0,1])
+    #int_ax_dict['B'].imshow(best_spec_real,origin='lower',aspect='auto',extent=best_ext)
+    #int_ax_dict['C'].imshow(best_spec_int1,origin='lower',aspect='auto',extent=best_ext)
+    #int_ax_dict['D'].imshow(best_spec_int2,origin='lower',aspect='auto',extent=best_ext)
+    #int_ax_dict['E'].imshow(best_spec_int3,origin='lower',aspect='auto',extent=best_ext)
+    #int_ax_dict['D'].set_title(f"Integration spec error ratio to integrated empirical: {best_err_d2_ratio*100:.2f}%")
 
-    int_ax_dict['E'].imshow(worst_spec_real,origin='lower',aspect='auto',extent=worst_ext)
-    int_ax_dict['F'].imshow(worst_spec_int1,origin='lower',aspect='auto',extent=worst_ext)
-    int_ax_dict['G'].imshow(worst_spec_int2,origin='lower',aspect='auto',extent=worst_ext)
-    int_ax_dict['H'].imshow(worst_spec_int3,origin='lower',aspect='auto',extent=worst_ext)
-    int_ax_dict['G'].set_title(f"Integration spec error ratio to integrated empirical: {worst_err_d2_ratio*100:.2f}%")
-    plt.savefig(os.path.join(plot_dir,'integration_plot.svg'))
-    plt.close()
+    #int_ax_dict['F'].imshow(worst_spec_real,origin='lower',aspect='auto',extent=worst_ext)
+    #int_ax_dict['G'].imshow(worst_spec_int1,origin='lower',aspect='auto',extent=worst_ext)
+    #int_ax_dict['H'].imshow(worst_spec_int2,origin='lower',aspect='auto',extent=worst_ext)
+    #int_ax_dict['I'].imshow(worst_spec_int3,origin='lower',aspect='auto',extent=worst_ext)
+    #int_ax_dict['G'].set_title(f"Integration spec error ratio to integrated empirical: {worst_err_d2_ratio*100:.2f}%")
+    #for key in int_ax_dict.keys():
+    #    format_axes(int_ax_dict[key])
+    #plt.savefig(os.path.join(plot_dir,'integration_plot.svg'))
+    #plt.close()
+
+    traj_xax= np.arange(0,len(best_traj_real)*dt,dt)[:len(best_traj_real)]
+    res_xax= np.arange(0,len(best_res)*dt,dt)[:len(best_res)]
+    return r2s,((traj_xax,best_traj_real*(dt**2)),(traj_xax,best_traj_pred*(dt**2))),\
+            (res_xax,best_res), errs,\
+            (best_spec_real,best_spec_int1,best_spec_int2,best_spec_int3),\
+            best_ext
 
 
         
