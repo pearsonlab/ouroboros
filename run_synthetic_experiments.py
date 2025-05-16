@@ -95,6 +95,8 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
     #yax = px(xax)
     #full_ax_dict['stack_resid_hist'].plot(xax,yax,color='tab:red')
 
+
+    ######### TO DO: ADD INSET TO D2 PLOTS ###########
     ####### gabo plots ###########
     ############# 2nd derivs ##########
     full_ax_dict['r2_g'].hist(gabo_r2s,bins=100,density=True)
