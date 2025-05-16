@@ -98,5 +98,5 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
     })
     data_df.to_csv(os.path.join(model_path,'cv_errs.csv'))        
     
-    return 
+    return full_model_poly
 
