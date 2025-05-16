@@ -885,9 +885,9 @@ class rkhs_ouroboros(simple_ouroboros):
         # x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) ## stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
         
-        omegaControl = self.omega_mamba(x_in)[:,:,:]
-        gammaControl = self.gamma_mamba(x_in)[:,:,:]
-        kernelControl = self.kernel_mamba(x_in)[:,:,:]
+        omegaControl = self.omega_mamba(x_in)[:,L:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
+        kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
@@ -896,7 +896,7 @@ class rkhs_ouroboros(simple_ouroboros):
             omega=smooth(omega.abs(),smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
 
-        weighted_kernels,weights = self.kernel(x_in,kernelControl,smooth_len)#*self.tau
+        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)#*self.tau
         #if not self.trend_filtering:
         #    weighted_kernels = smooth(weighted_kernels,smooth_len)
         if scaled:
@@ -908,7 +908,7 @@ class rkhs_ouroboros(simple_ouroboros):
             weights = weights *(self.tau * dt**2)
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
-        return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],weights[:,:L,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
+        return omega,gamma,weighted_kernels,weights,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
     
     def integrate(self,x,dxdt,dx2,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
 
