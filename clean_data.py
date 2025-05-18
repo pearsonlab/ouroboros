@@ -62,6 +62,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     #print(audio_files,seg_files)
     #print(audio_files[:5],seg_files[:5])
     assert len(audio_files) > 0, print("no audio files! check your directories & subdirs")
+    print(len(audio_files),len(seg_files))
     hps = tune_preprocessing(audio_files,seg_files,HP_DICT)
 
     preprocess(audio_dirs,out_dirs,hps,audio_ext=audio_ext,parallel=parallel)
