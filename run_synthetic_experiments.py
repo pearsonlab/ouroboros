@@ -9,6 +9,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from visualization.model_vis import format_axes
+import pickle
 
 
 def run_experiments(gabo_data_path='',coen_data_path='',\
@@ -38,10 +39,17 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
     gabo_path = os.path.join(synth_model_path,'gabo_model')
     gabo_model = model_cv_lambdas(dls,1/sr,\
-                        nEpochs=1,model_path=gabo_path)
+                        nEpochs=100,model_path=gabo_path)
 
     gabo_r2s,gabo_best,gabo_resids,gabo_spec_ratio,gabo_specs,gabo_ext = full_eval_model(gabo_model,dls,audios,1/sr,use_results=False,\
-                    n_int=1,plot_dir=gabo_path,plot_steps=False)
+                    n_int=50,plot_dir=gabo_path,plot_steps=False)
+    
+    gabo_data_dict={'r2s':gabo_r2s,
+                    'best_data':gabo_best,
+                    'resids':gabo_resids,
+                    'spec_ratio':gabo_spec_ratio,
+                    'specs':gabo_specs,
+                    'ext':gabo_ext}
     #assert False
 
     sr_stack=44100
@@ -49,16 +57,42 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
     stack_path = os.path.join(synth_model_path,'stackies')
     stack_model = model_cv_lambdas(dls,1/sr,\
-                            nEpochs=5,model_path=stack_path)
+                            nEpochs=100,model_path=stack_path)
     stack_r2s,stack_best,stack_resids,stack_spec_ratio,stack_specs,stack_ext = full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
-                   n_int=1,plot_dir=stack_path,plot_steps=False)
+                   n_int=50,plot_dir=stack_path,plot_steps=False)
+    
+    stack_data_dict={'r2s':stack_r2s,
+                    'best_data':stack_best,
+                    'resids':stack_resids,
+                    'spec_ratio':stack_spec_ratio,
+                    'specs':stack_specs,
+                    'ext':stack_ext}
     
     coen_data = load_coen_data(coen_data_path,target_fs=44100)
     #print(coen_data[4])
     adult_model,*_=load_model(os.path.join(adult_zf_model_path,'checkpoint_100.tar'),kernel_type='full_poly') # here, let's use use cv_better_weighed_adultzf_92 0.05
     coen_r2s,coen_best,coen_resids,coen_spec_ratio,coen_specs,coen_ext = full_eval_model(adult_model,None,coen_data[1],1/coen_data[4],use_results=False,\
-                    n_int=1,plot_dir=synth_model_path,plot_steps=False)
+                    n_int=50,plot_dir=synth_model_path,plot_steps=False)
+    coen_data_dict={'r2s':coen_r2s,
+                    'best_data':coen_best,
+                    'resids':coen_resids,
+                    'spec_ratio':coen_spec_ratio,
+                    'specs':coen_specs,
+                    'ext':coen_ext}
     
+    gdp = os.path.join(synth_model_path,'gabo_results.pkl')
+    cdp = os.path.join(synth_model_path,'coen_results.pkl')
+    sdp = os.path.join(synth_model_path,'stack_results.pkl')
+
+    with open(gdp,'wb') as f:
+        pickle.dump(gabo_data_dict,f)
+
+    with open(cdp,'wb') as f:
+        pickle.dump(coen_data_dict,f)
+    
+    with open(sdp,'wb') as f:
+        pickle.dump(stack_data_dict,f)
+
     
     full_mosaic = \
     [['r2_stack','d2_stack_real','d2_stack_real','d2_stack_pred','d2_stack_pred','d2_stack_resid','d2_stack_resid','stack_resid_hist','stack_resid_hist'],
@@ -141,7 +175,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         if 'spec' in key:
             full_ax_dict[key].set_xticks([])
             full_ax_dict[key].set_yticks([])
-    plt.tight_layout()
+    #plt.tight_layout()
     plt.savefig(os.path.join(synth_model_path,'big_full_plot.svg'))
     plt.close()
 
