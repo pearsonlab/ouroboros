@@ -144,6 +144,18 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
 def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                         max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
                         seg_type='.txt',seed=None,full_vocs=False,extend=True):
+    
+    """
+    Takes as input a path to audio and segments (along with any
+    shared subdirectories and file extensions),
+    if used for gathering training data, outputs a list of
+    1,L,1 audio chunks 
+    if used for analysis, use the full_vocs option:
+    outputs a list of lists, with each inner list containing the
+    1,L_i,1 audio chunks (corresponding to vocalizations) within each audio file,
+    which is treated as a separate session. 
+        
+    """
 
     random.seed(seed)
     audio_dirs = glob.glob(os.path.join(audiopath,audio_subdir))
