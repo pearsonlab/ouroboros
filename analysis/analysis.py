@@ -189,6 +189,24 @@ def get_model_fncs(model,audios,dt,smoothing=True,smooth_len=0.005):
 
     return omegas,gammas,kernels,weights
 
+def get_zf_fncs(model,audio_location,seg_location,aud_subdir,seg_subdir,seed=None):
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,audio_subdir=aud_subdir,\
+                            seg_subdir=seg_subdir,envelope=False,context_len=0.2,\
+                            audio_type=f'_cleaned.wav',seg_type=f'.txt',\
+                                max_pairs=3000,seed=seed,full_vocs=True,extend=False)
+    
+    omegas,gammas,kernels,weights = []
+    for a in audios:
+        o,g,k,w = get_model_fncs(model,audios,1/sr)
+        omegas.append(o)
+        gammas.append(g)
+        kernels.append(k)
+        weights.append(w)
+
+    return omegas,gammas,kernels,weights
+
+
 def get_marmo_fncs(model,audio_location,seg_location,marmo_name,voctype='',seed=None):
 
     audio_location = os.path.join(audio_location,marmo_name,'wavfiles','synchro_cleaned')

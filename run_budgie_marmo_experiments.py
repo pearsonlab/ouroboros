@@ -82,8 +82,8 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
     marmo_model = model_cv_lambdas(dls,1/sr,\
-                                    nEpochs=150,model_path=marmo_model_path,
-                                    n_layers=3)
+                                    nEpochs=200,model_path=marmo_model_path,
+                                    n_layers=3,expand_factor=8)
 
     marmo_r2s,marmo_best,marmo_resids,marmo_spec_ratio,marmo_specs,marmo_ext = full_eval_model(marmo_model,dls,audios,1/sr,use_results=False,\
                     n_int=50,plot_dir=marmo_model_path,plot_steps=False)
@@ -119,7 +119,16 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
             }
             with open(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl'),'wb') as f:
                 pickle.dump(marmo_func_dict[id][u],f)
-     
+
+
+
+    #### TO DO:: PLOT SOME STUFF RIGHT HERE
+    
+    f5_mosaic = \
+    [['Marmo 2 sylls']*2 + ['Marmo 1 syll all ms']*2,\
+     ['Marmo 2 sylls']*2 + ['Marmo 1 syll all ms']*2,\
+     ['Budgie something']*4
+    ]
 
 
 if __name__ == '__main__':
