@@ -24,7 +24,7 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
     marmo_model_path = os.path.join(model_path,'marmos')
     #### let's do budgie data first ##########
 
-    budgie_audio_path,budgie_seg_path= budgie_data_path
+    budgie_audio_path,budgie_seg_path= budgie_data_path,budgie_data_path
 
     audios,sr = get_segmented_audio(budgie_audio_path,budgie_seg_path,audio_subdir='',\
                                 seg_subdir='',envelope=False,context_len=0.15,\
