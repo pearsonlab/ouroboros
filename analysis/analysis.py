@@ -235,7 +235,7 @@ def get_budgie_fncs(model,audio_location,seg_location,seed=None,cut_percentile=7
 
     ### warbles are relatively long -- so take the longest, idk, 25% of vocalizations
     min_len = np.percentile(audio_lens,cut_percentile)
-    aud_inds = np.argwhere(audio_lens > min_len)
+    aud_inds = np.argwhere(audio_lens > min_len).squeeze()
     audios = [audios[o] for o in aud_inds]
 
     omegas,gammas,kernels,weights = get_model_fncs(model,audios,1/sr)
