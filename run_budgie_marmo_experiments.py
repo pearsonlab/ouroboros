@@ -35,30 +35,38 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
     budgie_model = model_cv_lambdas(dls,1/sr,\
                                     nEpochs=400,model_path=budgie_model_path)
     
-    budgie_r2s,budgie_best,budgie_resids,budgie_spec_ratio,budgie_specs,budgie_ext = full_eval_model(budgie_model,dls,audios,1/sr,use_results=False,\
-                    n_int=50,plot_dir=budgie_model_path,plot_steps=False)
-    
-    budgie_eval_dict={'r2s':budgie_r2s,
-                    'best_data':budgie_best,
-                    'resids':budgie_resids,
-                    'spec_ratio':budgie_spec_ratio,
-                    'specs':budgie_specs,
-                    'ext':budgie_ext}
+    if os.path.isfile(os.path.join(budgie_model_path,'eval_data.pkl')):
+        with open(os.path.join(budgie_model_path,'eval_data.pkl'),'rb') as f:
+            budgie_eval_dict = pickle.load(f)
+    else:
+        budgie_r2s,budgie_best,budgie_resids,budgie_spec_ratio,budgie_specs,budgie_ext = full_eval_model(budgie_model,dls,audios,1/sr,use_results=False,\
+                        n_int=50,plot_dir=budgie_model_path,plot_steps=False)
+        
+        budgie_eval_dict={'r2s':budgie_r2s,
+                        'best_data':budgie_best,
+                        'resids':budgie_resids,
+                        'spec_ratio':budgie_spec_ratio,
+                        'specs':budgie_specs,
+                        'ext':budgie_ext}
 
-    with open(os.path.join(budgie_model_path,'eval_data.pkl'),'wb') as f:
-        pickle.dump(budgie_eval_dict,f)
+        with open(os.path.join(budgie_model_path,'eval_data.pkl'),'wb') as f:
+            pickle.dump(budgie_eval_dict,f)
 
-    b_o,b_g,b_k,b_w = get_budgie_fncs(budgie_model,budgie_audio_path,budgie_seg_path,seed=seed,cut_percentile=75)
+    if os.path.isdir(os.path.join(budgie_model_path,'func_data,pkl')):
+        with open(os.path.join(budgie_model_path,'func_data,pkl'),'rb') as f:
+            budgie_func_dict = pickle.load(f)
+    else:
+        b_o,b_g,b_k,b_w = get_budgie_fncs(budgie_model,budgie_audio_path,budgie_seg_path,seed=seed,cut_percentile=75)
 
-    budgie_func_dict = {
-        'omegas':b_o,
-        'gammas':b_g,
-        'kernels':b_k,
-        'weights':b_w
-    }
+        budgie_func_dict = {
+            'omegas':b_o,
+            'gammas':b_g,
+            'kernels':b_k,
+            'weights':b_w
+        }
 
-    with open(os.path.join(budgie_model_path,'func_data,pkl'),'wb') as f:
-        pickle.dump(budgie_func_dict,f)
+        with open(os.path.join(budgie_model_path,'func_data,pkl'),'wb') as f:
+            pickle.dump(budgie_func_dict,f)
 
     del audios
     del dls
