@@ -93,18 +93,22 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
                                     nEpochs=200,model_path=marmo_model_path,
                                     n_layers=3,expand_factor=8)
 
-    marmo_r2s,marmo_best,marmo_resids,marmo_spec_ratio,marmo_specs,marmo_ext = full_eval_model(marmo_model,dls,audios,1/sr,use_results=False,\
-                    n_int=50,plot_dir=marmo_model_path,plot_steps=False)
-    
-    marmo_eval_dict={'r2s':marmo_r2s,
-                    'best_data':marmo_best,
-                    'resids':marmo_resids,
-                    'spec_ratio':marmo_spec_ratio,
-                    'specs':marmo_specs,
-                    'ext':marmo_ext}
+    if os.path.isdir(os.path.join(marmo_model_path,'eval_data.pkl')):
+        with open(os.path.join(marmo_model_path,'eval_data.pkl'),'rb') as f:
+            marmo_eval_dict = pickle.load(f)
+    else:
+        marmo_r2s,marmo_best,marmo_resids,marmo_spec_ratio,marmo_specs,marmo_ext = full_eval_model(marmo_model,dls,audios,1/sr,use_results=False,\
+                        n_int=50,plot_dir=marmo_model_path,plot_steps=False)
+        
+        marmo_eval_dict={'r2s':marmo_r2s,
+                        'best_data':marmo_best,
+                        'resids':marmo_resids,
+                        'spec_ratio':marmo_spec_ratio,
+                        'specs':marmo_specs,
+                        'ext':marmo_ext}
 
-    with open(os.path.join(marmo_model_path,'eval_data.pkl'),'wb') as f:
-        pickle.dump(marmo_eval_dict,f)
+        with open(os.path.join(marmo_model_path,'eval_data.pkl'),'wb') as f:
+            pickle.dump(marmo_eval_dict,f)
 
     marmos = glob.glob(os.path.join(marmo_data_path,'s6*'))
     marmo_ids = [m.split('/')[-1] for m in marmos]
@@ -117,16 +121,24 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
         marmo_func_dict[id] = {}
 
         for u in unique_vocs:
-            m_o,m_g,m_k,m_w = get_marmo_fncs(marmo_model,marmo_audio_path,marmo_name=id,voctype=u,seed=seed)
-            
-            marmo_func_dict[id][u] = {
-                'omegas':m_o,
-                'gammas':m_g,
-                'kernels':m_k,
-                'weights':m_w
-            }
-            with open(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl'),'wb') as f:
-                pickle.dump(marmo_func_dict[id][u],f)
+
+            if os.path.isdir(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl')):
+                with open(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl'),'rb') as f:
+                    marmo_func_dict[id][u] = pickle.load(f)
+
+            else:
+                m_o,m_g,m_k,m_w = get_marmo_fncs(marmo_model,marmo_audio_path,\
+                                                marmo_seg_path,marmo_name=id,\
+                                                    voctype=u,seed=seed)
+                
+                marmo_func_dict[id][u] = {
+                    'omegas':m_o,
+                    'gammas':m_g,
+                    'kernels':m_k,
+                    'weights':m_w
+                }
+                with open(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl'),'wb') as f:
+                    pickle.dump(marmo_func_dict[id][u],f)
 
 
 
