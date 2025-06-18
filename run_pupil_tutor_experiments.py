@@ -38,8 +38,8 @@ def run_experiments(data_path='',model_path='',seed=92):
                                         max_pairs=1500,seed=seed)
     audios = pupil_audios + tutor_audios
     
-    dls = get_loaders(np.vstack(audios),1/sr,\
-                    nEpochs=400,model_path=model_path)
+    dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed) #1/sr,\
+                    #nEpochs=400,model_path=model_path)
     pupil_tutor_model = model_cv_lambdas(dls,1/sr,\
                                     nEpochs=400,model_path=model_path)
     
