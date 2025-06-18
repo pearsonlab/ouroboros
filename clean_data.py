@@ -1,5 +1,5 @@
 from data.preprocess import tune_preprocessing, preprocess,filter_by_tags,HP_DICT
-
+import time
 import glob
 import os
 from fire import Fire
@@ -66,7 +66,11 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     #print(len(audio_files),len(seg_files))
     hps = tune_preprocessing(audio_files,seg_files,HP_DICT)
 
+    print('now cleaning data!')
+    start = time.time()
     preprocess(audio_dirs,out_dirs,hps,audio_ext=audio_ext,parallel=parallel)
+    end = time.time()
+    print(f"preprocessed your data in {end - start :.2f}s! If you have other files to preprocess, it'll probably take that long")
 
 if __name__ == '__main__':
 
