@@ -19,9 +19,9 @@ def run_experiments(data_path='',model_path='',seed=92):
 
         os.mkdir(model_path)
 
-    pupil_audio_subdir='[b,g,p]*[0-9]/motif_audio'
+    pupil_audio_subdir='[b,g,p]*[0-9]/motif_audio/synchro_cleaned_v1'
     pupil_seg_subdir='[b,g,p]*[0-9]/motif_txt'
-    tutor_audio_subdir='[b,g,p]*[0-9]_tutor/motif_audio_tutor'
+    tutor_audio_subdir='[b,g,p]*[0-9]_tutor/motif_audio_tutor/synchro_cleaned_v1'
     tutor_seg_subdir='[b,g,p]*[0-9]_tutor/motif_txt_tutor'
 
     pupil_audios,sr = get_segmented_audio(data_path,data_path,
