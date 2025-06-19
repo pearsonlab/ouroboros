@@ -7,7 +7,8 @@ from fire import Fire
 
 def preprocess_data(audio_loc,seg_loc,out_ext,\
                     audio_subdirs='',seg_subdirs='',\
-                        audio_ext='.wav',seg_ext='.txt',parallel = True):
+                        audio_ext='.wav',seg_ext='.txt',parallel = True,
+                        reprocess=True):
     
 
     ## default: grabs all subdirs
@@ -68,7 +69,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     print('now cleaning data!')
     start = time.time()
-    preprocess(audio_dirs,out_dirs,hps,audio_ext=audio_ext,parallel=parallel)
+    preprocess(audio_dirs,out_dirs,hps,audio_ext=audio_ext,parallel=parallel,reprocess=reprocess)
     end = time.time()
     print(f"preprocessed your data in {end - start :.2f}s! If you have other files to preprocess, it'll probably take that long")
 

@@ -302,7 +302,7 @@ def filter_by_tags(audio_files,seg_files,audio_tags,seg_tags):
 
     return filtered_audio_files,filtered_seg_files			
 
-def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext):
+def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess):
 
     print(f"processing directory {in_dir} \n")
         
@@ -315,6 +315,9 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext):
 
         new_fn = af.split('/')[-1].split(audio_ext)[0] + '_cleaned.wav'
         new_fn = os.path.join(out_dir,new_fn)
+        if os.path.isfile(new_fn) and not reprocess:
+            continue
+
         if '.wav' in af:
             sr,orig_audio = wavfile.read(af)
         elif '.flac' in af:
@@ -334,19 +337,19 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext):
         recon_a = recon_a.astype(orig_dtype)
         wavfile.write(new_fn,rate=sr,data=recon_a)
 
-def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False):
+def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False,reprocess=True):
 
     assert len(audio_dirs) == len(out_dirs), print(f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs")
     #print(hp_dict)
     if parallel:
         n_jobs = int(os.cpu_count() // 2)
-        gen = zip(audio_dirs,out_dirs,repeat(hp_dict),repeat(audio_ext))
+        gen = zip(audio_dirs,out_dirs,repeat(hp_dict),repeat(audio_ext),repeat(reprocess))
         Parallel(n_jobs = n_jobs)(delayed(preprocess_helper)(*args) for args in gen)
         
     else:
         for ii,(in_dir,out_dir) in enumerate(zip(audio_dirs,out_dirs)):
 
-            preprocess_helper(in_dir,out_dir,hp_dict,audio_ext)
+            preprocess_helper(in_dir,out_dir,hp_dict,audio_ext,reprocess)
 
         
 
