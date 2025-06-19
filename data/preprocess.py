@@ -338,6 +338,7 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess):
                                                         max_band=hyperparameters['band max'],\
                                                             return_full_ssq=False)
         except:
+            print(f"error in processing {af}")
             print(t.shape)
             print(orig_audio.shape)
             assert False
