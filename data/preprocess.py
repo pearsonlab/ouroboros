@@ -305,6 +305,7 @@ def filter_by_tags(audio_files,seg_files,audio_tags,seg_tags):
 def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess):
 
     print(f"processing directory {in_dir} \n")
+    print(f"{'' if reprocess else 'not '}reprocessing files")
         
     if not os.path.isdir(out_dir):
         os.mkdir(out_dir)
