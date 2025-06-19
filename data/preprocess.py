@@ -329,12 +329,18 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess):
         cwt_kws = {'wavelet': (hyperparameters['wavelet'],WAVELET_HP_DICT[hyperparameters['wavelet']]),
                     'nv':hyperparameters['nv'],
                     'scales':hyperparameters['scales']}
-        t = np.arange(0,len(orig_audio)/sr,1/sr)[:len(orig_audio)]
-        recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
-                                                    hyperparameters['chunk length'],show=False,\
-                                                    min_band=hyperparameters['band min'],\
-                                                    max_band=hyperparameters['band max'],\
-                                                        return_full_ssq=False)
+        try:
+            t = np.arange(0,len(orig_audio)/sr,1/sr)[:len(orig_audio)]
+
+            recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
+                                                        hyperparameters['chunk length'],show=False,\
+                                                        min_band=hyperparameters['band min'],\
+                                                        max_band=hyperparameters['band max'],\
+                                                            return_full_ssq=False)
+        except:
+            print(t.shape)
+            print(orig_audio.shape)
+            assert False
         recon_a = recon_a.astype(orig_dtype)
         wavfile.write(new_fn,rate=sr,data=recon_a)
 
