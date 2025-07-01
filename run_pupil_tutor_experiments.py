@@ -29,13 +29,13 @@ def run_experiments(data_path='',model_path='',seed=92):
                                         seg_subdir=pupil_seg_subdir,
                                         envelope=False,context_len=0.15,
                                         audio_type='.wav',seg_type='.txt',
-                                        max_pairs=1500,seed=seed)
+                                        max_pairs=2000,seed=seed)
     tutor_audios,_ = get_segmented_audio(data_path,data_path,
                                         audio_subdir=tutor_audio_subdir,
                                         seg_subdir=tutor_seg_subdir,
                                         envelope=False,context_len=0.15,
                                         audio_type='.wav',seg_type='.txt',
-                                        max_pairs=1500,seed=seed)
+                                        max_pairs=2000,seed=seed)
     audios = pupil_audios + tutor_audios
     
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed) #1/sr,\
