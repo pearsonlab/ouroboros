@@ -191,7 +191,9 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     #print(len(wavs))
     #print(len(segs))
     #print(wavs,segs)
+    print(wavs[:5],segs[:5])
     wavs,segs = filter_by_tags(wavs,segs,audio_tags,seg_tags)
+    print(wavs[:5],segs[:5])
     assert len(wavs) > 0,\
         print(f"something went wrong with filtering! i recieved {audiopath},{segpath} as paths,{audio_subdir},{seg_subdir} as subdirs, {audio_type},{seg_type} as filetypes")
     #print(wavs,segs)
