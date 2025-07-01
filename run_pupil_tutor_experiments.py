@@ -28,7 +28,7 @@ def run_experiments(data_path='',model_path='',seed=92):
                                         audio_subdir=pupil_audio_subdir,
                                         seg_subdir=pupil_seg_subdir,
                                         envelope=False,context_len=0.15,
-                                        audio_type='cleaned.wav',seg_type='.txt',
+                                        audio_type='_cleaned.wav',seg_type='.txt',
                                         max_pairs=2000,seed=seed)
     tutor_audios,_ = get_segmented_audio(data_path,data_path,
                                         audio_subdir=tutor_audio_subdir,
