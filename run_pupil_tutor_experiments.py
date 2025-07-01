@@ -34,7 +34,7 @@ def run_experiments(data_path='',model_path='',seed=92):
                                         audio_subdir=tutor_audio_subdir,
                                         seg_subdir=tutor_seg_subdir,
                                         envelope=False,context_len=0.15,
-                                        audio_type='.wav',seg_type='.txt',
+                                        audio_type='_cleaned.wav',seg_type='.txt',
                                         max_pairs=2000,seed=seed)
     audios = pupil_audios + tutor_audios
     
