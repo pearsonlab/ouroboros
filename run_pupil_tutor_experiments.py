@@ -13,7 +13,7 @@ from analysis.analysis import get_budgie_fncs,get_marmo_fncs
 import gc 
 import glob
 
-def run_experiments(data_path='',model_path='',seed=92):
+def run_experiments(data_path='',model_path='',seed=92,nEpochs=200):
     
     if not os.path.isdir(model_path):
 
@@ -41,7 +41,7 @@ def run_experiments(data_path='',model_path='',seed=92):
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed) #1/sr,\
                     #nEpochs=400,model_path=model_path)
     pupil_tutor_model = model_cv_lambdas(dls,1/sr,\
-                                    nEpochs=400,model_path=model_path)
+                                    nEpochs=nEpochs,model_path=model_path)
     
 
     if os.path.isfile(os.path.join(model_path,'eval_data.pkl')):
