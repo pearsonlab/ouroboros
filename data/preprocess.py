@@ -73,16 +73,21 @@ def lin_band(Tx,slope,offset,bw,show=True,**kw):
 
 def band_pass_preprocess(data,chunk_len,low_cut,high_cut,fs,kw,tn,return_full_ssq=True,order=5,show=True):
 
+    print("using band-pass preprocessing")
+
+    full_rec = []
     chunk_ons = np.arange(0,len(data),chunk_len)
     for ii,on in enumerate(chunk_ons):
         off = min(len(data),on + chunk_len)
         filtered = butter_filter(data[on:off],np.array([low_cut,high_cut]),fs,order=order,btype='band')
+        full_rec.append(filtered)
+    full_rec = np.hstack(full_rec)
     if return_full_ssq:
         #print(full_rec.shape)
         
         full_ssq,_,full_freqs,full_scales,*_ = ssq_cwt(data,t=tn,**kw)
-        return filtered,full_scales,full_ssq
-    return filtered,None,None
+        return full_rec,full_freqs,full_ssq
+    return full_rec,None,None
 
 def ssq_preprocess(data,tn,kw,chunk_len,show=True,min_band=0.01,max_band=0.35,return_full_ssq=True):
     
@@ -298,8 +303,8 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
                                                         p['chunk length'],show=False,\
                                                             min_band=p['band min'],max_band=p['band max'])
             else:
-                recon_a = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=p['band_min'],
-                                               high_cut=p['band_max'],fs=sr,return_full_ssq=True,
+                recon_a,cwt_freqs,ssq_scaleogram = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=p['band min'],
+                                               high_cut=p['band max'],fs=sr,return_full_ssq=True,
                                                kw=cwt_kws,tn=t,show=False)
             recon_a = recon_a.astype(orig_dtype)
             wavfile.write('./test_wav.wav',rate=sr,data=recon_a)
@@ -327,7 +332,7 @@ def filter_by_tags(audio_files,seg_files,audio_tags,seg_tags):
 
     return filtered_audio_files,filtered_seg_files			
 
-def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess):
+def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preprocess_type):
 
     print(f"processing directory {in_dir} \n")
     print(f"{'' if reprocess else 'not '}reprocessing files")
@@ -357,11 +362,17 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess):
         try:
             t = np.arange(0,len(orig_audio)/sr,1/sr)[:len(orig_audio)]
 
-            recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
-                                                        hyperparameters['chunk length'],show=False,\
-                                                        min_band=hyperparameters['band min'],\
-                                                        max_band=hyperparameters['band max'],\
-                                                            return_full_ssq=False)
+            if preprocess_type == 'ssq':
+                recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
+                                                            hyperparameters['chunk length'],show=False,\
+                                                            min_band=hyperparameters['band min'],\
+                                                            max_band=hyperparameters['band max'],\
+                                                                return_full_ssq=False)
+            elif preprocess_type == 'band-pass':
+                recon_a,*_ = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=hyperparameters['band min'],
+                                               high_cut=hyperparameters['band max'],fs=sr,return_full_ssq=True,
+                                               kw=cwt_kws,tn=t,show=False)
+
         except:
             print(f"error in processing {af}")
             print(t.shape)
@@ -370,19 +381,19 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess):
         recon_a = recon_a.astype(orig_dtype)
         wavfile.write(new_fn,rate=sr,data=recon_a)
 
-def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False,reprocess=True):
+def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False,reprocess=True,preprocess_type='ssq'):
 
     assert len(audio_dirs) == len(out_dirs), print(f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs")
     #print(hp_dict)
     if parallel:
         n_jobs = int(os.cpu_count() // 2)
-        gen = zip(audio_dirs,out_dirs,repeat(hp_dict),repeat(audio_ext),repeat(reprocess))
+        gen = zip(audio_dirs,out_dirs,repeat(hp_dict),repeat(audio_ext),repeat(reprocess),repeat(preprocess_type))
         Parallel(n_jobs = n_jobs)(delayed(preprocess_helper)(*args) for args in gen)
         
     else:
         for ii,(in_dir,out_dir) in enumerate(zip(audio_dirs,out_dirs)):
 
-            preprocess_helper(in_dir,out_dir,hp_dict,audio_ext,reprocess)
+            preprocess_helper(in_dir,out_dir,hp_dict,audio_ext,reprocess,preprocess_type)
 
         
 
