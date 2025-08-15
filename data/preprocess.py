@@ -36,6 +36,12 @@ WAVELET_HP_DICT = {
     'gmw':{'gamma':6,'beta':60,}    
 }
 
+FILTER_DICT = {
+    'chunk length': 10000,
+    'band min': 1000.,
+    'band max': 10000.
+}
+
 def viz(x, Tx, Wx,vmin=None,vmax=None,axs=True):
     ax = plt.gca()
     if vmin != None and vmax != None:

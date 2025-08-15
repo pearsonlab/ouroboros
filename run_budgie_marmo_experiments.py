@@ -12,6 +12,7 @@ import pickle
 from analysis.analysis import get_budgie_fncs,get_marmo_fncs
 import gc 
 import glob
+import torch
 
 def run_experiments(budgie_data_path='',marmo_data_path='',
                     model_path='',seed=92):
@@ -113,10 +114,16 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
         with open(os.path.join(marmo_model_path,'eval_data.pkl'),'wb') as f:
             pickle.dump(marmo_eval_dict,f)
 
+    del audios
+    del dls
+    gc.collect()
+    torch.cuda.empty_cache()
+
     marmos = glob.glob(os.path.join(marmo_data_path,'s6*'))
     marmo_ids = [m.split('/')[-1] for m in marmos]
 
     marmo_func_dict = {}
+    
     for id, path in zip(marmo_ids,marmos):
 
         
