@@ -204,7 +204,7 @@ def get_zf_fncs(model,audio_location,seg_location,aud_subdir,seg_subdir,seed=Non
         kernels.append(k)
         weights.append(w)
 
-    return omegas,gammas,kernels,weights
+    return omegas,gammas,kernels,weights,audios
 
 
 def get_marmo_fncs(model,audio_location,seg_location,marmo_name,voctype='',seed=None):
@@ -220,7 +220,7 @@ def get_marmo_fncs(model,audio_location,seg_location,marmo_name,voctype='',seed=
     audios = [a[0] for a in audios]
     omegas,gammas,kernels,weights = get_model_fncs(model,audios,1/sr)
 
-    return omegas,gammas,kernels,weights
+    return omegas,gammas,kernels,weights,audios
 
 def get_budgie_fncs(model,audio_location,seg_location,seed=None,cut_percentile=75):
 
@@ -240,7 +240,7 @@ def get_budgie_fncs(model,audio_location,seg_location,seed=None,cut_percentile=7
 
     omegas,gammas,kernels,weights = get_model_fncs(model,audios,1/sr)
 
-    return omegas,gammas,kernels,weights
+    return omegas,gammas,kernels,weights,audios
     
 
 def assess_variability(model,audio_location,seg_location,\
