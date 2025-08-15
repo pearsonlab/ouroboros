@@ -26,7 +26,8 @@ HP_DICT = {
     'band min': 1000.,
     'band max': 10000.,
     'nv': 32, #number of voices (wavelets per octave),
-    'scales': 'log-piecewise'
+    'scales': 'log-piecewise',
+    'order':5 # polynomial order for band-pass filter
 }
 
 WAVELET_HP_DICT = {
@@ -305,7 +306,7 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             else:
                 recon_a,cwt_freqs,ssq_scaleogram = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=p['band min'],
                                                high_cut=p['band max'],fs=sr,return_full_ssq=True,
-                                               kw=cwt_kws,tn=t,show=False)
+                                               kw=cwt_kws,tn=t,show=False,order=p['order'])
             recon_a = recon_a.astype(orig_dtype)
             wavfile.write('./test_wav.wav',rate=sr,data=recon_a)
             _,sx_recon,*_ = ssq_stft(recon_a,fs=sr)
