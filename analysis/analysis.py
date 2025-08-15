@@ -196,14 +196,15 @@ def get_zf_fncs(model,audio_location,seg_location,aud_subdir,seg_subdir,seed=Non
                             audio_type=f'_cleaned.wav',seg_type=f'.txt',\
                                 max_pairs=3000,seed=seed,full_vocs=True,extend=False)
     
-    omegas,gammas,kernels,weights = []
+    omegas,gammas,kernels,weights = get_model_fncs(model,audios,1/sr)
+    """
     for a in audios:
-        o,g,k,w = get_model_fncs(model,audios,1/sr)
+        o,g,k,w = get_model_fncs(model,a,1/sr)
         omegas.append(o)
         gammas.append(g)
         kernels.append(k)
         weights.append(w)
-
+    """
     return omegas,gammas,kernels,weights,audios
 
 

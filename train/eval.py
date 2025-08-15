@@ -574,6 +574,7 @@ def full_eval_model(model,loaders=None,original_data=None,\
     #"""
     #fig_r2=plt.figure(layout='constrained',figsize=(15,8))
     #r2_ax_dict=fig_r2.subplot_mosaic(r2_mosaic)
+    model.eval()
     if not use_results:
         ### if we've already done this, just load results (maybe from saved csv?) and re-plot
         # implement once the basic stuff is all working
@@ -594,14 +595,15 @@ def full_eval_model(model,loaders=None,original_data=None,\
                 #print(x.shape)
                 #print(dx2.shape)
                 #print(dxdt.shape)
-                dx2hat,_ = model(x,dxdt,dt,False)
-                dx2hat *= model.tau**2
-                
+                with torch.no_grad():
+                    dx2hat,_ = model(x,dxdt,dt,False)
+                    dx2hat *= model.tau**2
+                    
 
-                errs = sse(dx2hat,dx2,reduction='sum').detach().cpu().numpy().squeeze()
-                totals = sst(dx2,reduction='sum').detach().cpu().numpy().squeeze()
+                    errs = sse(dx2hat,dx2,reduction='sum').detach().cpu().numpy().squeeze()
+                    totals = sst(dx2,reduction='sum').detach().cpu().numpy().squeeze()
 
-                r2 = 1- errs/totals
+                    r2 = 1- errs/totals
                 r2s.append(r2)
 
                 predictions.append(dx2hat.detach().cpu().numpy().squeeze())
@@ -617,7 +619,8 @@ def full_eval_model(model,loaders=None,original_data=None,\
         
         else:
 
-            _,_,(_,test_r2s),(test_preds,test_reals,original_data)= eval_model_error(loaders,model,dt,\
+            with torch.no_grad():
+                _,_,(_,test_r2s),(test_preds,test_reals,original_data)= eval_model_error(loaders,model,dt,\
                                                                                 comparison='test',return_all=True)
             r2s = np.array(test_r2s)
             best = np.argmax(r2s)
@@ -684,13 +687,13 @@ def full_eval_model(model,loaders=None,original_data=None,\
         elif len(sample.shape) == 2:
             sample = sample.shape[None,:,:]
         
-        
-        _,_,_,(truspec,intspec,int2spec,modelspec,(ittr,iftr)),\
-        (pix_errs_emp,pix_errs_d2,pix_errs_mod) = assess_integration_torch(model,\
-                                            sample,dt,method='rk4',int_length=0.15,\
-                                            smoothing=True, strategy='interp',\
-                                            oversample_prop=5,burn_in_length=0.001,\
-                                            int_start=0,plot=plot_steps)
+        with torch.no_grad():
+            _,_,_,(truspec,intspec,int2spec,modelspec,(ittr,iftr)),\
+            (pix_errs_emp,pix_errs_d2,pix_errs_mod) = assess_integration_torch(model,\
+                                                sample,dt,method='rk4',int_length=0.15,\
+                                                smoothing=True, strategy='interp',\
+                                                oversample_prop=5,burn_in_length=0.001,\
+                                                int_start=0,plot=plot_steps)
         pix_err_real.append(pix_errs_emp)
         pix_err_predd2.append(pix_errs_d2)
         pix_err_predmod.append(pix_errs_mod)

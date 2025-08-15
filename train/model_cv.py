@@ -11,6 +11,7 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import torch
 
 def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                     n_kernels=15,expand_factor=10,\
@@ -63,8 +64,9 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
             
             save_model(full_model_poly,full_opt_poly,save_loc_poly,n_layers=n_layers,d_state=d_state,expand_factor=expand_factor,d_conv=d_conv)
         
-        
-        (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model_poly,dt=dt)
+        full_model_poly.eval()
+        with torch.no_grad():
+            (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model_poly,dt=dt)
         lam_train_cv_err.append(train_mu)
         lam_test_cv_err.append(test_mu)
 
@@ -89,7 +91,9 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
     model_path_best = model_path + f'/kernelborous_poly_end_to_end_lambda_{lambdas[min_err_ind]}'
     save_loc_poly = model_path_best + '/checkpoint_100.tar'
     full_model_poly,full_opt_poly,full_scheduler_poly = load_model(save_loc_poly,kernel_type='full_poly')
-    (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model_poly,dt=dt,comparison='test')
+    full_model_poly.eval()
+    with torch.no_grad():
+        (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model_poly,dt=dt,comparison='test')
 
     data_df = pd.DataFrame({
         'lambdas': lambdas,

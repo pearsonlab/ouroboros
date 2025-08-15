@@ -119,13 +119,13 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
     marmo_func_dict = {}
     for id, path in zip(marmo_ids,marmos):
 
-        print(f"getting vocalizations for marmo {id}")
+        
         wavs = glob.glob(os.path.join(path,'wavfiles','*.wav'))
         unique_vocs = set([w.split('_')[-1].split('.')[0] for w in wavs])
         marmo_func_dict[id] = {}
 
         for u in unique_vocs:
-
+            print(f"getting vocalizations for marmo {id}: {u}")
             if os.path.isfile(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl')):
                 with open(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl'),'rb') as f:
                     marmo_func_dict[id][u] = pickle.load(f)
