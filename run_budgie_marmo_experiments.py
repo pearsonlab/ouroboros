@@ -24,6 +24,7 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
     marmo_model_path = os.path.join(model_path,'marmos')
     #### let's do budgie data first ##########
 
+    print("budgie training and analysis")
     budgie_audio_path,budgie_seg_path= budgie_data_path,budgie_data_path
 
     audios,sr = get_segmented_audio(budgie_audio_path,budgie_seg_path,audio_subdir='',\
@@ -52,17 +53,18 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
         with open(os.path.join(budgie_model_path,'eval_data.pkl'),'wb') as f:
             pickle.dump(budgie_eval_dict,f)
 
-    if os.path.isdir(os.path.join(budgie_model_path,'func_data,pkl')):
-        with open(os.path.join(budgie_model_path,'func_data,pkl'),'rb') as f:
+    if os.path.isfile(os.path.join(budgie_model_path,'func_data.pkl')):
+        with open(os.path.join(budgie_model_path,'func_data.pkl'),'rb') as f:
             budgie_func_dict = pickle.load(f)
     else:
-        b_o,b_g,b_k,b_w = get_budgie_fncs(budgie_model,budgie_audio_path,budgie_seg_path,seed=seed,cut_percentile=75)
+        b_o,b_g,b_k,b_w,b_a = get_budgie_fncs(budgie_model,budgie_audio_path,budgie_seg_path,seed=seed,cut_percentile=75)
 
         budgie_func_dict = {
             'omegas':b_o,
             'gammas':b_g,
             'kernels':b_k,
-            'weights':b_w
+            'weights':b_w,
+            'audio':b_a
         }
 
         with open(os.path.join(budgie_model_path,'func_data,pkl'),'wb') as f:
@@ -77,7 +79,8 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
 
 
     #### then marmoset data
-
+    print("Done!")
+    print("Marmoset training and analysis")
     marmo_audio_path,marmo_seg_path = marmo_data_path,marmo_data_path
     marmo_audio_subdir='s6*/wavfiles/synchro_cleaned'
     marmo_seg_subdir = 's6*/wavfiles'
@@ -93,7 +96,7 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
                                     nEpochs=200,model_path=marmo_model_path,
                                     n_layers=3,expand_factor=8)
 
-    if os.path.isdir(os.path.join(marmo_model_path,'eval_data.pkl')):
+    if os.path.isfile(os.path.join(marmo_model_path,'eval_data.pkl')):
         with open(os.path.join(marmo_model_path,'eval_data.pkl'),'rb') as f:
             marmo_eval_dict = pickle.load(f)
     else:
@@ -116,18 +119,19 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
     marmo_func_dict = {}
     for id, path in zip(marmo_ids,marmos):
 
+        print(f"getting vocalizations for marmo {id}")
         wavs = glob.glob(os.path.join(path,'wavfiles','*.wav'))
         unique_vocs = set([w.split('_')[-1].split('.')[0] for w in wavs])
         marmo_func_dict[id] = {}
 
         for u in unique_vocs:
 
-            if os.path.isdir(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl')):
+            if os.path.isfile(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl')):
                 with open(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl'),'rb') as f:
                     marmo_func_dict[id][u] = pickle.load(f)
 
             else:
-                m_o,m_g,m_k,m_w = get_marmo_fncs(marmo_model,marmo_audio_path,\
+                m_o,m_g,m_k,m_w,m_a = get_marmo_fncs(marmo_model,marmo_audio_path,\
                                                 marmo_seg_path,marmo_name=id,\
                                                     voctype=u,seed=seed)
                 
@@ -135,7 +139,8 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
                     'omegas':m_o,
                     'gammas':m_g,
                     'kernels':m_k,
-                    'weights':m_w
+                    'weights':m_w,
+                    'audio':m_a
                 }
                 with open(os.path.join(marmo_model_path,f'{id}_{u}_func_data.pkl'),'wb') as f:
                     pickle.dump(marmo_func_dict[id][u],f)
