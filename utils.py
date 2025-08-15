@@ -167,6 +167,10 @@ def butter(cutoff, fs, order=5,btype='high'):
     return b, a
 
 def butter_filter(data, cutoff, fs, order=5,axis=-1,btype='high'):
+    """
+    if you want this to be a bandpass filter, cutoff needs to be an np.array,
+    btype needs to be 'band'
+    """
     b, a = butter(cutoff, fs, order=order,btype=btype)
     y = signal.filtfilt(b, a, data,axis=axis)
     return y

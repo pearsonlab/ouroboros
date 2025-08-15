@@ -10,6 +10,7 @@ import glob
 import os
 from itertools import repeat
 from joblib import Parallel,delayed
+from utils import butter_filter
 
 ### wavelets:
 #morlet: higher mu -> greater frequency, lesser time resolution. for mu > 6
@@ -69,6 +70,19 @@ def lin_band(Tx,slope,offset,bw,show=True,**kw):
         plot(Cs + freqband, color='r')
         plot(Cs - freqband, color='r', show=1)
     return Cs, freqband
+
+def band_pass_preprocess(data,chunk_len,low_cut,high_cut,fs,kw,tn,return_full_ssq=True,order=5,show=True):
+
+    chunk_ons = np.arange(0,len(data),chunk_len)
+    for ii,on in enumerate(chunk_ons):
+        off = min(len(data),on + chunk_len)
+        filtered = butter_filter(data[on:off],np.array([low_cut,high_cut]),fs,order=order,btype='band')
+    if return_full_ssq:
+        #print(full_rec.shape)
+        
+        full_ssq,_,full_freqs,full_scales,*_ = ssq_cwt(data,t=tn,**kw)
+        return filtered,full_scales,full_ssq
+    return filtered,None,None
 
 def ssq_preprocess(data,tn,kw,chunk_len,show=True,min_band=0.01,max_band=0.35,return_full_ssq=True):
     
@@ -204,7 +218,7 @@ def _tuning_plot(orig_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
     plt.close('all')
 
 
-def tune_preprocessing(audio_files,segment_files,hp_dict,img_fn='./pp.pdf'):
+def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',img_fn='./pp.pdf'):
 
     """
     tune preprocessing parameters for denoising spectrograms
@@ -276,12 +290,17 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,img_fn='./pp.pdf'):
             vmin = np.amin(orig_spec)
             vmax = np.amax(orig_spec)
             vmax = (vmax - vmin)/10 + vmin
-
             cwt_kws = {'wavelet': (p['wavelet'],WAVELET_HP_DICT[p['wavelet']]),'nv':p['nv'],'scales':p['scales']}
-            # processing ssq cwt
-            recon_a,cwt_freqs,ssq_scaleogram = ssq_preprocess(orig_audio,t,cwt_kws,\
-                                                     p['chunk length'],show=False,\
-                                                        min_band=p['band min'],max_band=p['band max'])
+
+            if preprocess_type == 'ssq':
+                                # processing ssq cwt
+                recon_a,cwt_freqs,ssq_scaleogram = ssq_preprocess(orig_audio,t,cwt_kws,\
+                                                        p['chunk length'],show=False,\
+                                                            min_band=p['band min'],max_band=p['band max'])
+            else:
+                recon_a = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=p['band_min'],
+                                               high_cut=p['band_max'],fs=sr,return_full_ssq=True,
+                                               kw=cwt_kws,tn=t,show=False)
             recon_a = recon_a.astype(orig_dtype)
             wavfile.write('./test_wav.wav',rate=sr,data=recon_a)
             _,sx_recon,*_ = ssq_stft(recon_a,fs=sr)
