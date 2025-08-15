@@ -87,7 +87,7 @@ def smooth(data,smooth_len):
     B,L,D = data.shape
     if smooth_len == 1:
         return data
-    pad = torch.zeros((B,smooth_len,D),device='cuda')
+    pad = torch.zeros((B,smooth_len,D),device=data.device)
     try:
         cumsum = torch.cumsum(torch.cat([pad,data],dim=1),dim=1)
     except:
