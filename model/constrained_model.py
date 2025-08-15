@@ -117,7 +117,7 @@ class constrained_ouroboros(nn.Module):
         b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
+            d = torch.zeros(d.shape,device=self.device)
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)/self.tau
         d=smooth(d.abs(),smooth_len)
@@ -174,7 +174,7 @@ class constrained_ouroboros(nn.Module):
         z2 = z[:,:,1:]
         power_mat_z1 = z[:,:,:1].pow(2) #expand(-1,-1,-1,model.poly_dim) # B x 2d -> B x 2d x P
 
-        #b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device='cuda')
+        #b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device=self.device)
         b *= self.tau
         b_out =b * power_mat_z1 * z2
         b = b * torch.ones((B,L,D),device=self.device)
@@ -322,7 +322,7 @@ class arneodobouros(nn.Module):
 
         d = self.d_net(dControl)
         if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
+            d = torch.zeros(d.shape,device=self.device)
         alpha = self.alpha_net(alphaControl)
         beta = self.beta_net(betaControl)
         d, beta = smooth(d.abs(),smooth_len),smooth(beta.abs(),smooth_len)
@@ -356,7 +356,7 @@ class arneodobouros(nn.Module):
         #betaControl=smooth(betaControl.abs(),smooth_len)
         d = self.d_net(dControl)
         if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
+            d = torch.zeros(d.shape,device=self.device)
         alpha = self.alpha_net(alphaControl)
         beta = self.beta_net(betaControl)
         d, beta = smooth(d.abs(),smooth_len),smooth(beta.abs(),smooth_len)
@@ -726,9 +726,9 @@ class simple_ouroboros(nn.Module):
         smooth_len = int(round(self.smooth_len/dt))
 
         omega_cache = [(None, torch.zeros((1,self.omega_mamba.config.d_model * self.omega_mamba.config.expand_factor,\
-                                           self.omega_mamba.config.d_conv),device='cuda')) for _ in self.omega_mamba.layers]
+                                           self.omega_mamba.config.d_conv),device=self.device)) for _ in self.omega_mamba.layers]
         gamma_cache = [(None, torch.zeros((1,self.gamma_mamba.config.d_model * self.gamma_mamba.config.expand_factor,\
-                                           self.gamma_mamba.config.d_conv),device='cuda')) for _ in self.gamma_mamba.layers]
+                                           self.gamma_mamba.config.d_conv),device=self.device)) for _ in self.gamma_mamba.layers]
 
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
@@ -1008,15 +1008,16 @@ class rkhs_ouroboros(simple_ouroboros):
         return obj.y,omega,gamma,weighted_kernels,obj.status
     
     def funcs_by_step(self,z,dt,scaled=True,smoothing=False):
+        
 
         smooth_len = int(round(self.smooth_len/dt))
 
         omega_cache = [(None, torch.zeros((1,self.omega_mamba.config.d_model * self.omega_mamba.config.expand_factor,\
-                                           self.omega_mamba.config.d_conv),device='cuda')) for _ in self.omega_mamba.layers]
+                                           self.omega_mamba.config.d_conv),device=self.device)) for _ in self.omega_mamba.layers]
         gamma_cache = [(None, torch.zeros((1,self.gamma_mamba.config.d_model * self.gamma_mamba.config.expand_factor,\
-                                           self.gamma_mamba.config.d_conv),device='cuda')) for _ in self.gamma_mamba.layers]
+                                           self.gamma_mamba.config.d_conv),device=self.device)) for _ in self.gamma_mamba.layers]
         weights_cache = [(None, torch.zeros((1,self.kernel_mamba.config.d_model * self.kernel_mamba.config.expand_factor,\
-                                             self.kernel_mamba.config.d_conv),device='cuda')) for _ in self.kernel_mamba.layers]
+                                             self.kernel_mamba.config.d_conv),device=self.device)) for _ in self.kernel_mamba.layers]
         
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
