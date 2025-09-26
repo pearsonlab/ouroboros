@@ -9,7 +9,7 @@ from matplotlib.colors import Normalize
 from matplotlib import cm
 from matplotlib.animation import FuncAnimation
 from scipy.io import wavfile
-import librosa
+#import librosa
 from itertools import repeat
 from matplotlib.colors import ListedColormap
 import os
