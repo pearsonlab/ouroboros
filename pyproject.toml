@@ -40,5 +40,5 @@ explicit = true
 
 [[index]]
 name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu128"
+url = "https://download.pytorch.org/whl/cu126"
 explicit = true
