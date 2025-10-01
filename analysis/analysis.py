@@ -4,7 +4,7 @@ import torch
 from model.model_utils import smooth
 from utils import deriv_approx_d2y,deriv_approx_dy
 from data.real_data import get_segmented_audio
-import vocalpy as voc
+#import vocalpy as voc
 import os
 
 C = 343
@@ -293,7 +293,8 @@ def feature_variability(audio_location,seg_location,\
                         envelope=False,context_len=0.1,max_pairs=max_samples,\
                             audio_type=audio_filetype,seg_type=seg_filetype,full_vocs=True)
 
-    
+    pass
+    """
     features = {}
     for session in audios:
         for audio in session:
@@ -314,6 +315,7 @@ def feature_variability(audio_location,seg_location,\
     for feat in features.keys():
         features[feat] = np.stack(features[feat],axis=0)
     return features,features.keys(),sr_new
+    """
 
 def calc_vi(data):
 

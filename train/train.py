@@ -5,6 +5,7 @@ from tqdm import tqdm
 from utils import deriv_approx_d2y,deriv_approx_dy,sst,sse,euler_step_k
 import matplotlib.pyplot as plt
 import os
+import glob
 from model.constrained_model import rkhs_ouroboros,simple_ouroboros
 from model.filters import filter as filt
 from model.kernels import *
@@ -50,6 +51,12 @@ def save_model(model,opt,location,\
 
 def load_model(location,kernel_type='gauss'):
 
+    model_files = glob.glob(os.path.join(location,'*.tar'))
+    epochs = [int(m.split('/checkpoint_')[-1].split('.tar')[0]) for m in model_files]
+    most_recent = np.argsort(epochs)[-1]
+    location = model_files[most_recent]
+    print(f"loading from {location}")
+
     sd = torch.load(location,weights_only=False)
     try:
         n_layers = sd['n_layers']
@@ -85,7 +92,7 @@ def load_model(location,kernel_type='gauss'):
     scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
     model.load_state_dict(sd['ouroboros'])
     opt.load_state_dict(sd['opt'])
-    return model,opt,scheduler
+    return model,opt,scheduler,epochs[most_recent]
 
 
 def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
@@ -148,7 +155,7 @@ def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
 
 def train(model,optimizer,loss_fn,loaders,scheduler=None,
           nEpochs=100,val_freq=25,runDir='.',dt=1/44100,\
-            vis_freq=100,smoothing=False,reg_weights=False):
+            vis_freq=100,smoothing=False,reg_weights=False,start_epoch=0):
     
     #print(f'training with trend filtering alpha = {alpha}')
 
@@ -156,7 +163,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
 
     train_losses,val_losses=[],[]
     
-    for epoch in tqdm(range(nEpochs),desc='training model'):
+    for epoch in tqdm(range(start_epoch,nEpochs),desc='training model'):
 
         model.train()
 

@@ -8,6 +8,7 @@ from train.eval import eval_model_error
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
+import glob
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -44,20 +45,21 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                     lr=lr)
         full_scheduler_poly = ReduceLROnPlateau(full_opt_poly,factor=0.5,patience=max(nEpochs//25,2),min_lr=1e-10)
         model_path_full_poly = model_path + f'/kernelborous_poly_end_to_end_lambda_{lam}'
-        save_loc_poly = model_path_full_poly + '/checkpoint_100.tar'
-        
+        #save_loc_poly = model_path_full_poly + '/checkpoint_100.tar'
+        save_files = glob.glob(os.path.join(model_path_full_poly,'*.tar'))
 
-        if os.path.isfile(save_loc_poly):
-            full_model_poly,full_opt_poly,full_scheduler_poly = load_model(save_loc_poly,kernel_type='full_poly')
+        start_epoch = 0
+        if len(save_files) > 0:
+            full_model_poly,full_opt_poly,full_scheduler_poly,start_epoch = load_model(model_path_full_poly,kernel_type='full_poly')
 
-        else:
+        if start_epoch < nEpochs:
 
 
             tl,vl,full_model_poly,full_opt_poly = train(full_model_poly,full_opt_poly,loss_fn=lambda y,yhat: sse(yhat,y,reduction='mean'),\
                                 loaders=dls,scheduler=full_scheduler_poly,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_full_poly,\
                         dt = dt,vis_freq=max(nEpochs//10,1),smoothing=False,\
-                            reg_weights=reg_weights)
+                            reg_weights=reg_weights,start_epoch=start_epoch)
         
             loss_plot(tl,vl,save_loc=model_path_full_poly,show=False)
 
