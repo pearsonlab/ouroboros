@@ -366,9 +366,10 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                                                 device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
                         #print(lam_mat.shape)
                         #assert torch.all(lam_mat >= 0)
-                        w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam
-
-                        penalty =  (w**2 *weights**2).sum(dim=(-1,-2)).mean()
+                        #w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam
+                        exps = lam_mat + lam_mat.transpose(-1,-2)
+                        w = model.kernel.lam ** exps
+                        penalty =  (w * weights**2).sum(dim=(-1,-2)).mean()#(w**2 *weights**2).sum(dim=(-1,-2)).mean()
                         #l = l + penalty
                     vl += l.item()#1 - l.item()/tot.item()
 
