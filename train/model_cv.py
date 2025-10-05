@@ -21,11 +21,18 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                     model_path='',save_freq=5):
 
 
+
     model_info={'n layers':n_layers,
                 'd_state':d_state,
                 'd_conv':d_conv,
                 'expand_factor':expand_factor}
-    lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
+    
+
+    #lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
+    min_lambda = 1.01
+    max_lambda = 10**(4/(2*n_kernels))
+    lambdas = np.array([1.5,2.0,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
+
     #im going to ASSUME that with lambda = 1, regularization is 
     lambda_xaxis = np.arange(len(lambdas))
     #n_kernels = 30 #1,2,3
@@ -98,8 +105,8 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
 
     
     model_path_best = model_path + f'/kernelborous_poly_end_to_end_lambda_{lambdas[min_err_ind]}'
-    save_loc_poly = model_path_best + '/checkpoint_100.tar'
-    full_model_poly,full_opt_poly,full_scheduler_poly = load_model(save_loc_poly,kernel_type='full_poly')
+    #save_loc_poly = model_path_best + '/checkpoint_100.tar'
+    full_model_poly,full_opt_poly,full_scheduler_poly = load_model(model_path_best,kernel_type='full_poly')
     full_model_poly.eval()
     with torch.no_grad():
         (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model_poly,dt=dt,comparison='test')
