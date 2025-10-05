@@ -83,7 +83,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
 
         sr_stack=44100
         stacks,d_stack,d2_stack = gen_stacks(n_samples=2000,sample_rate=sr_stack)
-        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+        dls = get_loaders(np.vstack(stacks),cv = True,train_size=0.6,seed=seed)
         stack_path = os.path.join(synth_model_path,'stackies')
         stack_model = model_cv_lambdas(dls,1/sr,\
                                 nEpochs=100,model_path=stack_path)
