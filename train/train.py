@@ -32,7 +32,18 @@ def load_filter(location):
 
 def save_model(model,opt,location,\
                n_layers=2,d_state=1,\
-                d_conv=4,expand_factor=4):
+                d_conv=4,expand_factor=4,
+                max_saved=5):
+    
+    current_saves = glob.glob(os.path.join(
+            '/'.join(location.split('/')[:-1]),'*.tar')
+    )
+    if len(current_saves) >= max_saved:
+        save_epochs = [int(s.split('/')[-1].split('.tar')[0].split('_')[-1]) for s in current_saves]
+        save_order = np.argsort(save_epochs)
+        ordered_saves = [current_saves[o] for o in save_order]
+        for ii in range(len(current_saves) - max_saved + 1):
+            os.remove(ordered_saves[ii])
     sd = {'ouroboros':model.state_dict(),
         'opt':opt.state_dict(),
         'tau':model.tau,
@@ -155,7 +166,8 @@ def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
 
 def train(model,optimizer,loss_fn,loaders,scheduler=None,
           nEpochs=100,val_freq=25,runDir='.',dt=1/44100,\
-            vis_freq=100,smoothing=False,reg_weights=False,start_epoch=0):
+            vis_freq=100,smoothing=False,reg_weights=False,start_epoch=0,
+            save_freq=5,model_info={}):
     
     #print(f'training with trend filtering alpha = {alpha}')
 
@@ -370,6 +382,13 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             writer.add_scalar('Loss/validation',vl/len(loaders['val']),idx)
             writer.add_scalar('Penalty/validation',vp/len(loaders['val']),idx)
 
+            if epoch % save_freq == 0:
+                save_model(model,optimizer,location=os.path.join(runDir,\
+                                                    f'checkpoint_{epoch}.tar'),
+                           n_layers=model_info['n_layers'],
+                           d_state=model_info['d_state'],
+                           d_conv=model_info['d_conv'],
+                           expand_factor=model_info['expand_factor'])
     writer.close()
     return train_losses,val_losses,model,optimizer
 

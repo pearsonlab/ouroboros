@@ -14,7 +14,8 @@ import pickle
 
 def run_experiments(gabo_data_path='',coen_data_path='',\
                     adult_zf_model_path='',\
-                        generate=False,seed=92,synth_model_path=''):
+                        generate=False,seed=92,synth_model_path='',
+                        save_freq=10):
 
     audio_path =os.path.join(gabo_data_path,'audio')
     seg_path =os.path.join(gabo_data_path,'segs')
@@ -31,7 +32,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         _ = generate_vocal_dataset(key,n_vocs=1000,\
                                    audio_loc=audio_path,
                                    seg_loc=seg_path,
-                                   func_loc=func_path)
+                                   func_loc=func_path,)
 
     if not os.path.isdir(synth_model_path):
         os.mkdir(synth_model_path)
@@ -46,7 +47,8 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
         gabo_path = os.path.join(synth_model_path,'gabo_model')
         gabo_model = model_cv_lambdas(dls,1/sr,\
-                            nEpochs=100,model_path=gabo_path)
+                            nEpochs=100,model_path=gabo_path,
+                            save_freq=save_freq)
 
         gabo_r2s,gabo_best,gabo_resids,gabo_spec_ratio,gabo_specs,gabo_ext = full_eval_model(gabo_model,dls,audios,1/sr,use_results=False,\
                         n_int=50,plot_dir=gabo_path,plot_steps=False)
@@ -86,7 +88,8 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         dls = get_loaders(np.vstack(stacks),cv = True,train_size=0.6,seed=seed)
         stack_path = os.path.join(synth_model_path,'stackies')
         stack_model = model_cv_lambdas(dls,1/sr,\
-                                nEpochs=100,model_path=stack_path)
+                                nEpochs=100,model_path=stack_path,
+                                save_freq=save_freq)
         stack_r2s,stack_best,stack_resids,stack_spec_ratio,stack_specs,stack_ext = full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
                     n_int=50,plot_dir=stack_path,plot_steps=False)
         

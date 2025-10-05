@@ -18,9 +18,13 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                     n_kernels=15,expand_factor=10,\
                     n_layers=4,d_state=1,d_conv=4,\
                     tau=1000,smooth_len=0.001,\
-                    model_path=''):
+                    model_path='',save_freq=5):
 
 
+    model_info={'n layers':n_layers,
+                'd_state':d_state,
+                'd_conv':d_conv,
+                'expand_factor':expand_factor}
     lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
     #im going to ASSUME that with lambda = 1, regularization is 
     lambda_xaxis = np.arange(len(lambdas))
@@ -45,7 +49,7 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                     lr=lr)
         full_scheduler_poly = ReduceLROnPlateau(full_opt_poly,factor=0.5,patience=max(nEpochs//25,2),min_lr=1e-10)
         model_path_full_poly = model_path + f'/kernelborous_poly_end_to_end_lambda_{lam}'
-        #save_loc_poly = model_path_full_poly + '/checkpoint_100.tar'
+        save_loc_poly = model_path_full_poly + f'/checkpoint_{nEpochs}.tar'
         save_files = glob.glob(os.path.join(model_path_full_poly,'*.tar'))
 
         start_epoch = 0
@@ -59,12 +63,15 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                                 loaders=dls,scheduler=full_scheduler_poly,nEpochs=nEpochs,val_freq=1,\
                         runDir=model_path_full_poly,\
                         dt = dt,vis_freq=max(nEpochs//10,1),smoothing=False,\
-                            reg_weights=reg_weights,start_epoch=start_epoch)
+                            reg_weights=reg_weights,start_epoch=start_epoch,
+                            save_freq=save_freq,model_info=model_info)
         
             loss_plot(tl,vl,save_loc=model_path_full_poly,show=False)
 
             
-            save_model(full_model_poly,full_opt_poly,save_loc_poly,n_layers=n_layers,d_state=d_state,expand_factor=expand_factor,d_conv=d_conv)
+            save_model(full_model_poly,full_opt_poly,save_loc_poly,
+                       n_layers=n_layers,d_state=d_state,
+                       expand_factor=expand_factor,d_conv=d_conv)
         
         full_model_poly.eval()
         with torch.no_grad():
