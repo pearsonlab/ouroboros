@@ -106,7 +106,7 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
     
     model_path_best = model_path + f'/kernelborous_poly_end_to_end_lambda_{lambdas[min_err_ind]}'
     #save_loc_poly = model_path_best + '/checkpoint_100.tar'
-    full_model_poly,full_opt_poly,full_scheduler_poly = load_model(model_path_best,kernel_type='full_poly')
+    full_model_poly,full_opt_poly,full_scheduler_poly,_ = load_model(model_path_best,kernel_type='full_poly')
     full_model_poly.eval()
     with torch.no_grad():
         (train_mu,test_mu),(train_sd,test_sd) = eval_model_error(dls,full_model_poly,dt=dt,comparison='test')
