@@ -87,7 +87,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         stacks,d_stack,d2_stack = gen_stacks(n_samples=2000,sample_rate=sr_stack)
         dls = get_loaders(np.vstack(stacks),cv = True,train_size=0.6,seed=seed)
         stack_path = os.path.join(synth_model_path,'stackies')
-        stack_model = model_cv_lambdas(dls,1/sr,\
+        stack_model = model_cv_lambdas(dls,1/sr_stack,\
                                 nEpochs=100,model_path=stack_path,
                                 save_freq=save_freq)
         stack_r2s,stack_best,stack_resids,stack_spec_ratio,stack_specs,stack_ext = full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
