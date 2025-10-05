@@ -386,10 +386,10 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             if epoch % save_freq == 0:
                 save_model(model,optimizer,location=os.path.join(runDir,\
                                                     f'checkpoint_{epoch}.tar'),
-                           n_layers=model_info['n_layers'],
-                           d_state=model_info['d_state'],
-                           d_conv=model_info['d_conv'],
-                           expand_factor=model_info['expand_factor'])
+                           n_layers=model_info['n layers'],
+                           d_state=model_info['d state'],
+                           d_conv=model_info['d conv'],
+                           expand_factor=model_info['expand factor'])
     writer.close()
     return train_losses,val_losses,model,optimizer
 

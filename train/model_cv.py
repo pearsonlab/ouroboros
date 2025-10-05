@@ -23,9 +23,9 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
 
 
     model_info={'n layers':n_layers,
-                'd_state':d_state,
-                'd_conv':d_conv,
-                'expand_factor':expand_factor}
+                'd state':d_state,
+                'd conv':d_conv,
+                'expand factor':expand_factor}
     
 
     #lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
