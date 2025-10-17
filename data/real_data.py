@@ -29,7 +29,9 @@ def get_audio(audio,fs,onset,offset,context_len=0.3):
     #print(a.shape)
     return a[:,None]
 
-def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,current_total=0,full_vocs=False,extend=True):
+def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,
+                  current_total=0,full_vocs=False,extend=True,
+                  padding=0.):
 
     spikes = []
     auds = []
@@ -51,8 +53,13 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
         max_len = np.amax(lens) # or something different here like mean, median, etc
         diffs = max_len - lens 
         onOffs[:,1] += diffs
-        
 
+    #print(onOffs[:5,:])
+    #print(f"padding by {padding} seconds")    
+    onOffs[:,0] = np.maximum(onOffs[:,0]-padding,np.zeros(onOffs[:,0].shape))
+    onOffs[:,1] = np.minimum(onOffs[:,1] +padding, len(audio)/fs *np.ones(onOffs[:,1].shape))
+    #print(onOffs[:5,:])
+    #assert False
         #onOffs = 
     
     for onset,offset in onOffs:
@@ -143,7 +150,8 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
 
 def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                         max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
-                        seg_type='.txt',seed=None,full_vocs=False,extend=True):
+                        seg_type='.txt',seed=None,full_vocs=False,extend=True,
+                        padding=0.):
     
     """
     Takes as input a path to audio and segments (along with any
@@ -245,7 +253,8 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                 
                 audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
                                        context_len=context_len,env=envelope,\
-                                        current_total=current_total,full_vocs=full_vocs,extend=extend)
+                                        current_total=current_total,full_vocs=full_vocs,
+                                        extend=extend,padding=padding)
                 if not full_vocs:
                     audio_segs += audios
 
