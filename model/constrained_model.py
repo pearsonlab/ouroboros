@@ -830,6 +830,8 @@ class rkhs_ouroboros(simple_ouroboros):
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
         """
+        
+        dxdt /= (dt*self.tau) 
 
         B,L,D = x.shape
         #x = x
@@ -844,6 +846,8 @@ class rkhs_ouroboros(simple_ouroboros):
         #x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) # stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
         
+        z[:,:,-1] /= dt
+
         omegaControl = self.omega_mamba(x_in)[:,L:,:]
         gammaControl = self.gamma_mamba(x_in)[:,L:,:]
         kernelControl = self.kernel_mamba(x_in)[:,L:,:]
@@ -855,12 +859,7 @@ class rkhs_ouroboros(simple_ouroboros):
             gamma = smooth(gamma,smooth_len)#*self.
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
         weighted_kernels /= self.tau
-        
 
-                #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
-        ## should i be modifying z above? before i give it to the kernel?
-       
-        z[:,:,-1] /= dt
         z1 = z[:,:,:1]
         z2 = z[:,:,1:]
 
