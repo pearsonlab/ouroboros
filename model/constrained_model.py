@@ -831,7 +831,8 @@ class rkhs_ouroboros(simple_ouroboros):
         all other predictions should be done in the train look (train_utils.py)
         """
         
-        dxdt /= (dt*self.tau) 
+        dxdt *= self.tau
+        dxdt /= dt # this is now \tau dy
 
         B,L,D = x.shape
         #x = x
@@ -846,19 +847,19 @@ class rkhs_ouroboros(simple_ouroboros):
         #x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) # stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
         
-        z[:,:,-1] /= dt
+        #z[:,:,-1] /= dt
 
         omegaControl = self.omega_mamba(x_in)[:,L:,:]
         gammaControl = self.gamma_mamba(x_in)[:,L:,:]
         kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
         omega = self.omega_net(omegaControl).abs() # let's try rectifying here
-        gamma = self.gamma_net(gammaControl)/self.tau # oops
+        gamma = self.gamma_net(gammaControl) #self.tau remove, since we're scaling dy
         if smoothing:
-            omega=smooth(omega,smooth_len)#*self.tau
-            gamma = smooth(gamma,smooth_len)#*self.
+            omega=smooth(omega,smooth_len)
+            gamma = smooth(gamma,smooth_len)
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
-        weighted_kernels /= self.tau
+        # weighted_kernels /= self.tau remove, since we're scaling dy
 
         z1 = z[:,:,:1]
         z2 = z[:,:,1:]
@@ -870,6 +871,8 @@ class rkhs_ouroboros(simple_ouroboros):
     def get_funcs(self,x,dxdt,dt,scaled = True,smoothing=False):
 
         B,L,D = x.shape
+        dxdt *= self.tau
+        dxdt /= dt
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
@@ -898,19 +901,27 @@ class rkhs_ouroboros(simple_ouroboros):
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)#*self.tau
         #if not self.trend_filtering:
         #    weighted_kernels = smooth(weighted_kernels,smooth_len)
+
+        ### no longer need to rescale anything in terms of functions!
         if scaled:
-            omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
-            weights = weights *self.tau
+            #omega,gamma,weighted_kernels = omegaself.tau,gamma*self.tau,weighted_kernels*self.tau
+            #weights = weights *self.tau
+            pass
         else:
-            omega,gamma = omega*(self.tau*dt),gamma*(self.tau*dt)
-            weighted_kernels = weighted_kernels*(self.tau*dt**2)
-            weights = weights *(self.tau * dt**2)
+            pass 
+            #omega,gamma = omega*(self.tau*dt),gamma*(self.tau*dt)
+            #weighted_kernels = weighted_kernels*(self.tau*dt**2)
+            #weights = weights *(self.tau * dt**2)
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
         return omega,gamma,weighted_kernels,weights,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
     
     def integrate(self,x,dxdt,dx2,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
 
+        """
+        NEEDS TO BE UPDATED !!!!! DO NOT USE!!!
+        """
+        assert False, print("this does not work!! update!!")
         smooth_len = int(round(self.smooth_len/dt))
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
@@ -925,6 +936,9 @@ class rkhs_ouroboros(simple_ouroboros):
         #    yhat,omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
         #else:
         yhat,*_ = self.forward(x[:1,:,:],dt)
+
+        """ BROKEN!!! OFF LIMITS!!! FIX THIS!!!!"""
+
         omega,gamma,weighted_kernels,weights,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled,smoothing=smoothing)
         #print(weights.shape)
         weights = smooth(weights.squeeze(2),smooth_len)
@@ -1062,10 +1076,12 @@ class rkhs_ouroboros(simple_ouroboros):
             omegas=smooth(omegas,smooth_len)#*self.tau
             gammas = smooth(gammas,smooth_len)#*self.tau
         
+        # no longer need to scale, as model functions are all appropriately scaled already
         if scaled:
-            omegas *= self.tau
-            gammas *= self.tau 
-            kernel *= self.tau 
-            weights *= self.tau
+            pass
+            #omegas *= self.tau
+            #gammas *= self.tau 
+            #kernel *= self.tau 
+            #weights *= self.tau
         return yhat,omegas,gammas,weights,kernel
 
