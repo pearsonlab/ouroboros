@@ -198,7 +198,8 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
             # change: scaling to "true" d2y
-            dx2hat = dx2hat * model.tau**2 #* (model.tau*dt)**2
+            dx2hat = dx2hat / model.tau**2 #since we changed the meaning of \tau, need to rescale here as well
+             #* (model.tau*dt)**2
             
             #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
             
@@ -303,7 +304,8 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
                     ## scaling to "true" d2y
-                    dx2hat = dx2hat * model.tau **2 #(model.tau*dt)**2
+                    dx2hat = dx2hat / model.tau **2 # change to reflect updated scaling
+                    #(model.tau*dt)**2
                     
                     #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
                     
