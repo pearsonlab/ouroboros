@@ -89,7 +89,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         stack_path = os.path.join(synth_model_path,'stackies')
         stack_model = model_cv_lambdas(dls,1/sr_stack,\
                                 nEpochs=100,model_path=stack_path,
-                                save_freq=save_freq)
+                                save_freq=save_freq,tau=1/10000)
         stack_r2s,stack_best,stack_resids,stack_spec_ratio,stack_specs,stack_ext = full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
                     n_int=50,plot_dir=stack_path,plot_steps=False)
         

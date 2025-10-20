@@ -109,7 +109,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
         
         yhat,*_ = model.forward(x[:1,:,:],xdot[:1,:,:],dt)
         
-        yhat = yhat.detach().cpu().numpy().squeeze()*model.tau**2
+        yhat = yhat.detach().cpu().numpy().squeeze()/model.tau**2 # fix to match new scaling on model output
         assert np.sum(np.isnan(yhat)) == 0, print(np.sum(np.isnan(yhat))/np.prod(yhat.shape))
         if plot:
             ax = plt.gca()
@@ -165,7 +165,7 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
             #print(z2,z)
             dz1 = z[1]
 
-            z[-1] *= dt
+            z[-1] *= model.tau # update to fix new scaling on y,for kernels
             #print(z2,z)
             #print(z.shape)
             #-(omega**2)*z1 - gamma * z2 - weighted_kernels
@@ -176,7 +176,8 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
 
             dz2 = torch.from_numpy(np.array([-(omega_step**2)*z1 - gamma_step * z2 - weighted_kernels_step])).to(model.device).to(torch.float32).squeeze()
             #dz2 = np
-            dz1 = z[1]/dt
+            dz2 /= (model.tau**2) # update scaling to match new model output, here
+            dz1 = z[1]/ model.tau
             #print(z1,z2)
             #print(dz1,dz2)
             
