@@ -17,7 +17,7 @@ import torch
 def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                     n_kernels=15,expand_factor=10,\
                     n_layers=4,d_state=1,d_conv=4,\
-                    tau=1000,smooth_len=0.001,\
+                    tau=1/1000,smooth_len=0.001,\
                     model_path='',save_freq=5):
 
 
