@@ -270,9 +270,12 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                                         device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
                 #print(lam_mat.shape)
                 #assert torch.all(lam_mat >= 0)
-                w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam
+                #w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam # old
+                w = model.kernel.lam**(lam_mat + lam_mat.transpose(-1,-2)) # new
 
-                penalty =  (w**2 *weights**2).sum(dim=(-1,-2)).mean()
+                #penalty =  (w**2 *weights**2).sum(dim=(-1,-2)).mean() # old
+                penalty =  (w *weights**2).sum(dim=(-1,-2,-3)).mean() # new (sum over weights, time)
+                
                 l = l + penalty
             #print(l)
             l.backward()
