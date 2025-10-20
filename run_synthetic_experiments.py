@@ -120,7 +120,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
 
         coen_data = load_coen_data(coen_data_path,target_fs=44100)
         #print(coen_data[4])
-        adult_model,*_=load_model(os.path.join(adult_zf_model_path,'checkpoint_100.tar'),kernel_type='full_poly') # here, let's use use cv_better_weighed_adultzf_92 0.05
+        adult_model,*_=load_model(adult_zf_model_path,kernel_type='full_poly') # here, let's use use cv_better_weighed_adultzf_92 0.05
         coen_r2s,coen_best,coen_resids,coen_spec_ratio,coen_specs,coen_ext = full_eval_model(adult_model,None,coen_data[1],1/coen_data[4],use_results=False,\
                         n_int=50,plot_dir=synth_model_path,plot_steps=False)
         coen_data_dict={'r2s':coen_r2s,
