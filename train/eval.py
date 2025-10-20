@@ -318,7 +318,7 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
             dx2hat,state_pred = model(x,dxdt,dt) #state: B x L x SD
             
             # change: scaling to "true" d2y
-            dx2hat = dx2hat * model.tau**2 #* (model.tau*dt)**2
+            dx2hat = dx2hat / model.tau**2 #* (model.tau*dt)**2 update to match new tau scaling
             
             yhat = dx2hat
             y = dx2
@@ -347,7 +347,7 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
             dx2hat,state_pred = model(x,dxdt,dt) #state: B x L x SD
             
             # change: scaling to "true" d2y
-            dx2hat = dx2hat * model.tau**2 #* (model.tau*dt)**2
+            dx2hat = dx2hat / model.tau**2 #* (model.tau*dt)**2 #update to match new tau scaling
             
             yhat = dx2hat
             # y starts as x[1:0]
@@ -597,11 +597,11 @@ def full_eval_model(model,loaders=None,original_data=None,\
                 #print(dxdt.shape)
                 with torch.no_grad():
                     dx2hat,_ = model(x,dxdt,dt,False)
-                    dx2hat *= model.tau**2
+                    dx2hat /= model.tau**2 ## update to match new model output
                     
 
-                    errs = sse(dx2hat,dx2,reduction='sum').detach().cpu().numpy().squeeze()
-                    totals = sst(dx2,reduction='sum').detach().cpu().numpy().squeeze()
+                    errs = sse(dx2hat,dx2,reduction='none').detach().cpu().numpy().squeeze()
+                    totals = sst(dx2,reduction='none').detach().cpu().numpy().squeeze()
 
                     r2 = 1- errs/totals
                 r2s.append(r2)
