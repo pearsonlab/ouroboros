@@ -1,8 +1,8 @@
 from data.real_data import *
 from data.data_utils import get_loaders
 from train.train import train
-from constrained_model import rkhs_ouroboros
-from kernels import *
+from model.constrained_model import rkhs_ouroboros
+from model.kernels import *
 import matplotlib.pyplot as plt
 import gc
 import torch

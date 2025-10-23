@@ -117,7 +117,7 @@ class constrained_ouroboros(nn.Module):
         b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
         d = nn.ReLU()(self.d_net(dControl))
         if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
+            d = torch.zeros(d.shape,device=self.device)
         omega = self.omega_net(omegaControl)
         gamma = self.gamma_net(gammaControl)/self.tau
         d=smooth(d.abs(),smooth_len)
@@ -174,7 +174,7 @@ class constrained_ouroboros(nn.Module):
         z2 = z[:,:,1:]
         power_mat_z1 = z[:,:,:1].pow(2) #expand(-1,-1,-1,model.poly_dim) # B x 2d -> B x 2d x P
 
-        #b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device='cuda')
+        #b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device=self.device)
         b *= self.tau
         b_out =b * power_mat_z1 * z2
         b = b * torch.ones((B,L,D),device=self.device)
@@ -322,7 +322,7 @@ class arneodobouros(nn.Module):
 
         d = self.d_net(dControl)
         if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
+            d = torch.zeros(d.shape,device=self.device)
         alpha = self.alpha_net(alphaControl)
         beta = self.beta_net(betaControl)
         d, beta = smooth(d.abs(),smooth_len),smooth(beta.abs(),smooth_len)
@@ -356,7 +356,7 @@ class arneodobouros(nn.Module):
         #betaControl=smooth(betaControl.abs(),smooth_len)
         d = self.d_net(dControl)
         if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
+            d = torch.zeros(d.shape,device=self.device)
         alpha = self.alpha_net(alphaControl)
         beta = self.beta_net(betaControl)
         d, beta = smooth(d.abs(),smooth_len),smooth(beta.abs(),smooth_len)
@@ -626,12 +626,12 @@ class simple_ouroboros(nn.Module):
         return omega[:,L:,:],gamma[:,L:,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:]],dim=-1)
     
 
-    def visualize(self,x,dt):
+    def visualize(self,x,dxdt,dt):
 
         B,L,D = x.shape
         L = 1000 - 8
         with torch.no_grad():
-            terms = self.get_funcs(x[:1,:1000,:],dt)
+            terms = self.get_funcs(x[:1,:1000,:],dxdt[:1,:1000,:],dt)
             terms = [t.detach().cpu().numpy().squeeze() for t in terms]
             
             torch.cuda.empty_cache()
@@ -726,9 +726,9 @@ class simple_ouroboros(nn.Module):
         smooth_len = int(round(self.smooth_len/dt))
 
         omega_cache = [(None, torch.zeros((1,self.omega_mamba.config.d_model * self.omega_mamba.config.expand_factor,\
-                                           self.omega_mamba.config.d_conv),device='cuda')) for _ in self.omega_mamba.layers]
+                                           self.omega_mamba.config.d_conv),device=self.device)) for _ in self.omega_mamba.layers]
         gamma_cache = [(None, torch.zeros((1,self.gamma_mamba.config.d_model * self.gamma_mamba.config.expand_factor,\
-                                           self.gamma_mamba.config.d_conv),device='cuda')) for _ in self.gamma_mamba.layers]
+                                           self.gamma_mamba.config.d_conv),device=self.device)) for _ in self.gamma_mamba.layers]
 
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
@@ -804,6 +804,7 @@ class rkhs_ouroboros(simple_ouroboros):
         ############ maybe make trend level an attribute as well?
         
         self.kernel = kernel
+        self.kernel.tau = self.tau
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
 
 
@@ -824,58 +825,71 @@ class rkhs_ouroboros(simple_ouroboros):
             param.requires_grad=False
         return
 
-    def forward(self,x,dt,smoothing=False):
+    def forward(self,x,dxdt,dt,smoothing=False):
         """
         predicts second derivative at time t.
         all other predictions should be done in the train look (train_utils.py)
         """
-
+        
+        #print(torch.amax(dxdt),torch.amin(dxdt))
+                
+        dxdt *= self.tau
+        #print(torch.amax(dxdt),torch.amin(dxdt))
+                
+        dxdt /= dt # this is now \tau dy
+        #print(torch.amax(dxdt),torch.amin(dxdt))
+        #print("new set")
+        #print(torch.amax(x),torch.amin(x))
+                
         B,L,D = x.shape
         #x = x
         #print(x.dtype)
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
-        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        #xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        z = torch.cat([x,dxdt],dim=-1)
         L = z.shape[1]
         #x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) # stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
         
+        #z[:,:,-1] /= dt
+
         omegaControl = self.omega_mamba(x_in)[:,L:,:]
         gammaControl = self.gamma_mamba(x_in)[:,L:,:]
         kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
         omega = self.omega_net(omegaControl).abs() # let's try rectifying here
-        gamma = self.gamma_net(gammaControl)/self.tau # oops
+        gamma = self.gamma_net(gammaControl) #self.tau remove, since we're scaling dy
         if smoothing:
-            omega=smooth(omega,smooth_len)#*self.tau
-            gamma = smooth(gamma,smooth_len)#*self.
+            omega=smooth(omega,smooth_len)
+            gamma = smooth(gamma,smooth_len)
         weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
-        weighted_kernels /= self.tau
-        
+        # weighted_kernels /= self.tau remove, since we're scaling dy
 
-                #weighted_kernels = weighted_kernels#,smooth_len)/self.tau
-        ## should i be modifying z above? before i give it to the kernel?
-       
-        z[:,:,-1] /= dt
         z1 = z[:,:,:1]
         z2 = z[:,:,1:]
-
+        
+        #print(torch.amax(z),torch.amin(z))
+        #print(torch.amax(omega))
+        #print(torch.amax(gamma),torch.amin(gamma))
+        #print(torch.amax(weighted_kernels),torch.amin(weighted_kernels))
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
 
         return yhat,weights
 
-    def get_funcs(self,x,dt,scaled = True,smoothing=False):
+    def get_funcs(self,x,dxdt,dt,scaled = True,smoothing=False):
 
         B,L,D = x.shape
+        dxdt *= self.tau
+        dxdt /= dt
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
-        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
+        # this gives: dxdt (currently unitless)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        z = torch.cat([x,dxdt],dim=-1)
         L = z.shape[1]
         if L > int(round(8/dt)):
             print('using step by step functions')
@@ -884,9 +898,9 @@ class rkhs_ouroboros(simple_ouroboros):
         # x_in = torch.cat([z, torch.flip(z,[1])],dim=-1) ## stack on data dimension
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
         
-        omegaControl = self.omega_mamba(x_in)[:,:,:]
-        gammaControl = self.gamma_mamba(x_in)[:,:,:]
-        kernelControl = self.kernel_mamba(x_in)[:,:,:]
+        omegaControl = self.omega_mamba(x_in)[:,L:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
+        kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
@@ -895,36 +909,47 @@ class rkhs_ouroboros(simple_ouroboros):
             omega=smooth(omega.abs(),smooth_len)#*self.tau
             gamma = smooth(gamma,smooth_len)#*self.tau
 
-        weighted_kernels,weights = self.kernel(x_in,kernelControl,smooth_len)#*self.tau
+        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)#*self.tau
         #if not self.trend_filtering:
         #    weighted_kernels = smooth(weighted_kernels,smooth_len)
+
+        ### no longer need to rescale anything in terms of functions!
         if scaled:
-            omega,gamma,weighted_kernels = omega*self.tau,gamma*self.tau,weighted_kernels*self.tau
-            weights = weights *self.tau
+            #omega,gamma,weighted_kernels = omegaself.tau,gamma*self.tau,weighted_kernels*self.tau
+            #weights = weights *self.tau
+            pass
         else:
-            omega,gamma = omega*(self.tau*dt),gamma*(self.tau*dt)
-            weighted_kernels = weighted_kernels*(self.tau*dt**2)
-            weights = weights *(self.tau * dt**2)
+            pass 
+            #omega,gamma = omega*(self.tau*dt),gamma*(self.tau*dt)
+            #weighted_kernels = weighted_kernels*(self.tau*dt**2)
+            #weights = weights *(self.tau * dt**2)
         #weighted_kernels = smooth(weighted_kernels,smooth_len)*self.tau
 
-        return omega[:,L:,:],gamma[:,L:,:],weighted_kernels[:,L:,:],weights[:,:L,:],torch.cat([omegaControl[:,L:,:],gammaControl[:,L:,:],kernelControl[:,L:,:]],dim=-1)
+        return omega,gamma,weighted_kernels,weights,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
     
-    def integrate(self,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
+    def integrate(self,x,dxdt,dx2,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
 
+        """
+        NEEDS TO BE UPDATED !!!!! DO NOT USE!!!
+        """
+        assert False, print("this does not work!! update!!")
         smooth_len = int(round(self.smooth_len/dt))
         B,_,D = x.shape
         # x: x_0, x_dt, x_2dt,...
-        xdot= deriv_approx_dy(x)
+        #xdot= deriv_approx_dy(x)
         # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-        xddot = deriv_approx_d2y(x)
+        #xddot = deriv_approx_d2y(x)
 
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        z = torch.cat([x,dxdt],dim=-1)
         L = z.shape[1]
 
         #if L > int(round(1/dt)):
         #    yhat,omega,gamma,weights,weighted_kernels = self.funcs_by_step(z,dt,scaled=scaled)
         #else:
         yhat,*_ = self.forward(x[:1,:,:],dt)
+
+        """ BROKEN!!! OFF LIMITS!!! FIX THIS!!!!"""
+
         omega,gamma,weighted_kernels,weights,states = self.get_funcs(x[:1,:,:],dt,scaled=scaled,smoothing=smoothing)
         #print(weights.shape)
         weights = smooth(weights.squeeze(2),smooth_len)
@@ -934,7 +959,7 @@ class rkhs_ouroboros(simple_ouroboros):
         #weights = np.zeros(weights.shape)
         weightsTerp = []
     
-        residual = xddot - yhat 
+        residual = dx2 - yhat 
         smoothed_residual = smooth(residual,smooth_len).detach().cpu().numpy().squeeze()
 
         
@@ -1007,15 +1032,16 @@ class rkhs_ouroboros(simple_ouroboros):
         return obj.y,omega,gamma,weighted_kernels,obj.status
     
     def funcs_by_step(self,z,dt,scaled=True,smoothing=False):
+        
 
         smooth_len = int(round(self.smooth_len/dt))
 
         omega_cache = [(None, torch.zeros((1,self.omega_mamba.config.d_model * self.omega_mamba.config.expand_factor,\
-                                           self.omega_mamba.config.d_conv),device='cuda')) for _ in self.omega_mamba.layers]
+                                           self.omega_mamba.config.d_conv),device=self.device)) for _ in self.omega_mamba.layers]
         gamma_cache = [(None, torch.zeros((1,self.gamma_mamba.config.d_model * self.gamma_mamba.config.expand_factor,\
-                                           self.gamma_mamba.config.d_conv),device='cuda')) for _ in self.gamma_mamba.layers]
+                                           self.gamma_mamba.config.d_conv),device=self.device)) for _ in self.gamma_mamba.layers]
         weights_cache = [(None, torch.zeros((1,self.kernel_mamba.config.d_model * self.kernel_mamba.config.expand_factor,\
-                                             self.kernel_mamba.config.d_conv),device='cuda')) for _ in self.kernel_mamba.layers]
+                                             self.kernel_mamba.config.d_conv),device=self.device)) for _ in self.kernel_mamba.layers]
         
         x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
         B,L,D = x_in.shape
@@ -1061,10 +1087,12 @@ class rkhs_ouroboros(simple_ouroboros):
             omegas=smooth(omegas,smooth_len)#*self.tau
             gammas = smooth(gammas,smooth_len)#*self.tau
         
+        # no longer need to scale, as model functions are all appropriately scaled already
         if scaled:
-            omegas *= self.tau
-            gammas *= self.tau 
-            kernel *= self.tau 
-            weights *= self.tau
+            pass
+            #omegas *= self.tau
+            #gammas *= self.tau 
+            #kernel *= self.tau 
+            #weights *= self.tau
         return yhat,omegas,gammas,weights,kernel
 

@@ -3,6 +3,9 @@ import numpy as np
 import torch
 from model.model_utils import smooth
 from utils import deriv_approx_d2y,deriv_approx_dy
+from data.real_data import get_segmented_audio
+#import vocalpy as voc
+import os
 
 C = 343
 L = 0.035
@@ -135,3 +138,190 @@ def integrate(model,x,dt,method='RK45',st=0.05,scaled=True,with_residual=False,u
     if with_residual:
         return obj.y,omega,gamma,weighted_kernels,smoothed_residual,obj.status
     return obj.y,omega,gamma,weighted_kernels,obj.status
+
+def pad_with_nans(x,target_length,axis=0):
+
+    currlen = x.shape[axis]
+    currshape = list(x.shape)
+    diff = target_length - currlen
+    currshape[axis] = diff
+
+    if diff > 0:
+        padding = np.full(currshape,np.nan)
+
+        return np.concatenate([x,padding],axis=axis)
+    else:
+        return x
+
+
+def get_model_fncs(model,audios,dt,smoothing=True,smooth_len=0.005):
+
+    orig_smooth_len = model.smooth_len
+    model.smooth_len = smooth_len
+
+    weights,omegas,gammas,kernels = [],[],[],[]
+    for x in audios:
+
+        xdot= torch.from_numpy(deriv_approx_dy(x)).to(model.device).to(torch.float32)
+
+        #print(xdot[:10])
+        #print(xdot[:10]/dt)
+        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
+        xddot = torch.from_numpy(deriv_approx_d2y(x)).to(model.device).to(torch.float32)/dt**2
+        sample_ax = np.arange(0,xddot.shape[1]*dt + dt/2,dt)[:xddot.shape[1]]
+        #xddot_hat = make_interp_spline(sample_ax,xddot.detach().cpu().numpy().squeeze())
+
+        x = torch.from_numpy(x).to(model.device).to(torch.float32)
+     
+
+        #### get functions from model (assumes we only get one x at a time
+        omega,gamma,weighted_kernel,weight,states = model.get_funcs(x,xdot,dt,scaled=True,smoothing=smoothing)
+        
+        omega,gamma,weighted_kernel= omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze(),\
+                        weighted_kernel.detach().cpu().numpy().squeeze()
+        weight = weight.detach().cpu().numpy().reshape([weight.shape[0],weight.shape[1],-1]).squeeze()
+        weights.append(weight)
+        kernels.append(weighted_kernel)
+        omegas.append(omega)
+        gammas.append(gamma)
+
+    model.smooth_len = orig_smooth_len
+
+    return omegas,gammas,kernels,weights
+
+def get_zf_fncs(model,audio_location,seg_location,aud_subdir,seg_subdir,seed=None):
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,audio_subdir=aud_subdir,\
+                            seg_subdir=seg_subdir,envelope=False,context_len=0.2,\
+                            audio_type=f'_cleaned.wav',seg_type=f'.txt',\
+                                max_pairs=3000,seed=seed,full_vocs=True,extend=False)
+    
+    omegas,gammas,kernels,weights = get_model_fncs(model,audios,1/sr)
+    """
+    for a in audios:
+        o,g,k,w = get_model_fncs(model,a,1/sr)
+        omegas.append(o)
+        gammas.append(g)
+        kernels.append(k)
+        weights.append(w)
+    """
+    return omegas,gammas,kernels,weights,audios
+
+
+def get_marmo_fncs(model,audio_location,seg_location,marmo_name,voctype='',seed=None):
+
+    audio_location = os.path.join(audio_location,marmo_name,'wavfiles','synchro_cleaned')
+    seg_location = os.path.join(seg_location,marmo_name,'wavfiles')
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,audio_subdir='',\
+                            seg_subdir='',envelope=False,context_len=0.15,\
+                            audio_type=f'{voctype}_cleaned.wav',seg_type=f'{voctype}.txt',\
+                                max_pairs=3000,seed=seed,full_vocs=True,extend=False)
+    
+    audios = [a[0] for a in audios]
+    omegas,gammas,kernels,weights = get_model_fncs(model,audios,1/sr)
+
+    return omegas,gammas,kernels,weights,audios
+
+def get_budgie_fncs(model,audio_location,seg_location,seed=None,cut_percentile=75):
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,audio_subdir='',\
+                                seg_subdir='',envelope=False,context_len=0.15,\
+                                audio_type='_cleaned.wav',seg_type='izationTimestamp.txt',\
+                                    max_pairs=3000,seed=seed,full_vocs=True,extend=False)
+
+    audios = audios[0]
+    audio_lens = np.array(list(map(lambda y: y.shape[1],audios)))
+    audio_lens = np.hstack(audio_lens)
+
+    ### warbles are relatively long -- so take the longest, idk, 25% of vocalizations
+    min_len = np.percentile(audio_lens,cut_percentile)
+    aud_inds = np.argwhere(audio_lens > min_len).squeeze()
+    audios = [audios[o] for o in aud_inds]
+
+    omegas,gammas,kernels,weights = get_model_fncs(model,audios,1/sr)
+
+    return omegas,gammas,kernels,weights,audios
+    
+
+def assess_variability(model,audio_location,seg_location,\
+                       audio_filetype='.wav',seg_filetype='.txt',max_samples=5000,\
+                        norm_sd=True,return_all=False):
+
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,\
+                        envelope=False,context_len=0.1,max_pairs=max_samples,\
+                            audio_type=audio_filetype,seg_type=seg_filetype,full_vocs=True)
+    dt = 1/sr
+
+    omegas,gammas = [],[]
+    for session in audios:
+        for sample in session:
+            #print(sample.shape)
+            sample = torch.from_numpy(sample).to(model.device).to(torch.float32)
+            omega,gamma, *_ = model.get_funcs(sample,dt,scaled=True,smoothing=True)
+
+            omega,gamma =omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze()
+            omegas.append(omega)
+            gammas.append(gamma)
+    max_len = max(list(map(len,omegas)))
+    padder = lambda x: pad_with_nans(x,target_length=max_len)
+
+    omegas = np.stack(list(map(padder,omegas)),axis=0)
+    gammas = np.stack(list(map(padder,gammas)),axis=0)
+
+    mu_gammas = np.nanmean(gammas,axis=0)
+    mu_omegas = np.nanmean(omegas,axis=0)
+    sd_gammas = np.nanstd(gammas,axis=0)#/np.abs(np.nanmean(mu_gammas)) # as portion of mean mean!!
+    sd_omegas = np.nanstd(omegas,axis=0)#/np.abs(np.nanmean(mu_omegas)) # as portion of mean mean!!
+
+    if norm_sd:
+
+        sd_gammas/= np.abs(np.nanmean(mu_gammas))
+        sd_omegas /= np.abs(np.nanmean(mu_omegas))
+
+    if return_all:
+        return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas),(omegas,gammas)
+    else:
+        return (mu_omegas,mu_gammas), (sd_omegas,sd_gammas)
+    
+def feature_variability(audio_location,seg_location,\
+                       audio_filetype='.wav',seg_filetype='.txt',max_samples=5000,\
+                        norm_sd=True,return_all=False):
+
+    audios,sr = get_segmented_audio(audio_location,seg_location,\
+                        envelope=False,context_len=0.1,max_pairs=max_samples,\
+                            audio_type=audio_filetype,seg_type=seg_filetype,full_vocs=True)
+
+    pass
+    """
+    features = {}
+    for session in audios:
+        for audio in session:
+            #print(len(audio))
+            a = voc.Sound(audio.squeeze(),samplerate=sr)
+            feats = voc.feature.sat.similarity_features(a)
+
+            for vn,da in feats.data.items():
+                try:
+                    features[vn].append(da.to_numpy().squeeze())
+                except:
+                    features[vn] = [da.to_numpy().squeeze()]
+                    t_len = len(audio.squeeze())/sr
+                    #print(len,int,round)
+                    sr_new = int(round(len(features[vn])/t_len))
+                    #print(t_len,sr_new)
+        
+    for feat in features.keys():
+        features[feat] = np.stack(features[feat],axis=0)
+    return features,features.keys(),sr_new
+    """
+
+def calc_vi(data):
+
+    # expects data to be nsamples x time x nfeatures
+    median = np.nanmedian(data,axis=0,keepdims=True)
+    VI = np.amin(np.linalg.norm(data - median,axis=-1)**2,axis=0)
+
+    return VI
+

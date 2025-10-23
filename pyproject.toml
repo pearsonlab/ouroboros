@@ -1,0 +1,44 @@
+[project]
+name = "ouroboros"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "diffrax>=0.7.0",
+    "fire>=0.7.1",
+    "mambapy>=1.2.0",
+    "matplotlib>=3.10.6",
+    "numpy>=2.2.6",
+    "scikit-learn>=1.7.2",
+    "scipy>=1.15.3",
+    "seaborn>=0.13.2",
+    "soundfile>=0.13.1",
+    "ssqueezepy>=0.6.6",
+    "tensorboard>=2.20.0",
+    "torch==2.8.0",
+    "torchdiffeq>=0.2.5",
+    "tqdm>=4.67.1",
+    "vocalpy>=0.10.0.post1",
+]
+
+
+[sources]
+torch = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+  { index = "pytorch-cu126", marker = "sys_platform == 'linux'" },
+]
+
+[[index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true

@@ -3,7 +3,7 @@ from mambapy.mamba import Mamba, MambaConfig
 import torch
 import torch.nn as nn
 from torchaudio.functional import lowpass_biquad
-from torchdiffeq import odeint
+#from torchdiffeq import odeint
 import numpy as np
 from scipy.integrate import solve_ivp
 from utils import deriv_approx_dy,deriv_approx_d2y

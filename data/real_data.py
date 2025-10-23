@@ -3,6 +3,7 @@ from tqdm import tqdm
 import warnings
 
 from scipy.signal import hilbert
+from scipy.interpolate import make_smoothing_spline
 #from acoustic_features_torch import get_features
 import os
 import glob
@@ -11,10 +12,11 @@ import soundfile as sf
 from scipy.io import loadmat
 from utils import butter_filter
 import random
+from data.preprocess import filter_by_tags
 
 def get_audio(audio,fs,onset,offset,context_len=0.3):
 
-    audiotimes = np.linspace(0,len(audio)/fs,len(audio))
+    #audiotimes = np.linspace(0,len(audio)/fs,len(audio))
     difference = (offset - onset) - context_len
     if difference <= 0:
         onset += difference #context_len//2
@@ -27,7 +29,9 @@ def get_audio(audio,fs,onset,offset,context_len=0.3):
     #print(a.shape)
     return a[:,None]
 
-def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,current_total=0,full_vocs=False):
+def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,
+                  current_total=0,full_vocs=False,extend=True,
+                  padding=0.):
 
     spikes = []
     auds = []
@@ -42,16 +46,27 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
     else:
         envelope=[]
 
-    if full_vocs:
-        # extend onoffs in a sensible way
-        pass
+    if full_vocs and extend:
+        # extend onoffs in a sensible way -- maybe to length of max onoff
+        
+        lens = onOffs[:,1] - onOffs[:,0]
+        max_len = np.amax(lens) # or something different here like mean, median, etc
+        diffs = max_len - lens 
+        onOffs[:,1] += diffs
 
+    #print(onOffs[:5,:])
+    #print(f"padding by {padding} seconds")    
+    onOffs[:,0] = np.maximum(onOffs[:,0]-padding,np.zeros(onOffs[:,0].shape))
+    onOffs[:,1] = np.minimum(onOffs[:,1] +padding, len(audio)/fs *np.ones(onOffs[:,1].shape))
+    #print(onOffs[:5,:])
+    #assert False
         #onOffs = 
     
     for onset,offset in onOffs:
 
         aud = get_audio(audio,fs,onset,offset,context_len)
-        
+        ts = np.arange(0,(len(aud)+1)/fs,1/fs)[:len(aud)]
+        #spl = make_smoothing_spline(ts,aud)
         cut_len = np.mod(aud.shape[0],chunk_len)
         #print(aud[:minLen].shape)
         
@@ -72,6 +87,29 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,cur
 
     #print(f"kept {ii}/{total_vocs} vocalizations more than 20 ms long")
     return auds
+
+def make_marmo_seg_file(matfile,savedir = ''):
+
+    d = loadmat(matfile)
+    vocal = d['vocal'][0][0]
+    aud = vocal[0]
+    L = len(aud)
+    fs = vocal[1].squeeze()
+    onset,offset = 0, L/fs
+    voctype = vocal[5]
+    savedir = ''.join(matfile.split('/')[:-1]) if savedir == '' else savedir
+    fn = matfile.split('/')[-1].split('.mat')[0]    
+
+    new_fn_wav = fn + '_' + voctype + '.wav'
+    new_fn_seg = fn + '_' + voctype + '.txt'
+
+    with open(new_fn_seg,'w') as f:
+        f.write(str(onset) + '\t' + str(offset) + '\t' + str(voctype))
+
+    wavfile.write(new_fn_wav,rate=fs,data=aud)
+
+    return new_fn_wav,new_fn_seg
+
 
 def get_audio_from_mat(matfile,context_len=0.02,max_pairs=600,env=False):
 
@@ -110,19 +148,85 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
 
     return vocal_data, d[1]
 
-def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
-                        seg_type='.txt',seed=None,full_vocs=False):
+def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
+                        max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
+                        seg_type='.txt',seed=None,full_vocs=False,extend=True,
+                        padding=0.):
+    
+    """
+    Takes as input a path to audio and segments (along with any
+    shared subdirectories and file extensions),
+    if used for gathering training data, outputs a list of
+    1,L,1 audio chunks 
+    if used for analysis, use the full_vocs option:
+    outputs a list of lists, with each inner list containing the
+    1,L_i,1 audio chunks (corresponding to vocalizations) within each audio file,
+    which is treated as a separate session. 
+        
+    """
 
     random.seed(seed)
+    audio_dirs = glob.glob(os.path.join(audiopath,audio_subdir))
+    seg_dirs = glob.glob(os.path.join(segpath,seg_subdir))
+    audio_dirs.sort()
+    seg_dirs.sort()
+    split_aud_sub = audio_subdir.split('/')
+    split_seg_sub = seg_subdir.split('/')
+    aud_sub_depth=len(split_aud_sub)
+    seg_sub_depth=len(split_seg_sub)
+
+    audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
+    seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
+    
+    audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
+    assert len(audio_dirs) >0, \
+        print(f"something went wrong with filtering! i recieved {audiopath},{segpath} as paths,{audio_subdir},{seg_subdir} as subdirs")
+    #print(audio_dirs,seg_dirs)
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
     #days = [d.split('/')[-1] for d in wav_dirs]
     #print("running this code")
     #assert False
-    wavs = glob.glob(os.path.join(audiopath,'*' + audio_type))
+    #print(f"searching for audio in {os.path.join(audiopath,'*' + audio_type)}")
+    wavs = sum([glob.glob(os.path.join(a,'*' + audio_type)) for a in audio_dirs],[])
     wavs.sort()
-    segs = glob.glob(os.path.join(segpath,'*' + seg_type))
+    #print(f"searching for segments in {os.path.join(segpath,'*' + seg_type)}")
+    segs = sum([glob.glob(os.path.join(s,'*' + seg_type)) for s in seg_dirs],[])
     segs.sort()
+    audio_tags = [a.split(audio_type)[0].split('/')[-1] for a in wavs]
+    seg_tags = [s.split(seg_type)[0].split('/')[-1] for s in segs]
 
+    #print(audio_tags,seg_tags)
+    #print(len(wavs))
+    #print(len(segs))
+    #print(wavs,segs)
+    #print(audio_tags[:5],seg_tags[:5])
+    wavs,segs = filter_by_tags(wavs,segs,audio_tags,seg_tags)
+    #print(wavs[:5],segs[:5])
+    assert len(wavs) > 0,\
+        print(f"""
+              something went wrong with filtering! i recieved {audiopath},{segpath} as paths,{audio_subdir},{seg_subdir} as subdirs, {audio_type},{seg_type} as filetypes.
+              maybe something went wrong with the audio tags? here's what i received (first 5):
+              audio tags: {audio_tags[:5]}
+              segment tags: {seg_tags[:5]}
+              """)
+    #print(wavs,segs)
+    """
+    if len(wavs) != len(segs):
+        print("different number of wavs and segs! only taking ones with overlap")
+        wav_endings = [w.split('/')[-1].split(audio_type)[0] for w in wavs]
+        seg_endings = [s.split('/')[-1].split(seg_type)[0] for s in segs]
+        #print(wav_endings[:5])
+        #print(seg_endings[:5])
+        all_endings = set(wav_endings).intersection(seg_endings)
+        wavs = [w for w in wavs if w.split('/')[-1].split(audio_type[-4:])[0].split('_cleaned')[0] in all_endings]
+        segs = [s for s in segs if s.split('/')[-1].split(seg_type[-4:])[0] in all_endings]
+    """
+    #print(len(wavs))
+    #print(len(segs))
+    assert len(wavs) == len(segs), print(f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments")
+    order = np.random.choice(len(wavs),len(wavs),replace=False)
+    wavs = [wavs[o] for o in order]
+    segs = [segs[o] for o in order]
     audio_segs = []
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
@@ -140,7 +244,7 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                onoffs = np.loadtxt(v)
+                onoffs = np.loadtxt(v,usecols=(0,1))
             if len(onoffs) > 0:
                 if len(onoffs.shape)==1:
                     onoffs = onoffs[None,:]
@@ -149,7 +253,8 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
                 
                 audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
                                        context_len=context_len,env=envelope,\
-                                        current_total=current_total,full_vocs=full_vocs)
+                                        current_total=current_total,full_vocs=full_vocs,
+                                        extend=extend,padding=padding)
                 if not full_vocs:
                     audio_segs += audios
 
@@ -158,7 +263,7 @@ def get_segmented_audio(audiopath,segpath,max_pairs=5000,context_len=0.03,envelo
                 
                 current_total += len(audios)
                 #assert len(audio_segs) >= current_total,print("wtf")
-                if len(audio_segs) >= max_pairs:
+                if current_total >= max_pairs:
                     return audio_segs[:max_pairs],sr
     else:
         random.shuffle(wavs)

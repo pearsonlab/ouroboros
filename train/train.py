@@ -5,6 +5,7 @@ from tqdm import tqdm
 from utils import deriv_approx_d2y,deriv_approx_dy,sst,sse,euler_step_k
 import matplotlib.pyplot as plt
 import os
+import glob
 from model.constrained_model import rkhs_ouroboros,simple_ouroboros
 from model.filters import filter as filt
 from model.kernels import *
@@ -29,11 +30,28 @@ def load_filter(location):
 
 
 
-def save_model(model,opt,location):
+def save_model(model,opt,location,\
+               n_layers=2,d_state=1,\
+                d_conv=4,expand_factor=4,
+                max_saved=5):
+    
+    current_saves = glob.glob(os.path.join(
+            '/'.join(location.split('/')[:-1]),'*.tar')
+    )
+    if len(current_saves) >= max_saved:
+        save_epochs = [int(s.split('/')[-1].split('.tar')[0].split('_')[-1]) for s in current_saves]
+        save_order = np.argsort(save_epochs)
+        ordered_saves = [current_saves[o] for o in save_order]
+        for ii in range(len(current_saves) - max_saved + 1):
+            os.remove(ordered_saves[ii])
     sd = {'ouroboros':model.state_dict(),
         'opt':opt.state_dict(),
         'tau':model.tau,
-        'smooth_len':model.smooth_len
+        'smooth_len':model.smooth_len,
+        'n_layers':n_layers,
+        'd_state':d_state,
+        'd_conv':d_conv,
+        'expand_factor':expand_factor
     }
     try:
         sd['n_kernel'] = model.kernel.nTerms
@@ -44,30 +62,48 @@ def save_model(model,opt,location):
 
 def load_model(location,kernel_type='gauss'):
 
+    model_files = glob.glob(os.path.join(location,'*.tar'))
+    epochs = [int(m.split('/checkpoint_')[-1].split('.tar')[0]) for m in model_files]
+    most_recent = np.argsort(epochs)[-1]
+    location = model_files[most_recent]
+    print(f"loading from {location}")
+
     sd = torch.load(location,weights_only=False)
+    try:
+        n_layers = sd['n_layers']
+        d_state = sd['d_state']
+        d_conv = sd['d_conv']
+        expand_factor = sd['expand_factor']
+    except:
+        n_layers = 2
+        d_state = 1
+        d_conv=4
+        expand_factor=4
     try:
         if kernel_type == 'gauss':
             kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
         elif kernel_type == 'constant_gauss':
             kernel = constantGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
+        elif kernel_type == 'full_poly':
+            kernel = fullPolyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,lam=1,trend_filtering=1)
         else:
             kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
         
 
-        model = rkhs_ouroboros(d_data=1,n_layers=2,d_state=1,\
-                    d_conv=4,expand_factor=4,tau=sd['tau'],\
+        model = rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
+                    d_conv=d_conv,expand_factor=expand_factor,tau=sd['tau'],\
                                 smooth_len=sd['smooth_len'],kernel=kernel)
     except:
         model = simple_ouroboros(d_data=1,n_layers=2,d_state=1,\
                 d_conv=4,expand_factor=4,tau=sd['tau'],\
                             smooth_len=sd['smooth_len'])
-
+    print(f"tau: {model.tau}")
     opt = Adam(model.parameters(),
                 lr=1e-3)
     scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
     model.load_state_dict(sd['ouroboros'])
     opt.load_state_dict(sd['opt'])
-    return model,opt,scheduler
+    return model,opt,scheduler,epochs[most_recent]
 
 
 def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
@@ -138,80 +174,88 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
 
     train_losses,val_losses=[],[]
     
-    for epoch in tqdm(range(nEpochs),desc='training model'):
+    for epoch in tqdm(range(start_epoch,nEpochs),desc='training model'):
 
         model.train()
 
         for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
 
             optimizer.zero_grad()
-            x,y = batch # each is bsz x seq len x n neurons + 1
+            x,dxdt,dx2dt2 = batch # each is bsz x seq len x n neurons + 1
             bsz,_,n = x.shape
 
             x = x.to('cuda').to(torch.float32)
-            y = y.to('cuda').to(torch.float32)
+            dxdt = dxdt.to('cuda').to(torch.float32)
+            dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2) * model.tau**2 # rescale dx2, rather than model output
 
-            dy = deriv_approx_dy(x)
+            #dy = deriv_approx_dy(x)
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
             #change: scaling to "true" d2y
-            dy2 = deriv_approx_d2y(x)/(dt**2)
+            #dy2 = deriv_approx_d2y(x)/(dt**2)
             # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
             
-            y2hat,weights = model(x,dt,smoothing) #state: B x L x SD
+            dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
             # change: scaling to "true" d2y
-            y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2
+            #dx2hat = dx2hat / model.tau**2 #since we changed the meaning of \tau, need to rescale here as well
+             #* (model.tau*dt)**2
             
             #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
             
             #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
             
-            yhat = y2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
+            yhat = dx2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
             #print(yhat.shape)
             # y starts as x[1:0]
-            y = dy2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
-            L = y.shape[1]
+            y = dx2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
+            L = x.shape[1]
 
             if vis_freq > 0:
                 if (idx % vis_freq) == 0:
                     sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
                     sst_sample = sst(y[:1,:,:1])
                     r2_sample = (1 - sse_sample/sst_sample).item()
-                    model.visualize(x,dt)
+                    model.visualize(x,dxdt,dt)
                 
-                    on = np.random.choice(L-45)
-                    ax = plt.gca()
-                    ax.plot(yhat[0,:,0].detach().cpu().numpy(),label='model')
-                    ax.plot(y[0,:,0].detach().cpu().numpy(),label='data')
-                    ax.set_title(f"sample r2: {r2_sample: 0.4f}")
-                    ax.legend()
+                    on = np.random.choice(L-600)
+                    resids = (y[0,:,0] - yhat[0,:,0]).detach().cpu().numpy()*dt**2
+                    fig,(ax1,ax2,ax3,ax4,ax5,ax6) = plt.subplots(nrows=1,ncols=6,sharey=False,figsize=(20,5))
+
+                    ax1.plot(yhat[0,:,0].detach().cpu().numpy()*dt**2,label='model')
+                    ax1.set_title('model')
+                    ax1.set_ylabel('a.u.')
+                    ax2.plot(y[0,:,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
+                    ax2.set_title('data')
+                    ylims = ax2.get_ylim()
+                    l1,=ax3.plot(y[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
+                    l2,=ax3.plot(yhat[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='model',color='tab:blue')
+                    ax4.spines[['left','right','top','bottom']].set_visible(False)
+                    ax4.set_xticks([])
+                    ax4.set_yticks([])
+                    ax4.legend([l1,l2],['Data','Model'])
+
+                    ax5.plot(resids,label='res',color='tab:red')
+                    ax5.set_title('residuals')
+                    ax6.hist(resids,bins=100,density=True)
+                    xlims = ax6.get_xlim()
+                    sd = np.nanstd(resids)
+                    px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
+                    xax = np.linspace(xlims[0],xlims[1],1000)
+                    yax = px(xax)
+                    ax6.plot(xax,yax,color='tab:red')
+                    
+                    ax1.set_ylim(ylims)
+                    ax2.set_ylim(ylims)
+                    ax3.set_ylim(ylims)
+                    ax5.set_ylim(ylims)
+                    ax6.set_xlim(xlims)
+                    
+
+                    fig.suptitle(f"sample r2: {r2_sample: 0.4f}")
+                    #ax.legend()
+                    plt.tight_layout()
                     plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
                     plt.close()
-
-            """    
-            ### trend filtering penalty
-            diff = torch.diff(state_pred,dim=1)
-            penalty = torch.abs(diff).sum(dim=-1).mean()
-            """
-            
-            """
-            ### sparsity penalty
-            alpha = 1/(state_pred.shape[-1] * state_pred.shape[-2])
-            norm2 = torch.linalg.vector_norm(state_pred,ord=0.5,dim=-1)
-            norm1 = torch.linalg.vector_norm(norm2,ord=1,dim=-1)
-            penalty = alpha*norm1.mean()
-            """
-
-            """
-            ### covariance penalty
-            cov = state_pred.transpose(-1,-2) @ state_pred /L 
-            sds = torch.diagonal(cov,dim1=-1,dim2=-2).sqrt()[:,:,None]
-            denom = sds @ sds.transpose(-1,-2)
-            abscorr = (cov/denom).abs()
-    
-            inds = torch.triu_indices(abscorr.shape[-1],abscorr.shape[-1],offset=-1,device=abscorr.device)
-            penalty = abscorr[:,inds[0],inds[1]].sum(dim=-1).mean()
-            """
 
             ##################################
             
@@ -219,7 +263,19 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             #alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
             l = loss# + alpha*trend_penalty
             if reg_weights:
-                penalty =  weights.sum(dim=-1).mean()
+                weights = weights * model.tau
+                B,L,P,P = weights.shape
+                lam_mat = torch.arange(P,\
+                                       dtype=torch.float32,\
+                                        device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
+                #print(lam_mat.shape)
+                #assert torch.all(lam_mat >= 0)
+                #w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam # old
+                w = model.kernel.lam**(lam_mat + lam_mat.transpose(-1,-2)) # new
+
+                #penalty =  (w**2 *weights**2).sum(dim=(-1,-2)).mean() # old
+                penalty =  (w *weights**2).sum(dim=(-1,-2,-3)).mean() # new (sum over weights, time)
+                
                 l = l + penalty
             #print(l)
             l.backward()
@@ -237,50 +293,88 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             vn = 0.
             for idx,batch in enumerate(loaders['val'],start=epoch*len(loaders['train'])):
                 with torch.no_grad():
-                    x,y = batch
+                    x,dxdt,dx2dt2 = batch # each is bsz x seq len x n neurons + 1
+                    bsz,_,n = x.shape
+
                     x = x.to('cuda').to(torch.float32)
-                    y = y.to('cuda').to(torch.float32)
+                    dxdt = dxdt.to('cuda').to(torch.float32)
+                    dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2) * model.tau**2
                     
-                    dy = deriv_approx_dy(y)
-                    # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-                    #scaling to "true" d2y
-                    dy2 = deriv_approx_d2y(y)/(dt**2)
-                    # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
-                    
-                    y2hat,weights = model(x,dt,smoothing) #state: B x L x SD
+                    dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
                     ## scaling to "true" d2y
-                    y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
+                    #dx2hat = dx2hat / model.tau **2 # change to reflect updated scaling
+                    #(model.tau*dt)**2
                     
                     #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
                     
                     #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
                     
-                    yhat = y2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
+                    yhat = dx2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
                     #print(yhat.shape)
                     # y starts as x[1:0]
-                    y = dy2 #torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
+                    y = dx2 #torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
                     L = y.shape[1]
                     if vis_freq > 0:
                         if idx == epoch*len(loaders['train']):
                             sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
                             sst_sample = sst(y[:1,:,:1])
                             r2_sample = (1 - sse_sample/sst_sample).item()
-                            model.visualize(x,dt)
+                            model.visualize(x,dxdt,dt)
                         
-                            on = np.random.choice(L-45)
-                            ax = plt.gca()
-                            ax.plot(yhat[0,on:on+600,0].detach().cpu().numpy(),label='model')
-                            ax.plot(y[0,on:on+600,0].detach().cpu().numpy(),label='data')
-                            ax.set_title(f"sample r2: {r2_sample: 0.4f}")
-                            ax.legend()
+                            on = np.random.choice(L-600)
+                            
+                            resids = (y[0,on:on+600,0] - yhat[0,on:on+600,0]).detach().cpu().numpy()*dt**2
+                            fig,(ax1,ax2,ax3,ax4,ax5,ax6) = plt.subplots(nrows=1,ncols=6,sharey=False,figsize=(20,5))
+
+                            ax1.plot(yhat[0,on:on+600,0].detach().cpu().numpy()*dt**2,label='model')
+                            ax1.set_title('model')
+                            ax1.set_ylabel('a.u.')
+                            ax2.plot(y[0,on:on+600,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
+                            ax2.set_title('data')
+                            ylims = ax2.get_ylim()
+                            l1,=ax3.plot(y[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='data',color='tab:orange')
+                            l2,=ax3.plot(yhat[0,on+300:on+350,0].detach().cpu().numpy()*dt**2,label='model',color='tab:blue')
+                            ax4.spines[['left','right','top','bottom']].set_visible(False)
+                            ax4.set_xticks([])
+                            ax4.set_yticks([])
+                            ax4.legend([l1,l2],['Data','Model'])
+
+                            ax5.plot(resids,label='res',color='tab:red')
+                            ax5.set_title('residuals')
+                            ax6.hist(resids,bins=100,density=True)
+                            xlims = ax6.get_xlim()
+                            sd = np.nanstd(resids)
+                            px = lambda x: (1/np.sqrt(2*np.pi*sd**2))*np.exp(-x**2/(2*sd**2))
+                            xax = np.linspace(xlims[0],xlims[1],1000)
+                            yax = px(xax)
+                            ax6.plot(xax,yax,color='tab:red')
+                            
+                            ax1.set_ylim(ylims)
+                            ax2.set_ylim(ylims)
+                            ax3.set_ylim(ylims)
+                            ax5.set_ylim(ylims)
+                            ax6.set_xlim(xlims)
+                            fig.suptitle(f"sample r2: {r2_sample: 0.4f}")
+                            plt.tight_layout()
                             plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}_test.svg"))
                             plt.close()
                     
                     l = loss_fn(y,yhat[:,:L,:])
                     tot = sst(y)
                     if reg_weights:
-                        penalty = weights.sum(dim=-1).mean()
+                        weights = weights * model.tau
+                        B,L,P,P = weights.shape
+                        lam_mat = torch.arange(P,\
+                                            dtype=torch.float32,\
+                                                device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
+                        #print(lam_mat.shape)
+                        #assert torch.all(lam_mat >= 0)
+                        #w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam
+                        exps = lam_mat + lam_mat.transpose(-1,-2)
+                        w = model.kernel.lam ** exps
+                        penalty =  (w * weights**2).sum(dim=(-1,-2)).mean()#(w**2 *weights**2).sum(dim=(-1,-2)).mean()
+                        #l = l + penalty
                     vl += l.item()#1 - l.item()/tot.item()
 
                     if reg_weights:
@@ -293,6 +387,13 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             writer.add_scalar('Loss/validation',vl/len(loaders['val']),idx)
             writer.add_scalar('Penalty/validation',vp/len(loaders['val']),idx)
 
+            if epoch % save_freq == 0:
+                save_model(model,optimizer,location=os.path.join(runDir,\
+                                                    f'checkpoint_{epoch}.tar'),
+                           n_layers=model_info['n layers'],
+                           d_state=model_info['d state'],
+                           d_conv=model_info['d conv'],
+                           expand_factor=model_info['expand factor'])
     writer.close()
     return train_losses,val_losses,model,optimizer
 
