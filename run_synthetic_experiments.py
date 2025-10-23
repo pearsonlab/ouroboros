@@ -25,6 +25,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
     cdp = os.path.join(synth_model_path,'coen_results.pkl')
     sdp = os.path.join(synth_model_path,'stack_results.pkl')
 
+    assert os.path.isdir(adult_zf_model_path),print(adult_zf_model_path, "not found!!")
     if generate:
         from data.generate_data_gabo import generate_vocal_dataset
         import jax.random as jr
