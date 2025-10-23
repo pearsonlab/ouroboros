@@ -831,9 +831,16 @@ class rkhs_ouroboros(simple_ouroboros):
         all other predictions should be done in the train look (train_utils.py)
         """
         
+        #print(torch.amax(dxdt),torch.amin(dxdt))
+                
         dxdt *= self.tau
+        #print(torch.amax(dxdt),torch.amin(dxdt))
+                
         dxdt /= dt # this is now \tau dy
-
+        #print(torch.amax(dxdt),torch.amin(dxdt))
+        #print("new set")
+        #print(torch.amax(x),torch.amin(x))
+                
         B,L,D = x.shape
         #x = x
         #print(x.dtype)
@@ -863,7 +870,11 @@ class rkhs_ouroboros(simple_ouroboros):
 
         z1 = z[:,:,:1]
         z2 = z[:,:,1:]
-
+        
+        #print(torch.amax(z),torch.amin(z))
+        #print(torch.amax(omega))
+        #print(torch.amax(gamma),torch.amin(gamma))
+        #print(torch.amax(weighted_kernels),torch.amin(weighted_kernels))
         yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
 
         return yhat,weights
