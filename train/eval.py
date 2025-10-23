@@ -591,15 +591,21 @@ def full_eval_model(model,loaders=None,original_data=None,\
                 #print(o.shape)
                 dx2dt2 = torch.from_numpy(deriv_approx_d2y(o)).to(model.device).to(torch.float32)
                 dxdt = torch.from_numpy(deriv_approx_dy(o)).to(model.device).to(torch.float32)
+                #print(dt)
+                #print(torch.amax(dxdt),torch.amin(dxdt))
                 dx2 = dx2dt2/(dt**2)
+                #print(torch.sum(torch.isnan(dx2)))
                 x = torch.from_numpy(o).to(model.device).to(torch.float32)
+                #print(torch.sum(torch.isnan(x)))
                 #print(x.shape)
                 #print(dx2.shape)
                 #print(dxdt.shape)
                 with torch.no_grad():
                     dx2hat,_ = model(x,dxdt,dt,False)
+                    #print(torch.amax(dx2hat))
+
                     dx2hat /= model.tau**2 ## update to match new model output
-                    
+                    #print(torch.sum(torch.isnan(dx2hat)))
 
                     errs = sse(dx2hat,dx2,reduction='none').detach().cpu().numpy().squeeze()
                     totals = sst(dx2,reduction='none').detach().cpu().numpy().squeeze()

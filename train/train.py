@@ -97,7 +97,7 @@ def load_model(location,kernel_type='gauss'):
         model = simple_ouroboros(d_data=1,n_layers=2,d_state=1,\
                 d_conv=4,expand_factor=4,tau=sd['tau'],\
                             smooth_len=sd['smooth_len'])
-
+    print(f"tau: {model.tau}")
     opt = Adam(model.parameters(),
                 lr=1e-3)
     scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
@@ -187,7 +187,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
 
             x = x.to('cuda').to(torch.float32)
             dxdt = dxdt.to('cuda').to(torch.float32)
-            dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2)
+            dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2) * model.tau**2 # rescale dx2, rather than model output
 
             #dy = deriv_approx_dy(x)
             # dy_4dt, dy_3dt, ...., dy_(L-4)dt
@@ -198,7 +198,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
             # change: scaling to "true" d2y
-            dx2hat = dx2hat / model.tau**2 #since we changed the meaning of \tau, need to rescale here as well
+            #dx2hat = dx2hat / model.tau**2 #since we changed the meaning of \tau, need to rescale here as well
              #* (model.tau*dt)**2
             
             #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
@@ -299,12 +299,12 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
 
                     x = x.to('cuda').to(torch.float32)
                     dxdt = dxdt.to('cuda').to(torch.float32)
-                    dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2)
+                    dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2) * model.tau**2
                     
                     dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
                     ## scaling to "true" d2y
-                    dx2hat = dx2hat / model.tau **2 # change to reflect updated scaling
+                    #dx2hat = dx2hat / model.tau **2 # change to reflect updated scaling
                     #(model.tau*dt)**2
                     
                     #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
