@@ -106,7 +106,7 @@ def make_harmonic_stack(fundamental_freq,n_harmonics,t):
 
     return signal/n_harmonics, d_signal/n_harmonics, d2_signal/n_harmonics
 
-def gen_stacks(n_samples,alpha=8.,theta=2.,sample_rate=44100,noise_sd=0.025):
+def gen_stacks(n_samples,alpha=8.,theta=2.,sample_rate=44100,noise_sd=0.005):
 
     
     t = np.arange(0,0.1,1/sample_rate)
