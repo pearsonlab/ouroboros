@@ -153,10 +153,7 @@ def run_experiments(adult_syll_path='',adult_d_ud_path='',
                 }
         tutor_dicts[b] = tutor_func_dict
         with open(os.path.join(pupil_tutor_modelpath,'tutor_func_data.pkl'),'wb') as f:
-            pickle.dump(tutor_func_dict,f)
-
-    ############### muscimol data ##################
-    
+            pickle.dump(tutor_func_dict,f) 
 
 
 
