@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import gc
 import torch
 import fire 
+import os
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from visualization.model_vis import loss_plot
@@ -143,7 +144,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     elif kernel_type == 'full_poly':
         kernel = fullPolyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=lam,trend_filtering=use_trend)
         reg_weights=True
-        
+        print(kernel.activation)
     else:
         kernel = polyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=lam,trend_filtering=use_trend)
         reg_weights=False
