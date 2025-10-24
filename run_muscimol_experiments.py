@@ -27,6 +27,7 @@ def run_experiments(audio_path='',
     for syll in syllables:
         syll = syll.split(days[0])[-1].split('/')[-1]
         #print(seg_path,syll)
+        print(f"loading {max_per_syll} sylls from {syll}")
         seg_subdir = os.path.join('8[0-9]',syll) #syll.split(days[0])[-1]
         #print(seg_subdir)
         #print(max_per_syll)
