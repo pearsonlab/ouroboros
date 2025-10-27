@@ -14,6 +14,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
+import seaborn as sns
+import pandas as pd
+
 def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
                     n_kernels=15,expand_factor=10,\
                     n_layers=4,d_state=1,d_conv=4,\
@@ -89,14 +92,24 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
         lam_train_cv_sd.append(train_sd)
         lam_test_cv_sd.append(test_sd)
 
+    interleaved_cvs = []
+    splits = ['train']*len(lam_train_cv_err) + ['val']*len(lam_test_cv_err)
+    lambdas_stacked = np.hstack([lambdas,lambdas])
+    errs = np.hstack([lam_train_cv_err,lam_test_cv_err])
+    df = pd.DataFrame({'lam':lambdas_stacked,'split':splits,'R2':errs})
+
+    #for cvtr,cvte in zip(lam_train_cv_err,lam_test_cv_err):
+    #    interleaved_cvs.append(cvtr)
+    #    interleaved_cvs.append(cvte)
     min_err_ind = np.argmax(lam_test_cv_err) # argmax, since 'err' is actually r2
     print(f"best R2 alpha for {n_kernels} kernels: {lambdas[min_err_ind]}")
     ax = plt.gca()
-    ax.bar(lambda_xaxis,lam_train_cv_err,0.25,color='tab:blue',label='train')
-    ax.bar(lambda_xaxis+0.5,lam_test_cv_err,0.25,color='tab:orange',label='validation')
-    ax.errorbar(lambda_xaxis,lam_train_cv_err,yerr=lam_train_cv_sd,capsize=4,fmt='o',color='k')
-    ax.errorbar(lambda_xaxis+0.5,lam_test_cv_err,yerr=lam_test_cv_sd,capsize=4,fmt='o',color='k')
-    ax.set_xticks(lambda_xaxis+0.25,lambdas)
+    #ax.bar(lambda_xaxis,lam_train_cv_err,0.25,color='tab:blue',label='train')
+    #ax.bar(lambda_xaxis+0.5,lam_test_cv_err,0.25,color='tab:orange',label='validation')
+    #ax.errorbar(lambda_xaxis,lam_train_cv_err,yerr=lam_train_cv_sd,capsize=4,fmt='o',color='k')
+    #ax.errorbar(lambda_xaxis+0.5,lam_test_cv_err,yerr=lam_test_cv_sd,capsize=4,fmt='o',color='k')
+    sns.boxplot(data=df,x='lam',y='R2',hue='split',hue_order=['train','test'],ax=ax,gap=0.1)
+    #ax.set_xticks(lambda_xaxis+0.25,lambdas)
     ax.set_xlabel("Polynomial degree penalty")
     ax.set_ylabel(r"$R^2$")
     ax.legend()
