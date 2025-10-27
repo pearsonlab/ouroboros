@@ -94,7 +94,7 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
 
     interleaved_cvs = []
     splits = ['train']*len(lam_train_cv_err) + ['val']*len(lam_test_cv_err)
-    lambdas_stacked = np.hstack([lambdas,lambdas])
+    lambdas_stacked = np.round(np.hstack([lambdas,lambdas]),3)
     errs = np.hstack([lam_train_cv_err,lam_test_cv_err])
     df = pd.DataFrame({'lam':lambdas_stacked,'split':splits,'R2':errs})
 
@@ -112,6 +112,9 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
     #ax.set_xticks(lambda_xaxis+0.25,lambdas)
     ax.set_xlabel("Polynomial degree penalty")
     ax.set_ylabel(r"$R^2$")
+    ylim = ax.get_ylim()
+    ylim = (min(ylim[0],0),max(ylim[-1],1.01))
+    ax.set_ylim(ylim)
     ax.legend()
     plt.savefig(os.path.join(model_path,f'train_test_error_kernel_poly_nkernels_30.svg'))
     plt.close()
