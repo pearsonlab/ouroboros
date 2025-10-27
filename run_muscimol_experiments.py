@@ -16,10 +16,10 @@ import torch
 
 def run_experiments(audio_path='',
                     model_path='',seed=92,tau=1e-4,lr=1e-3,n_kernels=10,
-                    max_sylls=3000):
+                    max_sylls=3000,nEpochs=200):
     
     seg_path = os.path.join(audio_path,'segs')
-    days = glob.glob(os.path.join(seg_path,'8[0-9]'))
+    days = glob.glob(os.path.join(seg_path,'[7-9][0-9]'))
     syllables = glob.glob(os.path.join(days[0],'syllable*'))
     n_sylls = len(syllables)
     max_per_syll = max_sylls//n_sylls
@@ -39,7 +39,7 @@ def run_experiments(audio_path='',
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
     model = model_cv_lambdas(dls,1/sr,\
-                                    nEpochs=200,model_path=model_path,
+                                    nEpochs=nEpochs,model_path=model_path,
                                     n_layers=3,expand_factor=8,n_kernels=n_kernels,tau=tau,lr=lr)
     
     r2s,best,resids,spec_ratio,specs,ext = full_eval_model(model,dls,audios,1/sr,use_results=False,\
