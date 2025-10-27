@@ -35,13 +35,17 @@ def run_experiments(audio_path='',
                                     seg_subdir=seg_subdir,envelope=False,context_len=0.15,\
                                     audio_type='_cleaned.wav',seg_type='.txt',\
                                         max_pairs=max_per_syll,seed=seed)
+        #print([v.shape for v in a])
+        #assert False
         audios.append(np.vstack(a))
+    #print(np.vstack(audios).shape)
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
-
+    #print(f"{len(dls['train'].dataset)}")
+    #print(f"{len(dls['test'].dataset)}")
     model = model_cv_lambdas(dls,1/sr,\
                                     nEpochs=nEpochs,model_path=model_path,
                                     n_layers=3,expand_factor=8,n_kernels=n_kernels,tau=tau,lr=lr)
-    
+    []
     r2s,best,resids,spec_ratio,specs,ext = full_eval_model(model,dls,audios,1/sr,use_results=False,\
                     n_int=50,plot_dir=model_path,plot_steps=False)
     

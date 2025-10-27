@@ -65,14 +65,17 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,
     for onset,offset in onOffs:
 
         aud = get_audio(audio,fs,onset,offset,context_len)
+        #print(aud.shape)
         ts = np.arange(0,(len(aud)+1)/fs,1/fs)[:len(aud)]
         #spl = make_smoothing_spline(ts,aud)
         cut_len = np.mod(aud.shape[0],chunk_len)
+        #print(cut_len)
         #print(aud[:minLen].shape)
         
         if aud.shape[0] >= chunk_len:
             if not full_vocs:
-                aud = aud[: - cut_len]
+                if cut_len>0:
+                    aud = aud[: - cut_len]
 
                 aud = aud.reshape(-1,chunk_len,aud.shape[-1])
             else:
@@ -255,6 +258,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                                        context_len=context_len,env=envelope,\
                                         current_total=current_total,full_vocs=full_vocs,
                                         extend=extend,padding=padding)
+                #print(len(audios))
                 if not full_vocs:
                     audio_segs += audios
 
@@ -262,6 +266,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                     audio_segs.append(audios)
                 
                 current_total += len(audios)
+                #print(len(audio_segs))
                 #assert len(audio_segs) >= current_total,print("wtf")
                 if current_total >= max_pairs:
                     return audio_segs[:max_pairs],sr
