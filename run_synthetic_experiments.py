@@ -15,7 +15,7 @@ import pickle
 def run_experiments(gabo_data_path='',coen_data_path='',\
                     adult_zf_model_path='',\
                         generate=False,seed=92,synth_model_path='',
-                        save_freq=10):
+                        save_freq=10,tau=1e-4,lr=1e-3,n_kernels=10):
 
     audio_path =os.path.join(gabo_data_path,'audio')
     seg_path =os.path.join(gabo_data_path,'segs')
@@ -49,7 +49,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         gabo_path = os.path.join(synth_model_path,'gabo_model')
         gabo_model = model_cv_lambdas(dls,1/sr,\
                             nEpochs=100,model_path=gabo_path,
-                            save_freq=save_freq)
+                            save_freq=save_freq,tau=tau,lr=lr,n_kernels=n_kernels)
 
         gabo_r2s,gabo_best,gabo_resids,gabo_spec_ratio,gabo_specs,gabo_ext = full_eval_model(gabo_model,dls,audios,1/sr,use_results=False,\
                         n_int=50,plot_dir=gabo_path,plot_steps=False)
@@ -90,7 +90,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         stack_path = os.path.join(synth_model_path,'stackies')
         stack_model = model_cv_lambdas(dls,1/sr_stack,\
                                 nEpochs=100,model_path=stack_path,
-                                save_freq=save_freq,tau=1/10000)
+                                save_freq=save_freq,tau=tau,lr=lr,n_kernels=n_kernels)
         stack_r2s,stack_best,stack_resids,stack_spec_ratio,stack_specs,stack_ext = full_eval_model(stack_model,dls,stacks,1/sr_stack,use_results=False,\
                     n_int=50,plot_dir=stack_path,plot_steps=False)
         
