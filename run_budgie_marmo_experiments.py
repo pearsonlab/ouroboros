@@ -35,7 +35,7 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
                                     audio_type='_cleaned.wav',seg_type='izationTimestamp.txt',\
                                         max_pairs=3000,seed=seed)
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
-
+        tau = 1/sr
         budgie_model = model_cv_lambdas(dls,1/sr,\
                                         nEpochs=400,model_path=budgie_model_path,
                                         lr=lr,tau=tau,n_kernels=n_kernels)
@@ -104,7 +104,7 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
                                             max_pairs=3000//len(marmos),seed=seed)
             audios.append(np.vstack(a))
             
-        
+        tau = 1/sr
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
         marmo_model = model_cv_lambdas(dls,1/sr,\
