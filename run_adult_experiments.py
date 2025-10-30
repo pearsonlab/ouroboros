@@ -43,6 +43,7 @@ def run_experiments(adult_d_ud_path='',
     
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
+    print(np.amax(audios),np.amin(audios))
     dud_model = model_cv_lambdas(dls,1/sr,\
                                     nEpochs=nEpochs,model_path=dir_undir_modelpath,
                                     n_layers=3,expand_factor=8,n_kernels=n_kernels,
