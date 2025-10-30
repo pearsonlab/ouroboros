@@ -40,14 +40,14 @@ def run_experiments(adult_d_ud_path='',
                         seg_subdir='[U,D]*',envelope=False,context_len=0.15,\
                         audio_type='_cleaned.wav',seg_type='.txt',\
                             max_pairs=max_segs,seed=seed)
-    print(sr)
+    #print(sr)
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
     #print(np.amax(audios),np.amin(audios))
     dud_model = model_cv_lambdas(dls,1/sr,\
                                     nEpochs=nEpochs,model_path=dir_undir_modelpath,
                                     n_layers=3,expand_factor=8,n_kernels=n_kernels,
-                                    tau=tau,lr=lr)
+                                    tau=1/sr,lr=lr)
     
     dud_r2s,dud_best,dud_resids,dud_spec_ratio,dud_specs,dud_ext = full_eval_model(dud_model,dls,audios,1/sr,use_results=False,\
                     n_int=50,plot_dir=dir_undir_modelpath,plot_steps=False)
@@ -123,7 +123,7 @@ def run_experiments(adult_d_ud_path='',
     pt_model = model_cv_lambdas(dls,1/sr,\
                                     nEpochs=200,model_path=pupil_tutor_modelpath,
                                     n_layers=3,expand_factor=8,n_kernels=n_kernels,
-                                    tau=tau,lr=lr)
+                                    tau=1/sr,lr=lr)
     
     pt_r2s,pt_best,pt_resids,pt_spec_ratio,pt_specs,pt_ext = full_eval_model(pt_model,dls,audios,1/sr,use_results=False,\
                     n_int=50,plot_dir=dir_undir_modelpath,plot_steps=False)
