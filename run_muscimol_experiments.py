@@ -31,7 +31,7 @@ def run_experiments(audio_path='',
         seg_subdir = os.path.join('8[0-9]',syll) #syll.split(days[0])[-1]
         #print(seg_subdir)
         #print(max_per_syll)
-        a,sr = get_segmented_audio(audio_path,seg_path,audio_subdir='8[0-9]/synchro_squeezed',\
+        a,sr = get_segmented_audio(audio_path,seg_path,audio_subdir='[6-9][0-9]/synchro_squeezed',\
                                     seg_subdir=seg_subdir,envelope=False,context_len=0.15,\
                                     audio_type='_cleaned.wav',seg_type='.txt',\
                                         max_pairs=max_per_syll,seed=seed)
