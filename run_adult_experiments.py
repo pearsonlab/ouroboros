@@ -62,6 +62,9 @@ def run_experiments(adult_d_ud_path='',
     with open(os.path.join(dir_undir_modelpath,'eval_data.pkl'),'wb') as f:
         pickle.dump(dud_eval_dict,f)
 
+    """
+    TO-DO: UPDATE THESE FUNCTIONS TO REFLECT CHANGES TO MODEL
+
     d_o,d_g,d_k,d_w = get_zf_fncs(dud_model,dud_aud,dud_seg,\
                                   aud_subdir='D*/synchro_cleaned_v1',\
                                     seg_subdir='D*',seed=seed)
@@ -86,7 +89,7 @@ def run_experiments(adult_d_ud_path='',
     with open(os.path.join(dir_undir_modelpath,'undir_func_data.pkl'),'wb') as f:
         pickle.dump(undir_func_dict,f)
 
-
+    """
     del audios
     del dls 
     gc.collect()
@@ -139,6 +142,7 @@ def run_experiments(adult_d_ud_path='',
         pickle.dump(pt_eval_dict,f)
     
     #birds = glob.glob(os.path.join(adult_p_t_path,'*[0-9]'))
+    """
     pupil_dicts = {}
     tutor_dicts= {}
     for bird in birds:
@@ -173,7 +177,7 @@ def run_experiments(adult_d_ud_path='',
         with open(os.path.join(pupil_tutor_modelpath,'tutor_func_data.pkl'),'wb') as f:
             pickle.dump(tutor_func_dict,f) 
 
-
+        """
 
 
 if __name__ == '__main__':
