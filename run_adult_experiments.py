@@ -26,15 +26,16 @@ def run_experiments(adult_d_ud_path='',
 
     if not os.path.isdir(model_path):
         os.mkdir(model_path)
+    
+
+    dir_undir_modelpath = os.path.join(model_path,'dir_undir')
+    pupil_tutor_modelpath = os.path.join(model_path,'pupil_tutor')
+    if not os.path.isdir(dir_undir_modelpath):
+        os.mkdir(dir_undir_modelpath)
+    if not os.path.isdir(pupil_tutor_modelpath):
+        os.mkdir(pupil_tutor_modelpath)
+        
     if dir_undir:
-
-        dir_undir_modelpath = os.path.join(model_path,'dir_undir')
-        pupil_tutor_modelpath = os.path.join(model_path,'pupil_tutor')
-        if not os.path.isdir(dir_undir_modelpath):
-            os.mkdir(dir_undir_modelpath)
-        if not os.path.isdir(pupil_tutor_modelpath):
-            os.mkdir(pupil_tutor_modelpath)
-
         ##### Directed, undirected models:
         dud_aud = os.path.join(adult_d_ud_path,'original_data')
         dud_seg = os.path.join(adult_d_ud_path,'song_segs')
