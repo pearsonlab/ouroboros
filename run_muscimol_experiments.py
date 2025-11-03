@@ -19,7 +19,7 @@ def run_experiments(audio_path='',
                     max_sylls=3000,nEpochs=200):
     
     seg_path = os.path.join(audio_path,'segs')
-    days = glob.glob(os.path.join(seg_path,'[7-9][0-9]'))
+    days = glob.glob(os.path.join(seg_path,'[6-9][0-9]'))
     syllables = glob.glob(os.path.join(days[0],'syllable*'))
     n_sylls = len(syllables)
     max_per_syll = max_sylls//n_sylls
@@ -28,7 +28,7 @@ def run_experiments(audio_path='',
         syll = syll.split(days[0])[-1].split('/')[-1]
         #print(seg_path,syll)
         print(f"loading {max_per_syll} sylls from {syll}")
-        seg_subdir = os.path.join('8[0-9]',syll) #syll.split(days[0])[-1]
+        seg_subdir = os.path.join('[6-9][0-9]',syll) #syll.split(days[0])[-1]
         #print(seg_subdir)
         #print(max_per_syll)
         a,sr = get_segmented_audio(audio_path,seg_path,audio_subdir='[6-9][0-9]/synchro_squeezed',\
@@ -42,6 +42,7 @@ def run_experiments(audio_path='',
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
     #print(f"{len(dls['train'].dataset)}")
     #print(f"{len(dls['test'].dataset)}")
+    tau=1/sr
     model = model_cv_lambdas(dls,1/sr,\
                                     nEpochs=nEpochs,model_path=model_path,
                                     n_layers=3,expand_factor=8,n_kernels=n_kernels,tau=tau,lr=lr)
