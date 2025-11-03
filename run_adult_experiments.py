@@ -113,7 +113,7 @@ def run_experiments(adult_d_ud_path='',
         prev_sr = -1
         for b in birds:
             b = os.path.join(adult_p_t_path,b)
-            tutor_aud,tutor_seg = os.path.join(b +'_tutor','motif_audio_tutor','synchro_cleaned_v1'), os.path.join(b+'_tutor','motif_segs')
+            tutor_aud,tutor_seg = os.path.join(b +'_tutor','motif_audio_tutor','synchro_cleaned_v1'), os.path.join(b+'_tutor','motif_txt_tutor')
             print(f"Now loading {n_per_bird} from {tutor_aud.split('/')[-3]}")
             a,sr = get_segmented_audio(tutor_aud,tutor_seg,\
                                 audio_subdir='',\
@@ -124,7 +124,7 @@ def run_experiments(adult_d_ud_path='',
                 prev_sr = sr
             assert sr == prev_sr
             audios.append(np.vstack(a))
-            pupil_aud,pupil_seg = os.path.join(b,'motif_audio','synchro_cleaned_v1'),os.path.join(b,'motif_segs')
+            pupil_aud,pupil_seg = os.path.join(b,'motif_audio','synchro_cleaned_v1'),os.path.join(b,'motif_txt')
             print(f"Now loading {n_per_bird} from {pupil_aud.split('/')[-3]}")
 
             a,sr = get_segmented_audio(pupil_aud,pupil_seg,\
