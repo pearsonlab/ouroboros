@@ -100,7 +100,8 @@ def run_experiments(adult_d_ud_path='',
     ############### pupil/tutor data ###############
     if pupil_tutor:
         pt_aud,pt_seg = adult_p_t_path,adult_p_t_path
-        birds =glob.glob(os.path.join(adult_p_t_path,'[b,g,p]*[0-9]'))
+        #birds =glob.glob(os.path.join(adult_p_t_path,'[b,g,p]*[0-9]'))
+        birds = ['blk_411','blk415','blk417','blk424','blk430','blk435','grn395','pur436']
         n_per_bird = max_segs//(2*len(birds))
 
         ####### need to get segments for this!!
@@ -109,6 +110,7 @@ def run_experiments(adult_d_ud_path='',
         # labeling prelabelled syllables
         audios=[]
         for b in birds:
+            b = os.path.join(adult_p_t_path,b)
             tutor_aud,tutor_seg = os.path.join(b +'_tutor','motif_audio_tutor','synchro_cleaned_v1'), os.path.join(b+'_tutor','motif_segs')
             print(f"Now loading {n_per_bird} from {tutor_aud.split('/')[-3]}")
             a,sr = get_segmented_audio(tutor_aud,tutor_seg,\
