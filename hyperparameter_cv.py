@@ -19,7 +19,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
               audio_subdir='',seg_subdir='',\
               seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
                 context_len=0.3,max_pairs=1000,
-                nEpochs=100, seed=None,smooth_len=0.005,vis_freq=100,tau=1000,
+                nEpochs=100, seed=92,smooth_len=0.005,vis_freq=100,tau=1000,
                     lr=1e-3,smoothing=False,\
                         n_kernels=30,n_layers=2,expand_factor=4,d_conv=4,d_state=1):
 
@@ -29,7 +29,7 @@ def run_model(audio_path,seg_path='', model_path= '',\
     if seg_path == '':
         seg_path = audio_path
 
-    model_path += '_' + str(seed)
+    #model_path += '_' + str(seed)
     if not os.path.isdir(model_path):
         os.mkdir(model_path)
  
@@ -44,9 +44,9 @@ def run_model(audio_path,seg_path='', model_path= '',\
     dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
     model_cv_lambdas(dls,1/sr,nEpochs=nEpochs,lr=lr,\
-                    n_kernels=n_kernels,expand_factor=expand_factor,\
-                    n_layers=n_layers,d_state=d_state,d_conv=d_conv,\
-                    tau=tau,smooth_len=smooth_len,\
+                    n_kernels=n_kernels,expand_factor=8,\
+                    n_layers=3,\
+                    tau=1/sr,\
                     model_path=model_path)
     """
     ## model cv lambda here

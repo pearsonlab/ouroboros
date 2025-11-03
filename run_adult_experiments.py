@@ -117,7 +117,7 @@ def run_experiments(adult_d_ud_path='',
             print(f"Now loading {n_per_bird} from {tutor_aud.split('/')[-3]}")
             a,sr = get_segmented_audio(tutor_aud,tutor_seg,\
                                 audio_subdir='',\
-                                seg_subdir='',envelope=False,context_len=0.15,\
+                                seg_subdir='',envelope=False,context_len=0.3,\
                                 audio_type='_cleaned.wav',seg_type='.txt',\
                                     max_pairs=n_per_bird,seed=seed)
             if prev_sr == -1:
@@ -129,7 +129,7 @@ def run_experiments(adult_d_ud_path='',
 
             a,sr = get_segmented_audio(pupil_aud,pupil_seg,\
                                 audio_subdir='',\
-                                seg_subdir='',envelope=False,context_len=0.15,\
+                                seg_subdir='',envelope=False,context_len=0.3,\
                                 audio_type='_cleaned.wav',seg_type='.txt',\
                                     max_pairs=n_per_bird,seed=seed)
             assert sr == prev_sr
