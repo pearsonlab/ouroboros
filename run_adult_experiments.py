@@ -102,7 +102,7 @@ def run_experiments(adult_d_ud_path='',
     if pupil_tutor:
         pt_aud,pt_seg = adult_p_t_path,adult_p_t_path
         #birds =glob.glob(os.path.join(adult_p_t_path,'[b,g,p]*[0-9]'))
-        birds = ['blk411','blk415','blk417','blk424','blk430','blk435','grn395','pur436']
+        birds = ['blk411']#,'blk415','blk417','blk424','blk430','blk435','grn395','pur436']
         n_per_bird = max_segs//(2*len(birds))
 
         ####### need to get segments for this!!
