@@ -107,7 +107,7 @@ def run_experiments(adult_d_ud_path='',
         tutor_aud,tutor_seg = b +'_tutor', b+'_tutor'
         print(f"Now loading {n_per_bird} from {tutor_aud.split('/')[-1]}")
         a,sr = get_segmented_audio(tutor_aud,tutor_seg,\
-                            audio_subdir='/motif_audio_tutor/synchro_cleaned',\
+                            audio_subdir='/motif_audio_tutor/synchro_cleaned_v1',\
                             seg_subdir='/motif_segs',envelope=False,context_len=0.15,\
                             audio_type='_cleaned.wav',seg_type='.txt',\
                                 max_pairs=n_per_bird,seed=seed)
@@ -116,7 +116,7 @@ def run_experiments(adult_d_ud_path='',
         print(f"Now loading {n_per_bird} from {pupil_aud.split('/')[-1]}")
 
         a,sr = get_segmented_audio(pupil_aud,pupil_seg,\
-                            audio_subdir='/motif_audio/synchro_cleaned',\
+                            audio_subdir='/motif_audio/synchro_cleaned_v1',\
                             seg_subdir='/motif_segs',envelope=False,context_len=0.15,\
                             audio_type='_cleaned.wav',seg_type='.txt',\
                                 max_pairs=n_per_bird,seed=seed)
