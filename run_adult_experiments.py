@@ -110,6 +110,7 @@ def run_experiments(adult_d_ud_path='',
         ## label da segments, add some functionality for your segment label sylls to allow 
         # labeling prelabelled syllables
         audios=[]
+        prev_sr = -1
         for b in birds:
             b = os.path.join(adult_p_t_path,b)
             tutor_aud,tutor_seg = os.path.join(b +'_tutor','motif_audio_tutor','synchro_cleaned_v1'), os.path.join(b+'_tutor','motif_segs')
@@ -119,6 +120,9 @@ def run_experiments(adult_d_ud_path='',
                                 seg_subdir='',envelope=False,context_len=0.15,\
                                 audio_type='_cleaned.wav',seg_type='.txt',\
                                     max_pairs=n_per_bird,seed=seed)
+            if prev_sr == -1:
+                prev_sr = sr
+            assert sr == prev_sr
             audios.append(np.vstack(a))
             pupil_aud,pupil_seg = os.path.join(b,'motif_audio','synchro_cleaned_v1'),os.path.join(b,'motif_segs')
             print(f"Now loading {n_per_bird} from {pupil_aud.split('/')[-3]}")
@@ -128,6 +132,7 @@ def run_experiments(adult_d_ud_path='',
                                 seg_subdir='',envelope=False,context_len=0.15,\
                                 audio_type='_cleaned.wav',seg_type='.txt',\
                                     max_pairs=n_per_bird,seed=seed)
+            assert sr == prev_sr
             audios.append(np.vstack(a))
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed,batch_size=batch_size)
 
