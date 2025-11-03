@@ -18,7 +18,7 @@ def run_experiments(adult_d_ud_path='',
                     tau=1e-4,lr=1e-3,n_kernels=10,
                     max_segs=3000,nEpochs=200,
                     dir_undir=True,
-                    pupil_tutor=True):
+                    pupil_tutor=True,batch_size=32):
     
 
     ## for the adult syll path, we're going to use blu285 or something idk
@@ -46,7 +46,7 @@ def run_experiments(adult_d_ud_path='',
                             audio_type='_cleaned.wav',seg_type='.txt',\
                                 max_pairs=max_segs,seed=seed)
         #print(sr)
-        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed,batch_size=batch_size)
 
         #print(np.amax(audios),np.amin(audios))
         dud_model = model_cv_lambdas(dls,1/sr,\
@@ -129,7 +129,7 @@ def run_experiments(adult_d_ud_path='',
                                 audio_type='_cleaned.wav',seg_type='.txt',\
                                     max_pairs=n_per_bird,seed=seed)
             audios.append(np.vstack(a))
-        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed,batch_size=batch_size)
 
         pt_model = model_cv_lambdas(dls,1/sr,\
                                         nEpochs=200,model_path=pupil_tutor_modelpath,
