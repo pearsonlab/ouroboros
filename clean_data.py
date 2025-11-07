@@ -3,13 +3,15 @@ import time
 import glob
 import os
 from fire import Fire
+#import noisereduce as nr
 
 
 def preprocess_data(audio_loc,seg_loc,out_ext,\
                     audio_subdirs='',seg_subdirs='',\
                         audio_ext='.wav',seg_ext='.txt',parallel = True,
                         reprocess=True,
-                        clean_type='ssq'):
+                        clean_type='ssq',
+                        reduce_noise=True):
     
 
     ## default: grabs all subdirs
@@ -78,13 +80,13 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     #print(audio_files[:5],seg_files[:5])
     assert len(audio_files) > 0, print("no audio files! check your directories & subdirs")
     #print(len(audio_files),len(seg_files))
-    hps = tune_preprocessing(audio_files,seg_files,HP_DICT,preprocess_type=clean_type)
+    hps = tune_preprocessing(audio_files,seg_files,HP_DICT,preprocess_type=clean_type,reduce_noise=reduce_noise)
 
     print('now cleaning data!')
     start = time.time()
     preprocess(audio_dirs,out_dirs,hps,audio_ext=audio_ext,
                parallel=parallel,reprocess=reprocess,
-               preprocess_type=clean_type)
+               preprocess_type=clean_type,reduce_noise=reduce_noise)
     end = time.time()
     print(f"preprocessed your data in {end - start :.2f}s! If you have other files to preprocess, it'll probably take that long")
 

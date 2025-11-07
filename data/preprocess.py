@@ -11,6 +11,7 @@ import os
 from itertools import repeat
 from joblib import Parallel,delayed
 from utils import butter_filter
+import noisereduce as nr
 
 ### wavelets:
 #morlet: higher mu -> greater frequency, lesser time resolution. for mu > 6
@@ -27,7 +28,9 @@ HP_DICT = {
     'band max': 10000.,
     'nv': 32, #number of voices (wavelets per octave),
     'scales': 'log-piecewise',
-    'order':5 # polynomial order for band-pass filter
+    'order':5, # polynomial order for band-pass filter,
+    'prop_reduce':1, # proportion of noise to reduce, if reducing noise
+    'squeeze_freqs':True
 }
 
 WAVELET_HP_DICT = {
@@ -176,7 +179,7 @@ def _tune_input_helper(p):
     return p
 
 def _tuning_plot(orig_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
-                 scaleogram,min_band,max_band,vmin=0,vmax=1,\
+                 scaleogram,min_band,max_band,vmin=-0.5,vmax=1.5,\
                     save_loc='./pp.pdf'):
 
     
@@ -202,7 +205,7 @@ def _tuning_plot(orig_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
 
     vmin_scale = np.amin(scaleogram)
     vmax_scale = np.amax(scaleogram)
-    vmax_scale = (vmax_scale - vmin_scale)/10 + vmin_scale
+    vmax_scale = (vmax_scale - vmin_scale)/50 + vmin_scale
     fig,axs = plt.subplots(nrows=1,ncols=3,figsize=(13,4))
     spec_extent = [ts[0],ts[-1],spec_freqs[0],spec_freqs[-1]]
     scale_extent = [ts[0],ts[-1],nf,0]
@@ -224,7 +227,7 @@ def _tuning_plot(orig_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
     plt.close('all')
 
 
-def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',img_fn='./pp.pdf'):
+def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',img_fn='./pp.pdf',reduce_noise=True):
 
     """
     tune preprocessing parameters for denoising spectrograms
@@ -276,6 +279,9 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
                 
             elif '.flac' in audio_fn:
                 a,sr = sf.read(audio_fn)
+
+            if reduce_noise:
+                a = nr.reduce_noise(y=a,sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,stationary=False)
             orig_dtype = a.dtype
             on_ind,off_ind = int(round(on*sr)),int(round(off*sr))
 
@@ -298,14 +304,20 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             vmax = (vmax - vmin)/10 + vmin
             cwt_kws = {'wavelet': (p['wavelet'],WAVELET_HP_DICT[p['wavelet']]),'nv':p['nv'],'scales':p['scales']}
 
+            if p['squeeze_freqs']:
+                band_min = p['band min']
+                band_max = p['band max']
+            else:
+                band_min = 0
+                band_max = int(round(sr)/2)
             if preprocess_type == 'ssq':
                                 # processing ssq cwt
                 recon_a,cwt_freqs,ssq_scaleogram = ssq_preprocess(orig_audio,t,cwt_kws,\
                                                         p['chunk length'],show=False,\
-                                                            min_band=p['band min'],max_band=p['band max'])
+                                                            min_band=band_min,max_band=band_max)
             else:
-                recon_a,cwt_freqs,ssq_scaleogram = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=p['band min'],
-                                               high_cut=p['band max'],fs=sr,return_full_ssq=True,
+                recon_a,cwt_freqs,ssq_scaleogram = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=band_min,
+                                               high_cut=band_max,fs=sr,return_full_ssq=True,
                                                kw=cwt_kws,tn=t,show=False,order=p['order'])
             recon_a = recon_a.astype(orig_dtype)
             wavfile.write('./test_wav.wav',rate=sr,data=recon_a)
@@ -333,7 +345,7 @@ def filter_by_tags(audio_files,seg_files,audio_tags,seg_tags):
 
     return filtered_audio_files,filtered_seg_files			
 
-def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preprocess_type):
+def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preprocess_type,reduce_noise):
 
     print(f"processing directory {in_dir} \n")
     print(f"{'' if reprocess else 'not '}reprocessing files")
@@ -356,23 +368,27 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preproc
             orig_audio,sr = sf.read(af)
 
         orig_dtype = orig_audio.dtype
+        if reduce_noise:
+            orig_audio = nr.reduce_noise(y=orig_audio,sr=sr,prop_decrease=hyperparameters['prop_reduce'],time_constant_s=0.4,stationary=False)
 
         cwt_kws = {'wavelet': (hyperparameters['wavelet'],WAVELET_HP_DICT[hyperparameters['wavelet']]),
                     'nv':hyperparameters['nv'],
                     'scales':hyperparameters['scales']}
         try:
             t = np.arange(0,len(orig_audio)/sr,1/sr)[:len(orig_audio)]
-
-            if preprocess_type == 'ssq':
-                recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
-                                                            hyperparameters['chunk length'],show=False,\
-                                                            min_band=hyperparameters['band min'],\
-                                                            max_band=hyperparameters['band max'],\
-                                                                return_full_ssq=False)
-            elif preprocess_type == 'band-pass':
-                recon_a,*_ = band_pass_preprocess(orig_audio,p['chunk length'],low_cut=hyperparameters['band min'],
-                                               high_cut=hyperparameters['band max'],fs=sr,return_full_ssq=True,
-                                               kw=cwt_kws,tn=t,show=False)
+            if hyperparameters['squeeze_freqs']:
+                if preprocess_type == 'ssq':
+                    recon_a,*_ = ssq_preprocess(orig_audio,t,cwt_kws,\
+                                                                hyperparameters['chunk length'],show=False,\
+                                                                min_band=hyperparameters['band min'],\
+                                                                max_band=hyperparameters['band max'],\
+                                                                    return_full_ssq=False)
+                elif preprocess_type == 'band-pass':
+                    recon_a,*_ = band_pass_preprocess(orig_audio,hyperparameters['chunk length'],low_cut=hyperparameters['band min'],
+                                                high_cut=hyperparameters['band max'],fs=sr,return_full_ssq=True,
+                                                kw=cwt_kws,tn=t,show=False)
+            else:
+                recon_a = orig_audio
 
         except:
             print(f"error in processing {af}")
@@ -382,13 +398,13 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preproc
         recon_a = recon_a.astype(orig_dtype)
         wavfile.write(new_fn,rate=sr,data=recon_a)
 
-def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False,reprocess=True,preprocess_type='ssq'):
+def preprocess(audio_dirs,out_dirs,hp_dict,audio_ext='.wav',parallel = False,reprocess=True,preprocess_type='ssq',reduce_noise=True):
 
     assert len(audio_dirs) == len(out_dirs), print(f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs")
     #print(hp_dict)
     if parallel:
         n_jobs = int(os.cpu_count() // 2)
-        gen = zip(audio_dirs,out_dirs,repeat(hp_dict),repeat(audio_ext),repeat(reprocess),repeat(preprocess_type))
+        gen = zip(audio_dirs,out_dirs,repeat(hp_dict),repeat(audio_ext),repeat(reprocess),repeat(preprocess_type),repeat(reduce_noise))
         Parallel(n_jobs = n_jobs)(delayed(preprocess_helper)(*args) for args in gen)
         
     else:

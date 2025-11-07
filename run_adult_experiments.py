@@ -41,7 +41,7 @@ def run_experiments(adult_d_ud_path='',
         dud_seg = os.path.join(adult_d_ud_path,'song_segs')
 
     
-        audios,sr = get_segmented_audio(dud_aud,dud_seg,audio_subdir='[U,D]*/synchro_cleaned_v1',\
+        audios,sr = get_segmented_audio(dud_aud,dud_seg,audio_subdir='[U,D]*/double_denoised',\
                             seg_subdir='[U,D]*',envelope=False,context_len=0.15,\
                             audio_type='_cleaned.wav',seg_type='.txt',\
                                 max_pairs=max_segs,seed=seed)
