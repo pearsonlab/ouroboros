@@ -294,8 +294,8 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             if reduce_noise:
                 noise_reduced_chunk_on = max(0,on_ind-sr)
                 on_diff = on_ind - noise_reduced_chunk_on
-                off_diff = noise_reduced_chunk_off - off_ind
                 noise_reduced_chunk_off = min(len(a),off_ind+sr)
+                off_diff = noise_reduced_chunk_off - off_ind
                 a = nr.reduce_noise(y=a[noise_reduced_chunk_on:noise_reduced_chunk_off],sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,stationary=False)
                 orig_audio = a[on_diff:-off_diff]
             print(orig_audio.shape)
