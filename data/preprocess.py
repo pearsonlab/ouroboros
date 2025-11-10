@@ -280,8 +280,7 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             elif '.flac' in audio_fn:
                 a,sr = sf.read(audio_fn)
 
-            if reduce_noise:
-                a = nr.reduce_noise(y=a,sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,stationary=False)
+            
             orig_dtype = a.dtype
             on_ind,off_ind = int(round(on*sr)),int(round(off*sr))
 
@@ -292,6 +291,13 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
                 off += diff/sr
                 print(f'extending segment by {diff/sr:.2f}s')
             orig_audio = a[on_ind:off_ind]
+            if reduce_noise:
+                noise_reduced_chunk_on = max(0,on_ind-sr)
+                on_diff = on_ind - noise_reduced_chunk_on
+                off_diff = noise_reduced_chunk_off - off_ind
+                noise_reduced_chunk_off = min(len(a),off_ind+sr)
+                a = nr.reduce_noise(y=a[noise_reduced_chunk_on:noise_reduced_chunk_off],sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,stationary=False)
+                orig_audio = a[on_diff:-off_diff]
             print(orig_audio.shape)
             print(len(orig_audio)/sr, off-on)
 
