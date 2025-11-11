@@ -14,9 +14,9 @@ import gc
 import glob
 import torch
 
-def run_experiments(budgie_data_path='',marmo_data_path='',
+def run_experiments(budgie_data_path='',marmo_data_path='',zf_data_path='',
                     model_path='',seed=92,tau=1e-4,lr=1e-3,n_kernels=10,
-                    budgie=True,marmoset=True):
+                    budgie=True,marmoset=True,zf=False):
     
     #tau = float(tau)
 
@@ -25,6 +25,7 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
 
     budgie_model_path = os.path.join(model_path,'budgies')
     marmo_model_path = os.path.join(model_path,'marmos')
+    zf_model_path= os.path.join(model_path,'zebra_finchs')
     #### let's do budgie data first ##########
     if budgie:
         print("budgie training and analysis")
@@ -84,6 +85,66 @@ def run_experiments(budgie_data_path='',marmo_data_path='',
 
         #### then marmoset data
         print("Done!")
+
+    if zf:
+        print("zebra finch training and analysis")
+        zf_audio_path,zf_seg_path= zf_data_path,zf_data_path
+
+        audios,sr = get_segmented_audio(zf_audio_path,zf_seg_path,audio_subdir='',\
+                                    seg_subdir='',envelope=False,context_len=0.15,\
+                                    audio_type='_cleaned.wav',seg_type='_syllableTimeStamp.txt',\
+                                        max_pairs=3000,seed=seed)
+        dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
+        tau = 1/sr
+        zf_model = model_cv_lambdas(dls,1/sr,\
+                                        nEpochs=400,model_path=zf_model_path,
+                                        lr=lr,tau=tau,n_kernels=n_kernels)
+        
+        if os.path.isfile(os.path.join(zf_model_path,'eval_data.pkl')):
+            with open(os.path.join(zf_model_path,'eval_data.pkl'),'rb') as f:
+                zf_eval_dict = pickle.load(f)
+        else:
+            zf_r2s,zf_best,zf_resids,zf_spec_ratio,zf_specs,zf_ext = full_eval_model(zf_model,dls,audios,1/sr,use_results=False,\
+                            n_int=50,plot_dir=zf_model_path,plot_steps=False)
+            
+            zf_eval_dict={'r2s':zf_r2s,
+                            'best_data':zf_best,
+                            'resids':zf_resids,
+                            'spec_ratio':zf_spec_ratio,
+                            'specs':zf_specs,
+                            'ext':zf_ext}
+
+            with open(os.path.join(zf_model_path,'eval_data.pkl'),'wb') as f:
+                pickle.dump(zf_eval_dict,f)
+
+        if os.path.isfile(os.path.join(zf_model_path,'func_data.pkl')):
+            with open(os.path.join(budgie_model_path,'func_data.pkl'),'rb') as f:
+                budgie_func_dict = pickle.load(f)
+        else:
+            b_o,b_g,b_k,b_w,b_a = get_budgie_fncs(budgie_model,budgie_audio_path,budgie_seg_path,seed=seed,cut_percentile=75)
+
+            budgie_func_dict = {
+                'omegas':b_o,
+                'gammas':b_g,
+                'kernels':b_k,
+                'weights':b_w,
+                'audio':b_a
+            }
+
+            with open(os.path.join(budgie_model_path,'func_data.pkl'),'wb') as f:
+                pickle.dump(budgie_func_dict,f)
+
+        del audios
+        del dls
+        #del budgie_model
+        #del budgie_eval_dict 
+        #del budgie_func_dict() 
+        gc.collect()
+
+
+        #### then marmoset data
+        print("Done!")
+
 
     if marmoset:
         print("Marmoset training and analysis")
