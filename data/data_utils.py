@@ -5,14 +5,19 @@ from sklearn.model_selection import train_test_split
 from scipy.interpolate import make_interp_spline,make_smoothing_spline
 from tqdm import tqdm
 from scipy.signal import savgol_filter
+from utils import deriv_approx_d2y,deriv_approx_dy
 
 
 class aud_neur_ds(Dataset):
 
-    def __init__(self,data):
+    def __init__(self,data,deriv_approx= 'nine-point'):
         self.x = data
-        self.dxdt = savgol_filter(self.x,window_length=5,polyorder=3,deriv=1,axis=1)
-        self.dx2dt2 = savgol_filter(self.x,window_length=5,polyorder=3,deriv=2,axis=1)
+        if deriv_approx == 'savgol':
+            self.dxdt = savgol_filter(self.x,window_length=5,polyorder=3,deriv=1,axis=1)
+            self.dx2dt2 = savgol_filter(self.x,window_length=5,polyorder=3,deriv=2,axis=1)
+        elif deriv_approx == 'nine-point':
+            self.dxdt = deriv_approx_dy(self.x)
+            self.dx2dt2 = deriv_approx_d2y(self.x)
 
     def __len__(self):
 
