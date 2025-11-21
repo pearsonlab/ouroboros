@@ -9,15 +9,30 @@ from utils import deriv_approx_d2y,deriv_approx_dy
 
 
 class aud_neur_ds(Dataset):
+    """
+    think about how to change this to accept lists, rather than arrays
+    (probably just map, but make sure this works with arrays still)
+    """
 
-    def __init__(self,data,deriv_approx= 'nine-point'):
+    def __init__(self,data,deriv_approx= 'nine-point',dxdt = [],dx2dt2=[]):
         self.x = data
-        if deriv_approx == 'savgol':
-            self.dxdt = savgol_filter(self.x,window_length=5,polyorder=3,deriv=1,axis=1)
-            self.dx2dt2 = savgol_filter(self.x,window_length=5,polyorder=3,deriv=2,axis=1)
-        elif deriv_approx == 'nine-point':
-            self.dxdt = deriv_approx_dy(self.x)
-            self.dx2dt2 = deriv_approx_d2y(self.x)
+        if len(dxdt) > 0:
+            self.dxdt = dxdt
+            assert np.all(self.x.shape == self.dxdt.shape), print("x and dx must have the same shapes")
+        else:
+            if deriv_approx == 'savgol':
+                self.dxdt = savgol_filter(self.x,window_length=5,polyorder=3,deriv=1,axis=1)
+            elif deriv_approx == 'nine-point':
+                self.dxdt = deriv_approx_dy(self.x)
+        if len(dx2dt2) > 0:
+            self.dx2dt2 = dx2dt2
+            assert np.all(self.x.shape == self.dx2dt2.shape), print("x and d2x must have the same shapes")
+
+        else:
+            if deriv_approx == 'savgol':
+                self.dx2dt2 = savgol_filter(self.x,window_length=5,polyorder=3,deriv=2,axis=1)
+            elif deriv_approx == 'nine-point':
+                self.dx2dt2 = deriv_approx_d2y(self.x)
 
     def __len__(self):
 
