@@ -264,7 +264,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             #alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
             l = loss# + alpha*trend_penalty
             if reg_weights:
-                weights = weights * model.tau
+                weights = weights #* model.tau
                 B,L,P,P = weights.shape
                 lam_mat = torch.arange(P,\
                                        dtype=torch.float32,\
@@ -364,7 +364,7 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     l = loss_fn(y,yhat[:,:L,:])
                     tot = sst(y)
                     if reg_weights:
-                        weights = weights * model.tau
+                        weights = weights# * model.tau
                         B,L,P,P = weights.shape
                         lam_mat = torch.arange(P,\
                                             dtype=torch.float32,\
