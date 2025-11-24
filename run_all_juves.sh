@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CAGBirds=("blk521" "org512" "org545" "pur567")
+CAGBirds=("org545" "blk521" "org512" "pur567")
 CaMKIIBirds=("grn573" "blk603")
 
 for bird in ${CAGBirds[@]}; do
