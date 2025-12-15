@@ -168,16 +168,16 @@ from scipy import signal
 def butter(cutoff, fs, order=5,btype='high'):
     nyq = 0.5 * fs
     normal_cutoff = cutoff / nyq
-    b, a = signal.butter(order, normal_cutoff, btype=btype, analog=False)
-    return b, a
+    sos = signal.butter(order, normal_cutoff, btype=btype, analog=False,output='sos')
+    return sos
 
 def butter_filter(data, cutoff, fs, order=5,axis=-1,btype='high'):
     """
     if you want this to be a bandpass filter, cutoff needs to be an np.array,
     btype needs to be 'band'
     """
-    b, a = butter(cutoff, fs, order=order,btype=btype)
-    y = signal.filtfilt(b, a, data,axis=axis)
+    sos = butter(cutoff, fs, order=order,btype=btype)
+    y = signal.sosfiltfilt(sos, data,axis=axis)
     return y
 
 def huber_loss(x,delta=1):

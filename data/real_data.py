@@ -154,7 +154,7 @@ def get_sylltype_from_mat(matfiles,max_vocs=500,voctype='trill'):
 def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                         max_pairs=5000,context_len=0.03,envelope=False,audio_type='.wav',
                         seg_type='.txt',seed=None,full_vocs=False,extend=True,
-                        padding=0.):
+                        padding=0.,shuffle_order=True):
     
     """
     Takes as input a path to audio and segments (along with any
@@ -227,9 +227,10 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     #print(len(wavs))
     #print(len(segs))
     assert len(wavs) == len(segs), print(f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments")
-    order = np.random.choice(len(wavs),len(wavs),replace=False)
-    wavs = [wavs[o] for o in order]
-    segs = [segs[o] for o in order]
+    if shuffle_order:
+        order = np.random.choice(len(wavs),len(wavs),replace=False)
+        wavs = [wavs[o] for o in order]
+        segs = [segs[o] for o in order]
     audio_segs = []
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')

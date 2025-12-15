@@ -154,10 +154,10 @@ class fullPolyModule(kernelModule):
         ### y, ydot terms
         weights[:,:,1,0] = weights[:,:,1,0] * 0 
         weights[:,:,0,1] = weights[:,:,0,1] * 0 
+        power_mat = (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)).pow(self.powers)
 
         z1 = power_mat[:,:,:1,:]
         z2 = power_mat[:,:,1:,:]
-        power_mat = (x[:,:,:,None].expand(-1,-1,-1,self.poly_dim+1)).pow(self.powers)
         power_mat = torch.einsum('bldp,bldk -> blpk',z1,z2)
         x = torch.einsum('blpd,blpd -> bl',weights,power_mat)
         #x = torch.einsum('bldj,bldj->bld',x,torch.flip(power_mat,[2])) 
