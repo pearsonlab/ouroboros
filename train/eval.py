@@ -37,10 +37,12 @@ def integrate_model_d2(model,audio,dt,method='rk4',use_omega=True,use_gamma=True
 
     t_steps = np.arange(0,L*dt+dt/2,dt)[:L]
 
-    audio = torch.from_numpy(audio[None,:,None]).to(torch.float32).to('cuda')
+    audio = audio[None,:,None]
     dy = deriv_approx_dy(audio)
     ic = torch.from_numpy(np.hstack([audio.squeeze()[0],dy.squeeze()[0]/dt],axis=1)).to(torch.float32).to('cuda')
-
+    audio = torch.from_numpy(audio).to(torch.float32).to('cuda')
+    dy = torch.from_numpy(audio).to(torch.float32).to('cuda')
+    
     with torch.no_grad():
         omega,gamma,_,weights,_ = model.get_funcs(audio,dy,dt,smoothing=smoothing)
 
