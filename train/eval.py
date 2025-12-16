@@ -39,9 +39,10 @@ def integrate_model_d2(model,audio,dt,method='rk4',use_omega=True,use_gamma=True
 
     audio = audio[None,:,None]
     dy = deriv_approx_dy(audio)
-    ic = torch.from_numpy(np.hstack([audio.squeeze()[0],dy.squeeze()[0]/dt],axis=1)).to(torch.float32).to('cuda')
+    
     audio = torch.from_numpy(audio).to(torch.float32).to('cuda')
-    dy = torch.from_numpy(audio).to(torch.float32).to('cuda')
+    dy = torch.from_numpy(dy).to(torch.float32).to('cuda')
+    ic = torch.hstack([audio[0,0,0],dy[0,0,0]/dt])
     
     with torch.no_grad():
         omega,gamma,_,weights,_ = model.get_funcs(audio,dy,dt,smoothing=smoothing)
@@ -49,7 +50,8 @@ def integrate_model_d2(model,audio,dt,method='rk4',use_omega=True,use_gamma=True
     audio = audio.detach().cpu().numpy().squeeze()
     dy = dy.detach().cpu().numpy().squeeze()/dt*model.tau
     omega,gamma =omega.detach().cpu().numpy().squeeze(),gamma.detach().cpu().numpy().squeeze()
-    z = np.concatenate([audio,dy],axis=-1)
+    weights = weights.detach().cpu().numpy().squeeze()
+    z = np.stack([audio,dy],axis=-1)
 
     if null_comparison:
         if use_omega:
@@ -61,7 +63,7 @@ def integrate_model_d2(model,audio,dt,method='rk4',use_omega=True,use_gamma=True
         
         if use_nonlinearity:
 
-            kernel = model.kernel.forward_given_weights_numpy(z.detach().cpu().numpy(),weights[None,:,:,:]).squeeze()
+            kernel = model.kernel.forward_given_weights_numpy(z,weights[None,:,:,:]).squeeze()
             
             yhat += -kernel
     else:
@@ -75,13 +77,13 @@ def integrate_model_d2(model,audio,dt,method='rk4',use_omega=True,use_gamma=True
 
         if use_nonlinearity:
             
-            kernel = model.kernel.forward_given_weights_numpy(z.detach().cpu().numpy(),weights[None,:,:,:]).squeeze()
+            kernel = model.kernel.forward_given_weights_numpy(z,weights[None,:,:,:]).squeeze()
             
             yhat += -kernel
     
     yhat = yhat/model.tau**2
 
-    ic = torch.from_numpy(np.hstack([audio[0],dy[0]/dt],axis=1)).to(torch.float32).to('cuda')
+    
     integrated = integrate_second_deriv(yhat,ic=ic,eval_times= t_steps,method=method,verbose=verbose)
 
     return integrated
@@ -92,19 +94,18 @@ def integrate_estimated_d2(audio,dt,method='rk4',verbose=True):
 
     t_steps = np.arange(0,L*dt+dt/2,dt)[:L]
 
-    yhat = deriv_approx_d2y(audio[None,:,None]).squeeze()
+    yhat = deriv_approx_d2y(audio[None,:,None]).squeeze()/dt**2
     dy = deriv_approx_dy(audio[None,:,None]).squeeze()
 
-    ic = torch.from_numpy(np.hstack([audio[0],dy[0]/dt],axis=1)).to(torch.float32).to('cuda')
+    ic = torch.from_numpy(np.hstack([audio[0],dy[0]/dt])).to(torch.float32).to('cuda')
     integrated = integrate_second_deriv(yhat,ic,t_steps,method=method,verbose=verbose)
 
     return integrated
 
-
 def integrate_second_deriv(deriv_approx,ic,eval_times,method='rk4',verbose=True):
 
     deriv_interp = make_interp_spline(eval_times,deriv_approx)
-
+    #print(ic.shape)
     def dz_hat(t,z):
 
         if verbose:
@@ -114,6 +115,7 @@ def integrate_second_deriv(deriv_approx,ic,eval_times,method='rk4',verbose=True)
         dz2 = torch.from_numpy(np.array([deriv_interp(t)])).to('cuda').to(torch.float32)
 
         dz1 = z[1]
+        
 
         return torch.hstack([dz1,dz2])
 
