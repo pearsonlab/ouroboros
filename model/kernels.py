@@ -187,7 +187,7 @@ class fullPolyModule(kernelModule):
         power_mat = np.power(np.tile(x[:,:,:,None],(1,1,1,self.poly_dim+1)),powers)
         z1 = power_mat[:,:,:1,:]
         z2 = power_mat[:,:,1:,:]
-        power_mat = np.einsum('blpd,bldk->blpk',z1,z2)
+        power_mat = np.einsum('bldp,bldk->blpk',z1,z2)
         x = np.einsum('blpd,blpd->bl',weights,power_mat)
         
         return x[:,:,None]
