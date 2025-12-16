@@ -828,7 +828,7 @@ class rkhs_ouroboros(simple_ouroboros):
     def forward(self,x,dxdt,dt,smoothing=False):
         """
         predicts second derivative at time t.
-        all other predictions should be done in the train look (train_utils.py)
+        all other predictions should be done in the train loop (train_utils.py)
         """
         
         #print(torch.amax(dxdt),torch.amin(dxdt))

@@ -119,6 +119,7 @@ class fullPolyModule(kernelModule):
         _,_,n = z.shape
         weights = self.activation(self.weights(z))
         if not self.trend_filtering:
+            assert False
             weights = smooth(weights,smooth_len)
         weights=weights.view(B,L,self.poly_dim+1,self.poly_dim+1)
         ### constant term
@@ -133,6 +134,10 @@ class fullPolyModule(kernelModule):
         z1 = power_mat[:,:,:1,:]
         z2 = power_mat[:,:,1:,:]
         power_mat = torch.einsum('bldp,bldk -> blpk',z1,z2)
+        ###
+        ## batch x time x 1 (y [z1] or dy [z2]) x n poly
+        ## -> batch x time x y degree x dy degree
+
 
         x = torch.einsum('blpd,blpd -> bl',weights,power_mat)
         #lam_mat = torch.full((B,L,self.poly_dim),self.lam,device=self.device).pow(self.powers)[:,:,:,None]
