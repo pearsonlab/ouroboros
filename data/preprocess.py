@@ -283,7 +283,7 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             
             orig_dtype = a.dtype
             on_ind,off_ind = int(round(on*sr)),int(round(off*sr))
-            
+
             curr_len = off_ind - on_ind
             if len(a) < p['chunk length']:
                 print('short audio,skipping')
@@ -296,7 +296,7 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
                 print(f'extending segment by {diff/sr:.2f}s')
             
             orig_audio = a[on_ind:off_ind]
-            print(orig_audio.shape)
+            #print(orig_audio.shape)
             if reduce_noise:
                 noise_reduced_chunk_on = max(0,on_ind-sr)
                 on_diff = on_ind - noise_reduced_chunk_on
@@ -307,8 +307,8 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
                 a = nr.reduce_noise(y=a[noise_reduced_chunk_on:noise_reduced_chunk_off],sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,
                                     stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
                 orig_audio = a[on_diff:-off_diff]
-            print(orig_audio.shape)
-            print(len(orig_audio)/sr, off-on)
+            #print(orig_audio.shape)
+            #print(len(orig_audio)/sr, off-on)
 
             t = np.arange(0,off-on,1/sr)[:len(orig_audio)]
             
