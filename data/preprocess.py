@@ -283,20 +283,29 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             
             orig_dtype = a.dtype
             on_ind,off_ind = int(round(on*sr)),int(round(off*sr))
-
+            
             curr_len = off_ind - on_ind
+            if len(a) < p['chunk length']:
+                print('short audio,skipping')
+                continue
             if curr_len < p['chunk length']:
                 diff = p['chunk length'] - curr_len
                 off_ind += diff 
                 off += diff/sr
+
                 print(f'extending segment by {diff/sr:.2f}s')
+            
             orig_audio = a[on_ind:off_ind]
+            print(orig_audio.shape)
             if reduce_noise:
                 noise_reduced_chunk_on = max(0,on_ind-sr)
                 on_diff = on_ind - noise_reduced_chunk_on
                 noise_reduced_chunk_off = min(len(a),off_ind+sr)
                 off_diff = noise_reduced_chunk_off - off_ind
-                a = nr.reduce_noise(y=a[noise_reduced_chunk_on:noise_reduced_chunk_off],sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,stationary=False)
+                nyquist = sr//2
+                freq_mask_smooth_hz = int(round(2.5*nyquist/100)) #default: 500, scale by frequency range (let's do 2.5% of frequency range)
+                a = nr.reduce_noise(y=a[noise_reduced_chunk_on:noise_reduced_chunk_off],sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,
+                                    stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
                 orig_audio = a[on_diff:-off_diff]
             print(orig_audio.shape)
             print(len(orig_audio)/sr, off-on)
@@ -375,7 +384,11 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preproc
 
         orig_dtype = orig_audio.dtype
         if reduce_noise:
-            orig_audio = nr.reduce_noise(y=orig_audio,sr=sr,prop_decrease=hyperparameters['prop_reduce'],time_constant_s=0.4,stationary=False)
+            nyquist = sr//2
+            freq_mask_smooth_hz = int(round(2.5*nyquist/100)) #default: 500, scale by frequency range (let's do 2.5% of frequency range)
+
+            orig_audio = nr.reduce_noise(y=orig_audio,sr=sr,prop_decrease=hyperparameters['prop_reduce'],
+                                         time_constant_s=0.4,stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
 
         cwt_kws = {'wavelet': (hyperparameters['wavelet'],WAVELET_HP_DICT[hyperparameters['wavelet']]),
                     'nv':hyperparameters['nv'],
