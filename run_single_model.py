@@ -40,7 +40,7 @@ def run_model(model_path='',audio_path='',seg_path='',audio_subdir='',seg_subdir
                                     max_pairs=max_vocs,seed=seed)
     
     dls = get_loaders(np.vstack(a),cv=True,train_size=0.6,seed=seed)
-    print(np.vstack(a).shape)
+    #print(np.vstack(a).shape)
     tau = 1/sr
 
     model = model_cv_lambdas(dls,1/sr,\
