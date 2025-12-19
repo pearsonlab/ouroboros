@@ -8,7 +8,7 @@ import fire
 def run_model(model_path='',audio_path='',seg_path='',audio_subdir='',seg_subdir='',
               audio_tag='_cleaned.wav',seg_tag='.txt',max_vocs=2000,
               context_len=0.15,nEpochs=200,seed=92,
-              lr=1e-3,n_kernels=10
+              lr=1e-3,n_kernels=10,batch_size=32
               ):
     """
     Docstring for run_model
@@ -39,7 +39,7 @@ def run_model(model_path='',audio_path='',seg_path='',audio_subdir='',seg_subdir
                                 audio_type=audio_tag,seg_type=seg_tag,\
                                     max_pairs=max_vocs,seed=seed)
     
-    dls = get_loaders(np.vstack(a),cv=True,train_size=0.6,seed=seed)
+    dls = get_loaders(np.vstack(a),cv=True,train_size=0.6,seed=seed,batch_size=batch_size,dt=1/sr)
     #print(np.vstack(a).shape)
     tau = 1/sr
 
