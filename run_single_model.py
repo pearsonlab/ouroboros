@@ -42,9 +42,11 @@ def run_model(model_path='',audio_path='',seg_path='',audio_subdir='',seg_subdir
     
     dls = get_loaders(np.vstack(a),cv=True,train_size=0.6,seed=seed,batch_size=batch_size,dt=1/sr)
     #print(np.vstack(a).shape)
+    print(f"tau = {tau}")
     if tau > 1/sr:
         tau = 1/sr
     #tau = 1/sr
+    print(f"tau = {tau}")
 
     model = model_cv_lambdas(dls,1/sr,\
                                 nEpochs=nEpochs,model_path=model_path,
