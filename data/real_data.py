@@ -168,6 +168,10 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
         
     """
 
+    #if audio_subdir[-1] != '/' and audio_subdir != '':
+    #    audio_subdir += '/'
+    #if seg_subdir[-1] != '/' and seg_subdir != '':
+    #    seg_subdir += '/'
     random.seed(seed)
     audio_dirs = glob.glob(os.path.join(audiopath,audio_subdir))
     seg_dirs = glob.glob(os.path.join(segpath,seg_subdir))
@@ -175,8 +179,10 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     seg_dirs.sort()
     split_aud_sub = audio_subdir.split('/')
     split_seg_sub = seg_subdir.split('/')
-    aud_sub_depth=1 if audio_subdir == '' else len(split_aud_sub)
-    seg_sub_depth=1 if seg_subdir == '' else len(split_seg_sub)
+    aud_sub_depth=0 if audio_subdir == '' else len(split_aud_sub)
+    seg_sub_depth=0 if seg_subdir == '' else len(split_seg_sub)
+
+    aud_sub_depth += 1
 
     audio_tags = [a[:-1].split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s[:-1].split('/')[-seg_sub_depth] for s in seg_dirs]
