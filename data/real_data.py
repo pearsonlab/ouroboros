@@ -271,6 +271,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                                        context_len=context_len,env=envelope,\
                                         current_total=current_total,full_vocs=full_vocs,
                                         extend=extend,padding=padding)
+                print(len(audios))
                 #print(len(audios))
                 if not full_vocs:
                     audio_segs += audios
