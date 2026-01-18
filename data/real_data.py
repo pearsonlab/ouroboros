@@ -183,6 +183,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     seg_sub_depth=0 if seg_subdir == '' else len(split_seg_sub)
 
     aud_sub_depth += 1
+    seg_sub_depth += 1
 
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
