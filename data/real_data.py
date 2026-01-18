@@ -78,10 +78,12 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,
                     aud = aud[: - cut_len]
 
                 aud = aud.reshape(-1,chunk_len,aud.shape[-1])
+
+                auds.append([a[None,:,:] for a in aud])
             else:
                 aud = aud.reshape(1,-1,1)
 
-            auds.append(aud)
+                auds.append(aud)
             
             ii += len(aud)
             print(f'current_total: {ii} samples',end='\r',flush=True)
@@ -243,15 +245,15 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     #print(f'number of segs: {len(segs)}')
     current_total=0
     if '.mat' not in audio_type:
-        for ii,(w,v) in enumerate(zip(wavs,segs)):
-            
-            if '.wav' in audio_type:
-                sr,audio = wavfile.read(w)
-            elif '.flac' in audio_type:
-                #print(f"file number {ii+1}")
-                audio,sr = sf.read(w)
-            if audio.dtype == np.int16:
-                audio = audio/-np.iinfo(audio.dtype).min
+            for ii,(w,v) in enumerate(zip(wavs,segs)):
+                
+                if '.wav' in audio_type:
+                    sr,audio = wavfile.read(w)
+                elif '.flac' in audio_type:
+                    #print(f"file number {ii+1}")
+                    audio,sr = sf.read(w)
+                if audio.dtype == np.int16:
+                    audio = audio/-np.iinfo(audio.dtype).min
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
