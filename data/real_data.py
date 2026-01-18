@@ -79,7 +79,9 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,
 
                 aud = aud.reshape(-1,chunk_len,aud.shape[-1])
 
-                auds.append([a[None,:,:] for a in aud])
+                for a in aud:
+                    auds.append(a[None,:,:])
+                #auds.append([a[None,:,:] for a in aud])
             else:
                 aud = aud.reshape(1,-1,1)
 
