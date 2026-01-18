@@ -44,6 +44,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         audios,sr = get_segmented_audio(audio_path,seg_path,audio_subdir='',\
                                     seg_subdir='',envelope=False,context_len=0.1,\
                                     audio_type='.wav',seg_type='.txt',max_pairs=3000,seed=seed)
+        tau = 1/sr
 
         dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
         gabo_path = os.path.join(synth_model_path,'gabo_model')
@@ -78,6 +79,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
             gabo_specs = gabo_data_dict['specs']
             gabo_ext = gabo_data_dict['ext']
 
+    return
 
     #assert False
 
@@ -87,6 +89,7 @@ def run_experiments(gabo_data_path='',coen_data_path='',\
         sr_stack=44100
         stacks,d_stack,d2_stack = gen_stacks(n_samples=2000,sample_rate=sr_stack)
         dls = get_loaders(np.vstack(stacks)[:,:,None],cv = True,train_size=0.6,seed=seed)
+        tau = 1/sr_stack
         stack_path = os.path.join(synth_model_path,'stackies')
         stack_model = model_cv_lambdas(dls,1/sr_stack,\
                                 nEpochs=100,model_path=stack_path,
