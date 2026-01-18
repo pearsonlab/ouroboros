@@ -246,6 +246,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
     current_total=0
+    print(len(wavs),len(segs))
     if '.mat' not in audio_type:
             for ii,(w,v) in enumerate(zip(wavs,segs)):
                 
