@@ -259,33 +259,33 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                 if audio.dtype == np.int16:
                     audio = audio/-np.iinfo(audio.dtype).min
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                onoffs = np.loadtxt(v,usecols=(0,1))
-            if len(onoffs) > 0:
-                if len(onoffs.shape)==1:
-                    onoffs = onoffs[None,:]
-                if onoffs.shape[1] == 3:
-                    onoffs = onoffs[:,:2]
-                
-                audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
-                                       context_len=context_len,env=envelope,\
-                                        current_total=current_total,full_vocs=full_vocs,
-                                        extend=extend,padding=padding)
-                #print(len(audios))
-                #print(len(audios))
-                if not full_vocs:
-                    audio_segs += audios
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    onoffs = np.loadtxt(v,usecols=(0,1))
+                if len(onoffs) > 0:
+                    if len(onoffs.shape)==1:
+                        onoffs = onoffs[None,:]
+                    if onoffs.shape[1] == 3:
+                        onoffs = onoffs[:,:2]
+                    
+                    audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
+                                        context_len=context_len,env=envelope,\
+                                            current_total=current_total,full_vocs=full_vocs,
+                                            extend=extend,padding=padding)
+                    #print(len(audios))
+                    #print(len(audios))
+                    if not full_vocs:
+                        audio_segs += audios
 
-                else:
-                    audio_segs.append(audios)
-                
-                current_total += len(audios)
-                #print(current_total)
-                #print(len(audio_segs))
-                #assert len(audio_segs) >= current_total,print("wtf")
-                if current_total >= max_pairs:
-                    return audio_segs[:max_pairs],sr
+                    else:
+                        audio_segs.append(audios)
+                    
+                    current_total += len(audios)
+                    #print(current_total)
+                    #print(len(audio_segs))
+                    #assert len(audio_segs) >= current_total,print("wtf")
+                    if current_total >= max_pairs:
+                        return audio_segs[:max_pairs],sr
     else:
         random.shuffle(wavs)
         for w in tqdm(wavs,desc='Getting audio from .mat files'):
