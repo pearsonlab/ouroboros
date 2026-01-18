@@ -184,8 +184,8 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
 
     aud_sub_depth += 1
 
-    audio_tags = [a[:-1].split('/')[-aud_sub_depth] for a in audio_dirs]
-    seg_tags = [s[:-1].split('/')[-seg_sub_depth] for s in seg_dirs]
+    audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
+    seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
     
     audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
     assert len(audio_dirs) >0, \
