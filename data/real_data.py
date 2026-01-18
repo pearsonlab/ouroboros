@@ -246,7 +246,8 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
     current_total=0
-    print(len(wavs),len(segs))
+    #print(len(wavs),len(segs))
+    #print(max_pairs)
     if '.mat' not in audio_type:
             for ii,(w,v) in enumerate(zip(wavs,segs)):
                 
@@ -271,7 +272,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                                        context_len=context_len,env=envelope,\
                                         current_total=current_total,full_vocs=full_vocs,
                                         extend=extend,padding=padding)
-                print(len(audios))
+                #print(len(audios))
                 #print(len(audios))
                 if not full_vocs:
                     audio_segs += audios
@@ -280,6 +281,7 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
                     audio_segs.append(audios)
                 
                 current_total += len(audios)
+                #print(current_total)
                 #print(len(audio_segs))
                 #assert len(audio_segs) >= current_total,print("wtf")
                 if current_total >= max_pairs:
