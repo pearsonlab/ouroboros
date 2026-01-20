@@ -78,10 +78,14 @@ def get_all_audio(audio,fs,onOffs,context_len=0.02,max_pairs = 600,env=False,
                     aud = aud[: - cut_len]
 
                 aud = aud.reshape(-1,chunk_len,aud.shape[-1])
+
+                for a in aud:
+                    auds.append(a[None,:,:])
+                #auds.append([a[None,:,:] for a in aud])
             else:
                 aud = aud.reshape(1,-1,1)
 
-            auds.append(aud)
+                auds.append(aud)
             
             ii += len(aud)
             print(f'current_total: {ii} samples',end='\r',flush=True)
@@ -168,6 +172,10 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
         
     """
 
+    #if audio_subdir[-1] != '/' and audio_subdir != '':
+    #    audio_subdir += '/'
+    #if seg_subdir[-1] != '/' and seg_subdir != '':
+    #    seg_subdir += '/'
     random.seed(seed)
     audio_dirs = glob.glob(os.path.join(audiopath,audio_subdir))
     seg_dirs = glob.glob(os.path.join(segpath,seg_subdir))
@@ -175,15 +183,18 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     seg_dirs.sort()
     split_aud_sub = audio_subdir.split('/')
     split_seg_sub = seg_subdir.split('/')
-    aud_sub_depth=1 if audio_subdir == '' else len(split_aud_sub)
-    seg_sub_depth=1 if seg_subdir == '' else len(split_seg_sub)
+    aud_sub_depth=0 if audio_subdir == '' else len(split_aud_sub)
+    seg_sub_depth=0 if seg_subdir == '' else len(split_seg_sub)
 
-    audio_tags = [a[:-1].split('/')[-aud_sub_depth] for a in audio_dirs]
-    seg_tags = [s[:-1].split('/')[-seg_sub_depth] for s in seg_dirs]
+    aud_sub_depth += 1
+    seg_sub_depth += 1
+
+    audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
+    seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
     
     audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
     assert len(audio_dirs) >0, \
-        print(f"something went wrong with filtering! i recieved {audiopath},{segpath} as paths,{audio_subdir},{seg_subdir} as subdirs")
+        print(f"something went wrong with filtering! i recieved {audiopath},{segpath} as paths,{audio_subdir},{seg_subdir} as subdirs, found {audio_tags},{seg_tags} as tags")
     #print(audio_dirs,seg_dirs)
     #days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
     #days = [d.split('/')[-1] for d in wav_dirs]
@@ -235,42 +246,46 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     #print(f'number of wavs: {len(wavs)}')
     #print(f'number of segs: {len(segs)}')
     current_total=0
+    #print(len(wavs),len(segs))
+    #print(max_pairs)
     if '.mat' not in audio_type:
-        for ii,(w,v) in enumerate(zip(wavs,segs)):
-            
-            if '.wav' in audio_type:
-                sr,audio = wavfile.read(w)
-            elif '.flac' in audio_type:
-                #print(f"file number {ii+1}")
-                audio,sr = sf.read(w)
-            if audio.dtype == np.int16:
-                audio = audio/-np.iinfo(audio.dtype).min
-
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                onoffs = np.loadtxt(v,usecols=(0,1))
-            if len(onoffs) > 0:
-                if len(onoffs.shape)==1:
-                    onoffs = onoffs[None,:]
-                if onoffs.shape[1] == 3:
-                    onoffs = onoffs[:,:2]
+            for ii,(w,v) in enumerate(zip(wavs,segs)):
                 
-                audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
-                                       context_len=context_len,env=envelope,\
-                                        current_total=current_total,full_vocs=full_vocs,
-                                        extend=extend,padding=padding)
-                #print(len(audios))
-                if not full_vocs:
-                    audio_segs += audios
+                if '.wav' in audio_type:
+                    sr,audio = wavfile.read(w)
+                elif '.flac' in audio_type:
+                    #print(f"file number {ii+1}")
+                    audio,sr = sf.read(w)
+                if audio.dtype == np.int16:
+                    audio = audio/-np.iinfo(audio.dtype).min
 
-                else:
-                    audio_segs.append(audios)
-                
-                current_total += len(audios)
-                #print(len(audio_segs))
-                #assert len(audio_segs) >= current_total,print("wtf")
-                if current_total >= max_pairs:
-                    return audio_segs[:max_pairs],sr
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    onoffs = np.loadtxt(v,usecols=(0,1))
+                if len(onoffs) > 0:
+                    if len(onoffs.shape)==1:
+                        onoffs = onoffs[None,:]
+                    if onoffs.shape[1] == 3:
+                        onoffs = onoffs[:,:2]
+                    
+                    audios = get_all_audio(audio,sr,onoffs,max_pairs=max_pairs,\
+                                        context_len=context_len,env=envelope,\
+                                            current_total=current_total,full_vocs=full_vocs,
+                                            extend=extend,padding=padding)
+                    #print(len(audios))
+                    #print(len(audios))
+                    if not full_vocs:
+                        audio_segs += audios
+
+                    else:
+                        audio_segs.append(audios)
+                    
+                    current_total += len(audios)
+                    #print(current_total)
+                    #print(len(audio_segs))
+                    #assert len(audio_segs) >= current_total,print("wtf")
+                    if current_total >= max_pairs:
+                        return audio_segs[:max_pairs],sr
     else:
         random.shuffle(wavs)
         for w in tqdm(wavs,desc='Getting audio from .mat files'):
