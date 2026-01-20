@@ -116,7 +116,7 @@ def run_experiments(adult_d_ud_path='',
             tutor_aud,tutor_seg = b +'_tutor', b+'_tutor'
             audio_subdir = 'motif_audio_tutor/double_denoised'
             seg_subdir = 'motif_txt_tutor'
-            print(f"Now loading {n_per_bird} from {tutor_aud.split('/')[-3]}")
+            print(f"Now loading {n_per_bird} from {tutor_aud.split('/')[-1]}")
             a,sr = get_segmented_audio(tutor_aud,tutor_seg,\
                                 audio_subdir=audio_subdir,\
                                 seg_subdir=seg_subdir,envelope=False,context_len=0.15,\
@@ -129,7 +129,7 @@ def run_experiments(adult_d_ud_path='',
             pupil_aud,pupil_seg = b,b
             audio_subdir='motif_audio/double_denoised'
             seg_subdir='motif_txt'
-            print(f"Now loading {n_per_bird} from {pupil_aud.split('/')[-3]}")
+            print(f"Now loading {n_per_bird} from {pupil_aud.split('/')[-1]}")
 
             a,sr = get_segmented_audio(pupil_aud,pupil_seg,\
                                 audio_subdir=audio_subdir,\
