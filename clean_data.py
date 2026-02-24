@@ -31,6 +31,9 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     aud_sub_depth=len(split_aud_sub)
     seg_sub_depth=len(split_seg_sub)
 
+    #print(split_aud_sub)
+    #print(split_seg_sub)
+    #print(seg_dirs)
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
 
