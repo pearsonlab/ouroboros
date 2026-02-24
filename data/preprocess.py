@@ -226,7 +226,7 @@ def _tuning_plot(orig_spec,denoised_spec,cleaned_spec,ts,spec_freqs,scale_freqs,
     for ax in axs:
         ax.set_xlabel("Time (s)")
     plt.tight_layout
-    plt.savefig(save_loc)
+    plt.savefig(save_loc,transparent=True,bbox_inches='tight')
     plt.close('all')
 
 
