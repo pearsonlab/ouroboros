@@ -29,7 +29,8 @@ HP_DICT = {
     'nv': 32, #number of voices (wavelets per octave),
     'scales': 'log-piecewise',
     'order':5, # polynomial order for band-pass filter,
-    'prop_reduce':1, # proportion of noise to reduce, if reducing noise
+    'prop_reduce':1., # proportion of noise to reduce, if reducing noise
+    'time_constant_s':0.4, # time_constant for assuming stationarity of noise. increase if noise is more consistent
     'squeeze_freqs':True
 }
 
@@ -178,7 +179,7 @@ def _tune_input_helper(p):
             p[key] = temp
     return p
 
-def _tuning_plot(orig_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
+def _tuning_plot(orig_spec,denoised_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
                  scaleogram,min_band,max_band,vmin=-0.5,vmax=1.5,\
                     save_loc='./pp.pdf'):
 
@@ -206,20 +207,22 @@ def _tuning_plot(orig_spec,cleaned_spec,ts,spec_freqs,scale_freqs,\
     vmin_scale = np.amin(scaleogram)
     vmax_scale = np.amax(scaleogram)
     vmax_scale = (vmax_scale - vmin_scale)/50 + vmin_scale
-    fig,axs = plt.subplots(nrows=1,ncols=3,figsize=(13,4))
+    fig,axs = plt.subplots(nrows=1,ncols=4,figsize=(13,4))
     spec_extent = [ts[0],ts[-1],spec_freqs[0],spec_freqs[-1]]
     scale_extent = [ts[0],ts[-1],nf,0]
     axs[0].imshow(orig_spec,origin='lower',aspect='auto',vmin=vmin,vmax=vmax,extent=spec_extent)
-    axs[1].imshow(cleaned_spec,origin='lower',aspect='auto',vmin=vmin,vmax=vmax,extent=spec_extent)
-    axs[2].imshow(scaleogram,aspect='auto',cmap='bone',vmin=vmin_scale,vmax=vmax_scale,extent=scale_extent)
+    axs[1].imshow(denoised_spec,origin='lower',aspect='auto',vmin=vmin,vmax=vmax,extent=spec_extent)
+    axs[2].imshow(cleaned_spec,origin='lower',aspect='auto',vmin=vmin,vmax=vmax,extent=spec_extent)
+    axs[3].imshow(scaleogram,aspect='auto',cmap='bone',vmin=vmin_scale,vmax=vmax_scale,extent=scale_extent)
     #axs[2].set_xticks(np.arange(0,len(ts),len(ts)/10),ts[::int(round(len(ts)/10))])
-    axs[2].set_yticks(np.arange(0,nf,25),np.round(scale_freqs[::25]).astype(np.int32))
-    axs[2].plot(ts,Cs - band,color='r')
-    axs[2].plot(ts,Cs + band,color='r')
+    axs[3].set_yticks(np.arange(0,nf,25),np.round(scale_freqs[::25]).astype(np.int32))
+    axs[3].plot(ts,Cs - band,color='r')
+    axs[3].plot(ts,Cs + band,color='r')
     axs[0].set_ylabel("Frequency (Hz)")
     axs[0].set_title("Original spectrogram")
-    axs[1].set_title("Reconstructed spectrogram")
-    axs[2].set_title("CWT with reconstruction boundaries")
+    axs[1].set_title("Denoised spectrogram")
+    axs[2].set_title("Reconstructed spectrogram (after ssq)")
+    axs[3].set_title("CWT with reconstruction boundaries")
     for ax in axs:
         ax.set_xlabel("Time (s)")
     plt.tight_layout
@@ -297,6 +300,13 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             
             orig_audio = a[on_ind:off_ind]
             #print(orig_audio.shape)
+            _,sx_orig,_,sx_freqs, *_ = ssq_stft(orig_audio,fs=sr)
+            orig_spec = np.abs(sx_orig)
+            vmin = np.amin(orig_spec)
+            vmax = np.amax(orig_spec)
+            vmax = (vmax - vmin)/10 + vmin
+
+
             if reduce_noise:
                 noise_reduced_chunk_on = max(0,on_ind-sr)
                 on_diff = on_ind - noise_reduced_chunk_on
@@ -304,7 +314,7 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
                 off_diff = noise_reduced_chunk_off - off_ind
                 nyquist = sr//2
                 freq_mask_smooth_hz = int(round(2.5*nyquist/100)) #default: 500, scale by frequency range (let's do 2.5% of frequency range)
-                a = nr.reduce_noise(y=a[noise_reduced_chunk_on:noise_reduced_chunk_off],sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=0.4,
+                a = nr.reduce_noise(y=a[noise_reduced_chunk_on:noise_reduced_chunk_off],sr=sr,prop_decrease=p['prop_reduce'],time_constant_s=p['time_constant_s'],
                                     stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
                 orig_audio = a[on_diff:-off_diff]
             #print(orig_audio.shape)
@@ -312,11 +322,9 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
 
             t = np.arange(0,off-on,1/sr)[:len(orig_audio)]
             
-            _,sx_orig,_,sx_freqs, *_ = ssq_stft(orig_audio,fs=sr)
+            _,sx_denoised,*_ = ssq_stft(orig_audio,fs=sr)
+            denoised_spec = np.abs(sx_denoised)
             orig_spec = np.abs(sx_orig)
-            vmin = np.amin(orig_spec)
-            vmax = np.amax(orig_spec)
-            vmax = (vmax - vmin)/10 + vmin
             cwt_kws = {'wavelet': (p['wavelet'],WAVELET_HP_DICT[p['wavelet']]),'nv':p['nv'],'scales':p['scales']}
 
             if p['squeeze_freqs']:
@@ -338,7 +346,7 @@ def tune_preprocessing(audio_files,segment_files,hp_dict,preprocess_type='ssq',i
             wavfile.write('./test_wav.wav',rate=sr,data=recon_a)
             _,sx_recon,*_ = ssq_stft(recon_a,fs=sr)
             recon_spec = np.abs(sx_recon)
-            _tuning_plot(orig_spec,recon_spec,t,sx_freqs,cwt_freqs,\
+            _tuning_plot(orig_spec,denoised_spec,recon_spec,t,sx_freqs,cwt_freqs,\
                         np.abs(ssq_scaleogram),p['band min'],p['band max'],\
                             vmin=vmin,vmax=vmax,save_loc=img_fn)
             
@@ -388,7 +396,7 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preproc
             freq_mask_smooth_hz = int(round(2.5*nyquist/100)) #default: 500, scale by frequency range (let's do 2.5% of frequency range)
 
             orig_audio = nr.reduce_noise(y=orig_audio,sr=sr,prop_decrease=hyperparameters['prop_reduce'],
-                                         time_constant_s=0.4,stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
+                                         time_constant_s=p['time_constant_s'],stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
 
         cwt_kws = {'wavelet': (hyperparameters['wavelet'],WAVELET_HP_DICT[hyperparameters['wavelet']]),
                     'nv':hyperparameters['nv'],
