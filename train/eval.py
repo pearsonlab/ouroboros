@@ -109,7 +109,7 @@ def integrate_second_deriv(deriv_approx,ic,eval_times,method='rk4',verbose=True)
     def dz_hat(t,z):
 
         if verbose:
-            print(f"{(t-eval_times[0])/eval_times[-1]*100:0.3f}%,",end='\r')
+            print(f"{(t-eval_times[0])/(eval_times[-1] - eval_times[0])*100:0.3f}%,",end='\r')
 
         t= t.detach().cpu().numpy()
         dz2 = torch.from_numpy(np.array([deriv_interp(t)])).to('cuda').to(torch.float32)
