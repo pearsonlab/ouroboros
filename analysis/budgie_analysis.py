@@ -400,10 +400,10 @@ def train_sliding_window_regression(datapath,model,model_smooth=0.001,spike_smoo
     
         max_gam = np.amax(np.abs(weights_gam))
         max_om = np.amax(np.abs(weights_om))
-        max_max = max(max_gam,max_om)
+        max_max = 0.01 #max(max_gam,max_om)
         
         ax = plt.gca()
-        g=ax.matshow(weights_gam,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',vmin=-0.01,vmax=0.01)
+        g=ax.matshow(weights_gam,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r')
         ax.set_ylabel("Neuron number")
         ax.set_xlabel("Lag (ms)")
         ax.set_xticks(range(0,win_length,win_length//4))
@@ -417,7 +417,7 @@ def train_sliding_window_regression(datapath,model,model_smooth=0.001,spike_smoo
         plt.close()
     
         ax = plt.gca()
-        g=ax.matshow(weights_om,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',vmin=-0.01,vmax=0.01)
+        g=ax.matshow(weights_om,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r')
         ax.set_ylabel("Neuron number")
         ax.set_xlabel("Lag (ms)")
         ax.set_xticks(range(0,win_length,win_length//4))
@@ -470,9 +470,9 @@ def train_sliding_window_regression(datapath,model,model_smooth=0.001,spike_smoo
     mu_omega,mu_gamma = np.nanmean(weight_mats_omega,axis=0),np.nanmean(weight_mats_gamma,axis=0)
     max_gam = np.amax(np.abs(mu_gamma))
     max_om = np.amax(np.abs(mu_omega))
-    max_max = max(max_gam,max_om)    
+    max_max = 0.01 #max(max_gam,max_om)    
     fig,(ax1,ax2,ax3) = plt.subplots(nrows=1,ncols=3,figsize=(15,7),width_ratios=(7,7,1))
-    g=ax1.matshow(weights_gam,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',origin='lower',vmin=-0.01,vmax=0.01)
+    g=ax1.matshow(weights_gam,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',origin='lower')
     ax1.set_ylabel("Neuron number")
     ax1.set_xlabel("Lag (ms)")
     ax1.set_xticks(range(0,win_length,win_length//4))
@@ -481,7 +481,7 @@ def train_sliding_window_regression(datapath,model,model_smooth=0.001,spike_smoo
     #cb=plt.colorbar(g,ax=ax1)
     #cb.set_label("Weight (a.u.)",rotation=270,labelpad=20)
     
-    g=ax2.matshow(weights_om,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',origin='lower',vmin=-0.01,vmax=0.01)
+    g=ax2.matshow(weights_om,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',origin='lower')
     ax2.set_ylabel("Neuron number")
     ax2.set_xlabel("Lag (ms)")
     ax2.set_xticks(range(0,win_length,win_length//4))
