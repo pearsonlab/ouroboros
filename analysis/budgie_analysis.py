@@ -403,7 +403,7 @@ def train_sliding_window_regression(datapath,model,model_smooth=0.001,spike_smoo
         max_max = max(max_gam,max_om)
         
         ax = plt.gca()
-        g=ax.matshow(weights_gam,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r')
+        g=ax.matshow(weights_gam,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',vmin=-0.01,vmax=0.01)
         ax.set_ylabel("Neuron number")
         ax.set_xlabel("Lag (ms)")
         ax.set_xticks(range(0,win_length,win_length//4))
@@ -417,7 +417,7 @@ def train_sliding_window_regression(datapath,model,model_smooth=0.001,spike_smoo
         plt.close()
     
         ax = plt.gca()
-        g=ax.matshow(weights_om,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r')
+        g=ax.matshow(weights_om,aspect='auto',vmin=-max_max,vmax=max_max,cmap='RdBu_r',vmin=-0.01,vmax=0.01)
         ax.set_ylabel("Neuron number")
         ax.set_xlabel("Lag (ms)")
         ax.set_xticks(range(0,win_length,win_length//4))
@@ -439,13 +439,17 @@ def train_sliding_window_regression(datapath,model,model_smooth=0.001,spike_smoo
             gamma,omega,spikes = gammas[c],omegas[c],spike_designs[c]
         
             pred_gamma,pred_omega = gam_lr.predict(spikes.reshape(spikes.shape[0],-1)),om_lr.predict(spikes.reshape(spikes.shape[0],-1))
+            pred_gamma_null,pred_omega_null = gam_lr_hardnull.predict(spikes.reshape(spikes.shape[0],-1)),om_lr_hardnull.predict(spikes.reshape(spikes.shape[0],-1))
         
             t = np.arange(0,len(omega)*0.001 + 0.0005,0.001)[:len(omega)]*1000
             fig,axs = plt.subplots(nrows=2,ncols=1,figsize=(10,10))
             axs[0].plot(t,omega,label='ouroboros')
             axs[0].plot(t,pred_omega,label='predicted')
+            axs[0].plot(t,pred_omega_null,label='null model')
             axs[1].plot(t,gamma,label='ouroboros')
             axs[1].plot(t,pred_gamma,label='predicted')
+            axs[1].plot(t,pred_gamma_null,label='null model')
+
             axs[0].set_xticks([])
             axs[1].set_xlabel("Time (ms)")
             axs[0].set_ylabel(r"$\omega$")
