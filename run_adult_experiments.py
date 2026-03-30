@@ -113,6 +113,8 @@ def run_experiments(adult_d_ud_path='',
         prev_sr = -1
         for b in birds:
             b = os.path.join(adult_p_t_path,b)
+            #print(b)
+            #print(adult_p_t)
             tutor_aud,tutor_seg = b +'_tutor', b+'_tutor'
             audio_subdir = 'motif_audio_tutor/double_denoised'
             seg_subdir = 'motif_txt_tutor'
