@@ -1,979 +1,270 @@
-from mambapy.mamba import Mamba, MambaConfig
-
 import torch
-import torch.nn as nn
-from torchaudio.functional import lowpass_biquad
-#from torchdiffeq import odeint
-import numpy as np
-from scipy.integrate import solve_ivp
+from torch import nn
+from mambapy.mamba import Mamba, MambaConfig
+from model.model_utils import smooth, NonNegClipper
 from utils import deriv_approx_dy,deriv_approx_d2y
-from model_utils import smooth, NonNegClipper
+from model.kernels import *
+
+from scipy.integrate import solve_ivp
+import numpy as np
 import time
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+#plt.rcParams['text.usetex'] = True
+import gc
 
-torch.set_default_dtype(torch.float64)
-def corr_fnc(ts1,tsSet):
+"""
+these classes are the body of the Ouroboros method. An Ouroboros consists of three parallel Mamba encoders:
+an Omega, a Gamma, and a kernel encoder. The output of each encoder is linearly mapped to our latent features.
+These features are then used to reconstruct the estimated second derivative of the audio. See figure 1 of our 
+paper for a visual illustration of the procedure.
 
-    sd1,sd2 = ts1.std(dim=1,keepdim=True), tsSet.std(dim=1,keepdim=True)
-    batch_denom = sd1.transpose(2,1) @ sd2
+Models are implemented using the mamba.py package (https://github.com/alxndrTL/mamba.py/),
+with elements used included in `third_party` for convenience.
 
-    batch_cov = ts1.transpose(2,1) @ tsSet/(ts1.shape[1]-1)
+"""
 
-    batch_corr = batch_denom/batch_cov
-    #mean_corrs = batch_corr.mean(dim=0)
+class rkhs_ouroboros(nn.Module):
 
-    #inds = torch.triu_indices(mean_corrs.shape[0],mean_corrs.shape[1])
-    
-    return batch_corr.mean(dim=0).sum()
-
-
-vmap_corr = torch.vmap(corr_fnc,in_dims=(2,None))
-
-
-class ouroboros(nn.Module):
-
-
-    def __init__(self,d_data,
-                 d_control,
-                 d_out=1,
-                 n_layers_data=2,
-                 n_layers_control=2,
-                 d_state_data=16,
-                 d_state_control=16,
-                 d_conv_data=4,
-                 d_conv_control=4,
-                 expand_factor_data=1,
-                 expand_factor_control=1,
-                 device='cuda'):
+    def __init__(self,d_data:int,
+                 kernel:nn.Module,
+                 n_layers:int=2,
+                 d_state:int=16,
+                 d_conv:int=4,
+                 expand_factor:int=1,
+                 device:str='cuda',
+                 tau:float = 1/10000,
+                 smooth_len:float=0.001):
         
-        super(ouroboros,self).__init__()
-
-        dataConfig = MambaConfig(d_model=d_out,\
-                                    n_layers=n_layers_data,d_state=d_state_data,\
-                                    d_conv=d_conv_data,expand_factor=expand_factor_data)
-        controlConfig = MambaConfig(d_model=d_control, n_layers=n_layers_control,\
-                                    d_state=d_state_control,d_conv=d_conv_control,\
-                                    expand_factor=expand_factor_control)
-        
-        self.dataMamba = Mamba(dataConfig).to(device)
-        self.controlMamba = Mamba(controlConfig).to(device)
-
-        self.outProj = nn.Linear(d_control,d_out).to(device)
-        self.control_proj = nn.Linear(d_data*4,d_control).to(device)
-        self.device = device
-
-
-    def forward(self,x,y):
-
-        dy = y - x
-
-        # CHANGE: PROJECT TO CONTROL DIM BEFORE GOING INTO CONTROL MAMBA
-        # CHANGE: double flippy
-        x_in = torch.cat([dy,y],dim=-1)
-        x_in = torch.cat([x_in, torch.flip(x_in,[1])],dim=-1)
-        state_pred = self.controlMamba(self.control_proj(x_in)) 
-        state_pred = torch.flip(torch.nn.SiLU()(state_pred),[1]) # bsz x L x dim
-
-
-        # CHANGE: PROJECT TO OUT DIM BEFORE GOING INTO DATA MAMBA
-        yhat = self.outProj(state_pred)
-        yhat = self.dataMamba(yhat)
-        #yhat = self.outProj(yhat)
-
-        ## penalize correlation between states?
-
-        return yhat, state_pred
-    
-class timescale_ouroboros(ouroboros):
-
-
-    def __init__(self,d_data,
-                 d_control,
-                 fs,
-                 control_time_constant=0.05, # time constant of control signal in s 
-                 n_layers_data=2,
-                 n_layers_control=2,
-                 d_state_data=16,
-                 d_state_control=16,
-                 d_conv_data=4,
-                 d_conv_control=4,
-                 expand_factor_data=1,
-                 expand_factor_control=1,
-                 device='cuda'):
-        
-        super(timescale_ouroboros,self).__init__(d_data,
-                                                d_control=d_control,
-                                                n_layers_data=n_layers_data,
-                                                n_layers_control=n_layers_control,
-                                                d_state_data=d_state_data,
-                                                d_state_control=d_state_control,
-                                                d_conv_data=d_conv_data,
-                                                d_conv_control=d_conv_control,
-                                                expand_factor_data=expand_factor_data,
-                                                expand_factor_control=expand_factor_control,
-                                                device=device)
-
-        self.fs = fs
-        self.control_time_constant_s = control_time_constant
-        self.control_time_constant_fs = fs * control_time_constant
-        
-
-        self.control_init_conditions = nn.Linear(d_data*2,d_control).to(device)
-
-
-    def forward(self,x,y,mask_ind = -1):
-
-        dy = y - x
-
-    
-        state_ic = torch.nn.SiLU()(self.control_init_conditions(torch.cat([dy[:,:1,:],y[:,:1,:]],dim=-1)))
-        assert state_ic.shape[1] == 1,print(state_ic.shape)
-        state_pred = self.controlMamba(torch.cat([dy,y],dim=-1))
-        state_pred = self.control_proj(state_pred)
-        state_pred = state_ic + torch.cumsum(state_pred,dim=1)/self.control_time_constant_fs
-
-        yhat = self.dataMamba(torch.cat([state_pred,x],dim=-1))
-
-        return yhat, state_pred
-    
-class filter_ouroboros(ouroboros):
-
-    def __init__(self,d_data,
-                 d_control,
-                 d_out=1,
-                 n_layers_data=2,
-                 n_layers_control=2,
-                 d_state_data=16,
-                 d_state_control=16,
-                 d_conv_data=4,
-                 d_conv_control=4,
-                 expand_factor_data=1,
-                 expand_factor_control=1,
-                 device='cuda',
-                 freq_limit=100,
-                 fs=1000):
-        
-        super(filter_ouroboros,self).__init__(d_data,\
-                 d_control,\
-                 d_out,\
-                 n_layers_data,\
-                 n_layers_control,\
-                 d_state_data,\
-                 d_state_control,\
-                 d_conv_data,\
-                 d_conv_control,\
-                 expand_factor_data,\
-                 expand_factor_control,\
-                 device) 
-        
-        self.freq_limit = freq_limit
-        self.fs=fs
-        self.filter = torch.vmap(lambda x: lowpass_biquad(x,self.fs,self.freq_limit),in_dims=2,out_dims=2)
-        print("warning: batched backprop through filter not implemented in torch, this will be slow")
-
-    def forward(self,x,y):
-        
-
-        dy = y - x
-
-        state_pred = self.controlMamba(torch.flip(torch.cat([dy,y],dim=-1),[1]))
-        state_pred = torch.flip(torch.nn.SiLU()(self.control_proj(state_pred)),[1]) # bsz x L x dim
-        state_pred = self.filter(state_pred)
-
-        yhat = self.dataMamba(state_pred)
-        yhat = self.outProj(yhat)
-
-
-        return yhat, state_pred
-
-
-
-class fancy_ouroboros(ouroboros):
-
-    def __init__(self,d_data,
-                 d_control,
-                 d_out=1,
-                 n_layers_data=2,
-                 n_layers_control=2,
-                 d_state_data=16,
-                 d_state_control=16,
-                 d_conv_data=4,
-                 d_conv_control=4,
-                 expand_factor_data=1,
-                 expand_factor_control=1,
-                 device='cuda'):
-        
-        super(fancy_ouroboros,self).__init__(d_data,\
-                 d_control,\
-                 d_out,\
-                 n_layers_data,\
-                 n_layers_control,\
-                 d_state_data,\
-                 d_state_control,\
-                 d_conv_data,\
-                 d_conv_control,\
-                 expand_factor_data,\
-                 expand_factor_control,\
-                 device)
-        
-
-        dataConfig = MambaConfig(d_model=d_control,\
-                                    n_layers=n_layers_data,d_state=d_state_data,\
-                                    d_conv=d_conv_data,expand_factor=expand_factor_data)
-        
-        self.dataMamba = Mamba(dataConfig).to(device)
-        self.omega = nn.Linear(d_control,d_out*2).to(device)
-        self.inp = nn.Linear(d_control,d_out).to(device)
-        self.d_out = d_out
-
-    def forward(self,x,y):
-
-        xdot= y - x
-
-        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([xdot,y],dim=-1),[1])))
-        state_pred = torch.flip(torch.nn.SiLU()(state_pred),[1])
-
-        out = self.dataMamba(state_pred)
-        omega = self.omega(out)
-        inp = self.inp(out)
-
-        omega_terms = -omega*x #+ inp
-
-        xdotdothat = torch.nn.ReLU()(omega_terms[:,:,:self.d_out]) + inp
-        xdothat = omega_terms[:,:,self.d_out:]
-
-        return torch.cat([xdothat,xdotdothat],dim=-1)[:,1:,],state_pred
-    
-
-class structured_ouroboros(ouroboros):
-
-
-
-    def __init__(self,d_data,
-                 d_control,
-                 d_out=1,
-                 n_layers_data=2,
-                 n_layers_control=2,
-                 d_state_data=16,
-                 d_state_control=16,
-                 d_conv_data=4,
-                 d_conv_control=4,
-                 expand_factor_data=1,
-                 expand_factor_control=1,
-                 device='cuda',
-                 poly_dim=40):
-        
-        super(structured_ouroboros,self).__init__(d_data,\
-                 d_control,\
-                 d_out,\
-                 n_layers_data,\
-                 n_layers_control,\
-                 d_state_data,\
-                 d_state_control,\
-                 d_conv_data,\
-                 d_conv_control,\
-                 expand_factor_data,\
-                 expand_factor_control,\
-                 device)
-        
-        self.b_net = nn.Linear(in_features=d_control,out_features=2*d_data * poly_dim**2,device=device)
-        
-        self.poly_dim = poly_dim
-        self.d_data = d_data 
-        self.powers = torch.arange(0,poly_dim,device=device)
-
-    def forward(self,x,y):
-
-        B,L,d = x.shape
-        xdot= y - x
-        z = torch.cat([x,xdot],dim=-1)
-        power_mat = z[:,:,:,None].expand(-1,-1,-1,self.poly_dim) # B x L x 2d -> B x L x 2d x P
-        power_mat = power_mat.pow(self.powers)
-        
-
-        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([xdot,y],dim=-1),[1])))
-        state_pred = torch.flip(state_pred,[1]) 
-
-        b = self.b_net(state_pred).view(B,L,2*d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        pow1 = torch.einsum('bldkj,bldk->bldj',b,power_mat)
-        zdot = torch.einsum('bldj,bldj->bld',pow1,torch.flip(power_mat,[2])) 
-        
-        return zdot[:,1:,:],state_pred
-
-    def get_funcs(self,x,y):
-
-        B,L,d = x.shape
-        xdot= y - x
-        z = torch.cat([x,xdot],dim=-1)
-        power_mat = z[:,:,:,None].expand(-1,-1,-1,self.poly_dim) # B x L x 2d -> B x L x 2d x P
-        power_mat = power_mat.pow(self.powers)
-        
-
-        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([xdot,y],dim=-1),[1])))
-        state_pred = torch.flip(state_pred,[1]) #torch.flip(torch.nn.SiLU()(state_pred),[1])
-
-        b = self.b_net(state_pred).view(B,L,2*d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        
-        A = torch.stack([b[:,:,:,1,0].detach().clone(),torch.flip(b,[2])[:,:,:,0,1].detach().clone()],dim=-1) #b[:,:,:,[0,1],[0,1]]
-        print(A.shape)
-
-        c = b[:,:,:,0,0].detach().clone()
-
-        b[:,:,:,0,0] = 0
-        #b[:,:,:,1,0] = 0
-        #b[:,:,:,0,1] = 0
-        
-        pow1 = torch.einsum('bldkj,bldk->bldj',b,power_mat) # B x L x 2d x P 
-        #pow2 = torch.einsum('bldkj,bldj->bldk',b,torch.flip(power_mat,[2]))
-        pow2 = torch.einsum('bldj,bldj->bld',pow1,torch.flip(power_mat,[2])) # B x L x 2d x P
-
-        b_out = pow2#torch.einsum('bldj,bldj->bld',pow1,pow2)
-
-        
-        return A,b,b_out,c
-
-    def integrate(self,data):
-
-        x,y = data[:,:-1,:],data[:,1:,:]
-        B,L,d = x.shape
-        dx = y - x 
-        z = torch.cat([x,dx],dim=-1)
-        z0 = z[:,0,:]
-
-
-        state_pred = self.controlMamba(self.control_proj(torch.flip(torch.cat([dx,y],dim=-1),[1])))
-        state_pred = torch.flip(state_pred,[1])
-        # y contains: x,dx,caches (for mamba)
-        b = self.b_net(state_pred).view(B,L,2*d,self.poly_dim,self.poly_dim)
-
-        x,caches = y
-        
-        # for initialization
-        #caches = [(None, torch.zeros((1,model.config.d_model * model.config.expand_factor,model.config.d_conv),device='cuda')) for _ in model.layers]
-        #B,L,d = x.shape
-        
-        z = torch.cat([x,dx],dim=-1)
-        state_pred,caches = self.controlMamba.step(self.control_proj(torch.flip(torch.cat([x[:,1],x[:,0]+x[:,1]],dim=-1),[1])))
-
-        state_pred = torch.flip(state_pred,[1]) #torch.flip(torch.nn.SiLU()(state_pred),[1])
-
-        #out = self.outProj(state_pred)
-        #A = self.A_net(state_pred).view(2*d,2*d) # 1 x 2d x 2d
-        #A = torch.einsum('dk,k->d',A,z)
-        b = self.b_net(state_pred).view(2*d,self.poly_dim,self.poly_dim) # 1 x 2d x P x P
-        pow1 = torch.einsum('dkj,dk->dj',b,self.power_mat)
-        pow2 = torch.einsum('dkj,dj->dk',pow1,torch.flip(self.power_mat,[2]))
-        b = torch.einsum('dj,dj->d',pow1,pow2)
-
-        #c= self.c_net(state_pred)
-
-        zdot = b#A + b + c
-        return (zdot,caches)
-        
-
-
-
-#plt.rcParams.update({'text.usetex':True})
-class constrained_ouroboros(nn.Module):
-
-
-
-    def __init__(self,d_data,
-                 d_out=1,
-                 n_layers=2,
-                 d_state=16,
-                 d_conv=4,
-                 expand_factor=1,
-                 device='cuda',
-                tau = 1000,
-                noInput = False,
-                omega_scale = 10000,
-                 smooth_len=0.001,
-                smooth_penalty=lambda x: torch.var(x,dim=1)):
-        
-        super(constrained_ouroboros,self).__init__()
-
-        omegaConfig = MambaConfig(d_model=4*d_data,\
-                                    n_layers=n_layers,d_state=d_state,\
-                                    d_conv=d_conv,expand_factor=expand_factor)
-        gammaConfig = MambaConfig(d_model=4*d_data,\
-                                    n_layers=n_layers,d_state=d_state,\
-                                    d_conv=d_conv,expand_factor=expand_factor)
-        dConfig = MambaConfig(d_model=4*d_data,\
-                                    n_layers=n_layers,d_state=d_state,\
-                                    d_conv=d_conv,expand_factor=expand_factor)
-
-        self.omegaMamba = Mamba(omegaConfig).to(device)
-        self.gammaMamba = Mamba(gammaConfig).to(device)
-        self.dMamba = Mamba(dConfig).to(device)
-        self.omega_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #unconstrained
-        self.gamma_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
-        self.b = nn.Parameter(torch.zeros(1),requires_grad=True).to(device) #non-neg
-        self.d_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #non-neg
-        torch.nn.init.uniform_(self.omega_net.weight,a=-omega_scale/tau,b=omega_scale/tau)
-        torch.nn.init.uniform_(self.omega_net.bias,a=-omega_scale/tau,b=omega_scale/tau)
-        torch.nn.init.uniform_(self.gamma_net.weight,a=0,b=2/tau)
-        torch.nn.init.uniform_(self.gamma_net.bias,a=0,b=2/tau)
-        torch.nn.init.uniform_(self.b,a=0,b=2/tau)
-        torch.nn.init.uniform_(self.d_net.weight,a=-1/tau**2,b=1/tau**2)
-        torch.nn.init.uniform_(self.d_net.bias,a=-1/tau**2,b=1/tau**2)
-        
-        
-        self.clipper = NonNegClipper(min=0)
-        self.smooth_penalty = smooth_penalty
-        self.smooth_len=smooth_len
-
-        self.tau = tau
-        #self.omega=omega
-        if noInput:
-            print("running with no input")
-            
-        self.noInput = noInput
-        self.d_data = d_data 
-
-    def _clip_weights(self):
-
-        self.gamma_net.apply(self.clipper)
-        #self.b.apply(self.clipper)
-        #self.b = self.b.clamp(min=0)
-        #self.b_net.apply(self.clipper)
-        
-
-    def forward(self,x,dt,idx):
-        """
-        predicts second derivative at time t.
-        all other predictions should be done in the train look (train_utils.py)
-        """
-
-        B,L,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
-        smooth_len = int(round(self.smooth_len/dt))
-
-        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
-        
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        
-        omegaControl = self.omegaMamba(x_in)
-        gammaControl = self.gammaMamba(x_in)
-        dControl = self.dMamba(x_in)
-
-        dControl=smooth(dControl.abs(),smooth_len)
-        omegaControl=smooth(omegaControl.abs(),smooth_len)
-        gammaControl=smooth(gammaControl,smooth_len)
-        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(dControl))
-        if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
-        omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)/self.tau
-        
-       
-        z[:,:,-1] /= dt
-        z1 = z[:,:,:1]
-        power_mat_z1 = z[:,:,:1]**2 
-        z2 = z[:,:,1:]
-
-        yhat = -(omega**2)*z1 + gamma * z2 - b*power_mat_z1 * z2 - d
-
-        smooth_penalty = self.smooth_penalty(torch.diff(omega,dim=1)[:,1:,:]).mean() + self.smooth_penalty(torch.diff(gamma,dim=1)[:,1:,:]).mean() + self.smooth_penalty(torch.diff(d,dim=1)[:,1:,:]).mean()
-        size_penalty = 0 # (d).abs().mean()
-        return yhat,torch.cat([omegaControl,gammaControl,dControl],dim=-1),size_penalty + smooth_penalty/3
-
-    def get_funcs(self,x,dt):
-
-        B,_,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
-        smooth_len = int(round(self.smooth_len/dt))
-        xdot= deriv_approx_dy(x)
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-    
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        omegaControl = self.omegaMamba(x_in)
-        gammaControl = self.gammaMamba(x_in)
-        dControl = self.dMamba(x_in)
-        dControl=smooth(dControl.abs(),smooth_len)
-        omegaControl=smooth(omegaControl.abs(),smooth_len)
-        gammaControl=smooth(gammaControl,smooth_len)
-        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(dControl))
-        if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
-        omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)/self.tau
-        
-        omega *= self.tau
-        gamma *= self.tau
-        d *= self.tau**2
-    
-        z /= dt
-        z1 = z[:,:,:1]
-        z2 = z[:,:,1:]
-        power_mat_z1 = z[:,:,:1].pow(2) #expand(-1,-1,-1,model.poly_dim) # B x 2d -> B x 2d x P
-
-        #b = nn.ReLU()(self.b_net(states)) #self.b * torch.ones(power_mat_z1.shape,device='cuda')
-        b *= self.tau
-        b_out =b * power_mat_z1 * z2
-        
-    
-        
-        return omega,gamma,b,b_out,d,torch.cat([omegaControl,gammaControl,dControl],dim=-1)
-        
-
-    def integrate(self,x,dt):
-
-        B,_,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
-        smooth_len = int(round(self.smooth_len/dt))
-        xdot= deriv_approx_dy(x)
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-        #L = xdot.shape[1]
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        z0 = z[:,0,:]
-        z0[:,-1] /= dt
-        
-        states = self.controlMamba(self.control_proj(x_in))
-        states = torch.flip(states,[1])
-
-        omegaControl = self.omegaMamba(x_in)
-        gammaControl = self.gammaMamba(x_in)
-        dControl = self.dMamba(x_in)
-        dControl=smooth(dControl.abs(),smooth_len)
-        omegaControl=smooth(omegaControl.abs(),smooth_len)
-        gammaControl=smooth(gammaControl,smooth_len)
-        b = nn.ReLU()(self.b)/self.tau #.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(dControl))
-        if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
-        omega = self.omega_net(omegaControl)
-        gamma = self.gamma_net(gammaControl)/self.tau
-        
-        b *= self.tau #/dt**2
-        b = b.detach().cpu().numpy()
-        pows = self.powers.detach().cpu().numpy()
-        def dz(t,z):
-
-            # t: time, should have a timestep of roughly 1. treat as ZOH
-            # z: B x 2d
-            b_ind = int(t)
-            b_step = self.b * self.tau**2 #b[0,b_ind,:,:,:]
-            omega_step = omega[:,b_ind,:]
-            gamma_step = gamma[:,b_ind,:]
-            d_step = d[:,b_ind,:]
-            
-            #power_mat_z1 = np.tile(z[:1,None],(1,self.poly_dim)) # B x 2d -> B x 2d x P
-            #power_mat_z2 = np.tile(z[1:,None],(1,self.poly_dim)) # B x 2d -> B x 2d x P
-            #power_mat_z1 = np.power(power_mat_z1,pows)
-            #power_mat_z2 = np.power(power_mat_z2,pows)
-            z1 = z[:1]
-            power_mat_z1 = z[:1]**2 #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-            z2 = z[1:]
-            #pow1 = np.einsum('djk,dj->dk',b_step,power_mat_z1)
-            dz2 = -(omega_step**2)*z1 + gamma_step * z2 - b_step*power_mat_z1 * z2 - d_step #np.einsum('dk,dk->d',pow1,power_mat_z2)
-            
-            dz1 = z[1]
-            
-            return np.hstack([dz1,dz2])
-        t_steps = np.arange(0,L*dt + dt/2,dt)[:L]
-        obj = solve_ivp(dz,(0,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='Radau')
-
-        return obj.y
-    
-    
-    
-class kernel_ouroboros(ouroboros):
-
-
-    def __init__(self,d_data,
-                 d_control,
-                 d_out=1,
-                 n_layers_data=2,
-                 n_layers_control=2,
-                 d_state_data=16,
-                 d_state_control=16,
-                 d_conv_data=4,
-                 d_conv_control=4,
-                 expand_factor_data=1,
-                 expand_factor_control=1,
-                 device='cuda',
-                 n_kernels=2,
-                 tau = 1000,
-                 omega=4000,
-                 noInput = False,
-                 trend_filtering=True):
-        
-        super(constrained_ouroboros,self).__init__(d_data,\
-                 d_control,\
-                 d_out,\
-                 n_layers_data,\
-                 n_layers_control,\
-                 d_state_data,\
-                 d_state_control,\
-                 d_conv_data,\
-                 d_conv_control,\
-                 expand_factor_data,\
-                 expand_factor_control,\
-                 device)
-        
-        self.weights = nn.Linear(in_features=d_control,out_features=n_kernels,device=device)
-        self.centers = nn.Linear(in_features=d_control,out_features=2*n_kernels,device=device)
-        self.variances = nn.Linear(in_features=d_control,out_features=2*n_kernels,device=device)
-        #print(self.b_net.weight)
-        torch.nn.init.uniform_(self.b_net.weight,a=-1/tau,b=1/tau)
-        #print(self.b_net.weight)
-        torch.nn.init.uniform_(self.b_net.bias,a=-1/tau,b=1/tau)
-        # d data above: since we only parameterize  d2y/dt2
-        self.omega_net = nn.Linear(in_features=d_control,out_features=d_data,device=device)
-        self.gamma_net = nn.Linear(in_features=d_control,out_features=d_data,device=device)
-        
-        self.tau = tau
-        self.omega=omega
-            
-        self.noInput = noInput
-        self.n_kernels = n_kernels
-        self.d_data = d_data 
-        self.trend_filtering=trend_filtering
-        #self.powers = torch.arange(0,poly_dim,device=device)
-
-    def _apply_kernels(self,x,centers,variances):
-
-        ### assumes x is already stacked [y,ydot]
-
-        pass
-
-
-
-    def forward(self,x,dt):
-        """
-        predicts second derivative at time t.
-        all other predictions should be done in the train look (train_utils.py)
-        """
-
-        B,L,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
-
-        xdot= deriv_approx_dy(x) # this gives: dx
-        
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        
-        states = self.controlMamba(self.control_proj(x_in))
-        states = torch.flip(states,[1])
-        
-        b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        
-        omega = self.omega_net(states)
-        #print(omega[0,:40,...])
-        #print(omega[0,:40,0],2*np.pi*self.omega)
-        b[:,:,0,1,0] = -(omega**2).squeeze()
-        if self.noInput:
-            b[:,:,:,0,0] = 0
-
-        #b*= self.tau**2
-        z[:,:,-1] /= dt
-        power_mat_z1 = z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-        power_mat_z2 = z[:,:,1:,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-        power_mat_z1 = power_mat_z1.pow(self.powers)
-        power_mat_z2 = power_mat_z2.pow(self.powers)
-        pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-        yhat = torch.einsum('bldk,bldk->bld',pow1,power_mat_z2)
-        #print(torch.amax(power_mat_z1))
-        #print(torch.amax(power_mat_z2))
-
-        return yhat,states
-
-    def get_funcs(self,x,dt):
-
-        B,_,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
-
-        xdot= deriv_approx_dy(x)
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        states = self.controlMamba(self.control_proj(x_in))
-        states = torch.flip(states,[1])
-        
-        b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        omega = self.omega_net(states)
-        
-        #b[:,:,0,1,0] = -(omega**2).squeeze() 
-        b *= self.tau**2
-
-        B,L,D,P1,P2 = b.shape
-        A = torch.cat([torch.cat([torch.zeros((B,L,D,1,1),device='cuda'),torch.ones((B,L,D,1,1),device='cuda')/self.tau**2],dim=-1),\
-           torch.stack([b[:,:,:,1,0].detach().clone(),b[:,:,:,0,1].detach().clone()],dim=-1)[:,:,:,None,:]],dim=-2)
-
-        assert A.shape[-1] == 2, print(A.shape)
-        assert A.shape[-2] == 2,print(A.shape) 
-
-        c = b[:,:,:,0,0].detach().clone()
-
-        b[:,:,:,0,0] = 0
-        z[:,:,-1] /= dt
-        power_mat_z1 = z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x 2d -> B x 2d x P
-        power_mat_z2 = z[:,:,1:,None].expand(-1,-1,-1,self.poly_dim) # B x 2d -> B x 2d x P
-        power_mat_z1 = power_mat_z1.pow(self.powers)
-        power_mat_z2 = power_mat_z2.pow(self.powers)
-        
-        pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-        
-        b_out = torch.einsum('bldk,bldk->bld',pow1,power_mat_z2)
-
-        
-        return A,b,b_out,c,states
-    
-
-    def integrate(self,x,dt):
-
-        B,_,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
-
-        xdot= deriv_approx_dy(x)
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-        #L = xdot.shape[1]
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        z0 = z[:,0,:]
-        z0[:,-1] /= dt
-        
-        states = self.controlMamba(self.control_proj(x_in))
-        states = torch.flip(states,[1])
-
-        b = self.b_net(states).view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        omega = self.omega_net(states)#*self.tau
-        if self.noInput:
-            b[:,:,:,0,0] = 0
-        
-        b[:,:,:,1,0] = -(omega**2) # this means we multiply here by tau**2
-        b *= self.tau**2 #/dt**2
-        b = b.detach().cpu().numpy()
-        pows = self.powers.detach().cpu().numpy()
-        def dz(t,z):
-
-            # t: time, should have a timestep of roughly 1. treat as ZOH
-            # z: B x 2d
-            b_ind = int(t)
-            b_step = b[0,b_ind,:,:,:]
-            
-            power_mat_z1 = np.tile(z[:1,None],(1,self.poly_dim)) # B x 2d -> B x 2d x P
-            power_mat_z2 = np.tile(z[1:,None],(1,self.poly_dim)) # B x 2d -> B x 2d x P
-            power_mat_z1 = np.power(power_mat_z1,pows)
-            power_mat_z2 = np.power(power_mat_z2,pows)
-            
-            pow1 = np.einsum('djk,dj->dk',b_step,power_mat_z1)
-            dz2 = np.einsum('dk,dk->d',pow1,power_mat_z2)
-            
-            dz1 = z[1]
-            
-            return np.hstack([dz1,dz2])
-        t_steps = np.arange(0,L*dt + dt/2,dt)[:L]
-        obj = solve_ivp(dz,(0,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='Radau')
-
-        return obj.y
-    
-
-class arneodobouros(nn.Module):
-
-
-    def __init__(self,d_data,
-                 n_layers=2,
-                 d_state=16,
-                 d_conv=4,
-                 expand_factor=1,
-                 device='cuda',
-                 tau = 1000,
-                 noInput = False,
-                 omega_scale = 10000,
-                 smooth_len=0.001,
-                smooth_penalty=lambda x: torch.var(x,dim=1)):
-        
-        super(arneodobouros,self).__init__()
+ 
+        super().__init__()
 
         self.device=device
-        alphaConfig = MambaConfig(d_model=4*d_data,\
+        ## if stacking on data dimension, d should be 4* d_data (y,dy,rev y, rev dy)
+        ## if stacking on time dimension, d should be 2*d_data (y,dy). We are stacking on the time dimension.
+        omegaConfig = MambaConfig(d_model=2*d_data,\
                                     n_layers=n_layers,d_state=d_state,\
                                     d_conv=d_conv,expand_factor=expand_factor)
-        betaConfig = MambaConfig(d_model=4*d_data,\
-                                    n_layers=n_layers,d_state=d_state,\
-                                    d_conv=d_conv,expand_factor=expand_factor)
-        dConfig = MambaConfig(d_model=4*d_data,\
+        gammaConfig = MambaConfig(d_model=2*d_data,\
                                     n_layers=n_layers,d_state=d_state,\
                                     d_conv=d_conv,expand_factor=expand_factor)
         
-        self.alphaMamba = Mamba(alphaConfig).to(device)
-        self.betaMamba = Mamba(betaConfig).to(device)
-        self.dMamba = Mamba(dConfig).to(device)
+        self.omega_mamba = Mamba(omegaConfig).to(device)
+        self.gamma_mamba = Mamba(gammaConfig).to(device)
 
-        self.alpha_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #unconstrained
-        self.beta_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) # output unconstrained, but weights nonneg
-        #self.b = nn.Parameter(torch.zeros(1),requires_grad=True).to(device) #non-neg
-        self.d_net = nn.Linear(in_features=4*d_data,out_features=d_data,device=device) #non-neg
+        self.omega_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) # output unconstrained
+        self.gamma_net = nn.Linear(in_features=2*d_data,out_features=d_data,device=device) # output unconstrained
 
-        tau = nn.Parameter(torch.tensor([tau],dtype=torch.float64,device=device), requires_grad=True)
+        kernelConfig = MambaConfig(d_model=2*d_data,\
+                                    n_layers=n_layers,d_state=d_state,\
+                                    d_conv=d_conv,expand_factor=expand_factor)
+        
+        self.kernel_mamba = Mamba(kernelConfig).to(device)
+        
         self.tau = tau
         self.smooth_len = smooth_len
-        self.noInput = noInput
+        self.kernel = kernel
+        self.kernel.tau = self.tau
+        self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
 
-    def forward(self,x,dt):
+    def forward(self,x:torch.FloatTensor,dxdt:torch.FloatTensor,dt:float,smoothing:bool=False):
+        """
+        predicts second derivative at time t.
+        all other predictions should be done in the train loop (train_utils.py)
 
+        inputs
+        ------
+            - x: cleaned audio segment
+            - dxdt: first derivative estimate, scaled by sample interval dt
+            - dt: sample interval
+            - smoothing: whether we smooth functions during training. We do not, but you can 
 
-        B,L,d = x.shape
+        outputs
+        ------
+            - yhat: model predicted second derivative, scaled by model time constant tau^2
+            - weights: kernel weights over whole segment. these are regularized towards simplicity during training
+        """
+        
+                
+        dxdt *= self.tau # this is now \tau dxdt
+                
+        dxdt /= dt # this is now \tau dx
+       
+        B,L,D = x.shape
+
         # x: x_0, x_dt, x_2dt,...
         smooth_len = int(round(self.smooth_len/dt))
 
-        xdot= deriv_approx_dy(x) # this gives: dxdt (currently unitless)
-        
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(L-4)dt
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
+        z = torch.cat([x,dxdt],dim=-1)
         L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
+
+        # we feed the audio and its first derivative, along with a time-reversed version,
+        # to each encoder
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1) # stack on time dimension
         
-        alphaControl = self.alphaMamba(x_in)
-        betaControl = self.betaMamba(x_in)
-        dControl = self.dMamba(x_in)
 
-        dControl,betaControl = smooth(dControl.abs(),smooth_len),smooth(betaControl.abs(),smooth_len)
+        omegaControl = self.omega_mamba(x_in)[:,L:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
+        kernelControl = self.kernel_mamba(x_in)[:,L:,:]
 
-        d = nn.ReLU()(self.d_net(dControl))
-        if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
-        alpha = self.alpha_net(alphaControl)
-        beta = self.beta_net(betaControl)
-        z[:,:,-1] /= dt
+        omega = self.omega_net(omegaControl).abs() # Since we take omega^2 anyway, we take the absolute value to prevent things from switching around too much
+        gamma = self.gamma_net(gammaControl) 
+        if smoothing:
+            # smooth our model functions, if we choose to do so. I do not.
+            omega=smooth(omega,smooth_len)
+            gamma = smooth(gamma,smooth_len)
+        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
+
         z1 = z[:,:,:1]
-        z1_2 = z[:,:,:1]**2 
-        z1_3 = z[:,:,:1]**3 
-        z2 = z[:,:,1:]
-
-        yhat = alpha + beta.abs()**2 *z1 + z1_2 - z1_3 - z1 * z2/self.tau - z1_2 * z2/self.tau - d 
-        return yhat, torch.cat([alphaControl,betaControl,dControl]),torch.zeros((1,),device=self.device)
-    
-    def get_funcs(self,x,dt):
-
-        B,_,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
-        smooth_len = int(round(self.smooth_len/dt))
-
-        xdot= deriv_approx_dy(x)
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
-        
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([z, torch.flip(z,[1])],dim=-1)
-        alphaControl = self.alphaMamba(x_in)
-        betaControl = self.betaMamba(x_in)
-        dControl = self.dMamba(x_in)
-        
-        
-        dControl=smooth(dControl.abs(),smooth_len)
-        betaControl=smooth(betaControl.abs(),smooth_len)
-        #b = nn.ReLU()(sel.b)/model.tau * torch.ones(L,device='cuda')#.view(B,L,d,self.poly_dim,self.poly_dim) # B x L x 2d x P x P
-        d = nn.ReLU()(self.d_net(dControl))
-        if self.noInput:
-            d = torch.zeros(d.shape,device='cuda')
-        alpha = self.alpha_net(alphaControl)
-        beta = self.beta_net(betaControl)
-        alpha *= self.tau**2
-        beta *= self.tau
-        d *= self.tau**2
-
-        z[:,:,-1] /= dt
-        z1 = z[:,:,:1]
-        z1_2 = z[:,:,:1]**2 
-        z1_3 = z[:,:,:1]**3 
         z2 = z[:,:,1:]
         
-        return alpha,beta,d,torch.cat([alphaControl,betaControl,dControl],dim=-1)
-    
-    def integrate(self,x,dt):
+        yhat = -(omega**2)*z1 - gamma * z2 - weighted_kernels
 
-        B,_,d = x.shape
-        # x: x_0, x_dt, x_2dt,...
+        return yhat,weights
+
+    def get_funcs(self,x:torch.FloatTensor,dxdt:torch.FloatTensor,dt:float,smoothing:bool=False,max_len_t:int=4):
+        """
+        given data, returns learned model functions --- latent features
+        
+        inputs
+        ------
+            - x: audio segment
+            - dxdt: first derivative estimate, scaled by timestep dt
+            - dt: sampling timestep
+            - smoothing: whether to smooth model functions. Here, we typically smooth omega & gamma
+            - max_len_t: maximum audio length that we will process simultaneously. triggers sequential processing, if x is too long
+        
+        returns
+        ------
+            - omega: instantaneous frequency term
+            - gamma: instantaneous damping termp
+            - weighted_kernels: nonlinearity term
+            - weights: weights on kernels in nonlinearity
+            - states: control signals for omega, gamma, kernels. I typically do not use these.
+        """
+
+        B,L,D = x.shape
+        
+        ## as in forward
+        dxdt *= self.tau
+        dxdt /= dt
+
+        max_len_s = int(round(max_len_t/dt))
+
+        smooth_len = int(round(self.smooth_len/dt)) # convert smooth len from seconds to samples
+
+        z = torch.cat([x,dxdt],dim=-1)
+        L = z.shape[1]
+        if L > max_len_s:
+            # if a function is too long, use sequential processing to retrieve latent features
+            print('using step by step functions')
+            yhat,omega,gamma,weighted_kernels,weights = self.funcs_by_step(z,dt,smoothing=smoothing,step_size=max_len_s) #update for chunked steps
+            return omega,gamma,weighted_kernels,weights,[]
+
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1) ## stack on time dimension
+        
+        omegaControl = self.omega_mamba(x_in)[:,L:,:]
+        gammaControl = self.gamma_mamba(x_in)[:,L:,:]
+        kernelControl = self.kernel_mamba(x_in)[:,L:,:]
+
+        omega = self.omega_net(omegaControl).abs()
+        gamma = self.gamma_net(gammaControl)
+        
+        if smoothing:
+            omega=smooth(omega.abs(),smooth_len)
+            gamma = smooth(gamma,smooth_len)
+
+        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
+    
+
+        return omega,gamma,weighted_kernels,weights,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
+    
+    def integrate(self,x,dxdt,dx2,dt,method='RK45',st=0.05,scaled=True,with_residual=False,smoothing=True,strategy='interp',oversample_prop=1):
+
+        """
+        don't use this.
+        """
+        print("Don't use this to integrate. Instead, use the integration methods in train/eval.py")
+        return 
+    
+    def funcs_by_step(self,z:torch.FloatTensor,dt:float,smoothing:bool=False,step_size:int=10000):
+        """
+        if your audio segment is too long, we'll just get these functions step by step
+        rather than all at once. This function assumes you do NOT need to backprop at all. That would probably take forever.
+        So I would recommend keeping that as is.
+
+        inputs
+        ------
+            - z: stacked x, \tau dx -- input to mamba models
+            - dt: sampling timestep
+            - smoothing: whether we smooth the latent features
+            - step_size: maximum number of samples to run through the model at once
+
+        returns
+        ------
+            - yhat: model estimated second derivative
+            - omegas: instantaneous frequency
+            - gammas: instantaneous damping
+            - kernel: nonlinearity
+            - weights: kernel weights for nonlinearity
+        """
+        
+
         smooth_len = int(round(self.smooth_len/dt))
 
-        xdot= deriv_approx_dy(x)
-        # dx: dx_4dt,dx_5dt,dx_6dt,..., dx_(l-4)dt
+        omega_cache = [(None, torch.zeros((1,self.omega_mamba.config.d_model * self.omega_mamba.config.expand_factor,\
+                                           self.omega_mamba.config.d_conv),device=self.device)) for _ in self.omega_mamba.layers]
+        gamma_cache = [(None, torch.zeros((1,self.gamma_mamba.config.d_model * self.gamma_mamba.config.expand_factor,\
+                                           self.gamma_mamba.config.d_conv),device=self.device)) for _ in self.gamma_mamba.layers]
+        weights_cache = [(None, torch.zeros((1,self.kernel_mamba.config.d_model * self.kernel_mamba.config.expand_factor,\
+                                             self.kernel_mamba.config.d_conv),device=self.device)) for _ in self.kernel_mamba.layers]
         
-        z = torch.cat([x[:,4:-4,:],xdot],dim=-1)
-        L = z.shape[1]
-
-        alpha,beta,d,states = self.get_funcs(x[:1,:,:],dt)
-        alpha,beta,d= alpha.detach().cpu().numpy().squeeze(),beta.detach().cpu().numpy().squeeze(),\
-                            d.detach().cpu().numpy().squeeze()
+        B,L,D = z.shape
+        x_in = torch.cat([torch.flip(z,[1]),z],dim=1)
+        #B,L,D = x_in.shape
+        L_new = x_in.shape[1]
         
-        st = 0.05
-        start = int(round(st/dt))
-        #alpha,beta,d = alpha.detach().cpu().numpy(),beta.detach().cpu().numpy(),d.detach().cpu().numpy()
-        alpha,beta,d = alpha[start:],beta[start:],d[start:]
+        omegas,gammas,weights,kernel= [],[],[],[]
+        with torch.no_grad():
+            for ii in tqdm(range(0,L_new,step_size),total=L,desc=f"iterating through segment of length {L}"):
+                
+                if np.mod(ii,10000) == 0:
+                    ## clean up stuff every so often
+                    gc.collect()
+                s = x_in[:,ii:ii+step_size,:]
 
-        t_steps = np.arange(0,L*dt+dt/2,dt)[:L][start:]
-        alphaTerp = lambda t: np.interp(t,t_steps,alpha)
-        betaTerp = lambda t: np.interp(t,t_steps,beta)
-        z0 = z[0,start,:]
-        z0[-1] /= dt
+                omega,omega_cache = self.omega_mamba.step(s,omega_cache)
+                gamma,gamma_cache = self.omega_mamba.step(s,gamma_cache)
+                w,weights_cache = self.omega_mamba.step(s,weights_cache)
 
-        def dz(t,z):
+                
+                
+                s = z[:,ii:ii+1,:]
+                if ii >= L:
+                    print(ii*dt)
+                    omega = self.omega_net(omega).abs()
+                    gamma = self.gamma_net(gamma)
+                    weights.append(w.detach().cpu().numpy())
+                    omegas.append(omega.detach().cpu().numpy())
+                    gammas.append(gamma.detach().cpu().numpy())
+                    weighted_kernels,_ = self.kernel(s,w,smooth_len)
+                    kernel.append(weighted_kernels.detach().cpu().numpy())
+                    
 
-            # t: time, should have a timestep of roughly 1. treat as ZOH
-            # z: B x 2d
-            b_ind = int(t)
-            
-            alpha_step = alpha[b_ind]#omegaTerp(t)#omega[b_ind]
-            beta_step = beta[b_ind] #gammaTerp(t)#gamma[b_ind]
-            d_step = d[b_ind]
-            #print(b_step.shape)
-            #print(t)
-            z1 = z[:1]
-            #print(z1.shape)
-            z1_2 = z[:1]**2  #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-            z1_3 = z[:1]**3  #z[:,:,:1,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-            z2 = z[1:] #,None].expand(-1,-1,-1,self.poly_dim) # B x L x d -> B x L x 2d x P
-    
-            #print(power_mat_z1.shape)       
-            #power_mat_z1 = power_mat_z1.pow(self.powers)
-            #power_mat_z2 = power_mat_z2.pow(self.powers)
-            #pow1 = torch.einsum('bldjk,bldj->bldk',b,power_mat_z1)
-            dz2 = alpha_step + beta_step.abs()**2 *z1 + z1_2 *self.tau**2 - z1_3*self.tau**2 - z1 * z2*self.tau - z1_2 * z2*self.tau - d_step 
-            #dz2 = -(omega_step**2)*z1 - gamma_step * z2 + b_step*power_mat_z1 * z2
-            #print(dz2.shape)
-            #print(mult * z[0])
-            #assert False
-            dz1 = z[1]
-            
-            return np.hstack([dz1,dz2])
-        
-        #print(t_steps.shape)
-        start = time.time()
-        obj = solve_ivp(dz,(st,L*dt),z0.squeeze().detach().cpu().numpy(),t_eval=t_steps,method='RK45',atol=1e-5)
-        print(f'integrated in {np.round(time.time() - start,2)} s')
-        #print(obj.y.shape)
-        return obj.y,alpha,beta,d,obj.status
+        z[:,:,1]/=dt 
+        omegas= np.stack(omegas,axis=1)
+        gammas = np.stack(gammas,axis=1)
+        weights = np.stack(weights,dim=1)
+        kernel = np.stack(kernel,dim=1)
 
+        z1 = z[:,:,:1].detach().cpu().numpy().squeeze()/dt
+        z2 = z[:,:,1:].detach().cpu().numpy().squeeze()
 
+        yhat = -(omegas**2)*z1 - gammas * z2 - weighted_kernels
 
+        if smoothing:
+            omegas=smooth(omegas,smooth_len)
+            gammas = smooth(gammas,smooth_len)
 
+        return yhat,omegas,gammas,kernel,weights
 
-        
-
-
-        
-
-        
-
-        
-
-
-        
-
-        
