@@ -113,7 +113,7 @@ class rkhs_ouroboros(nn.Module):
             # smooth our model functions, if we choose to do so. I do not.
             omega=smooth(omega,smooth_len)
             gamma = smooth(gamma,smooth_len)
-        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
+        weighted_kernels,weights = self.kernel(z,kernelControl)
 
         z1 = z[:,:,:1]
         z2 = z[:,:,1:]
@@ -174,7 +174,7 @@ class rkhs_ouroboros(nn.Module):
             omega=smooth(omega.abs(),smooth_len)
             gamma = smooth(gamma,smooth_len)
 
-        weighted_kernels,weights = self.kernel(z,kernelControl,smooth_len)
+        weighted_kernels,weights = self.kernel(z,kernelControl)
     
 
         return omega,gamma,weighted_kernels,weights,torch.cat([omegaControl,gammaControl,kernelControl],dim=-1)
@@ -247,7 +247,7 @@ class rkhs_ouroboros(nn.Module):
                     weights.append(w.detach().cpu().numpy())
                     omegas.append(omega.detach().cpu().numpy())
                     gammas.append(gamma.detach().cpu().numpy())
-                    weighted_kernels,_ = self.kernel(s,w,smooth_len)
+                    weighted_kernels,_ = self.kernel(s,w)
                     kernel.append(weighted_kernels.detach().cpu().numpy())
                     
 
