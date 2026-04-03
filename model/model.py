@@ -1,15 +1,11 @@
 import torch
 from torch import nn
 from mambapy.mamba import Mamba, MambaConfig
-from model.model_utils import smooth, NonNegClipper
-from utils import deriv_approx_dy,deriv_approx_d2y
-from model.kernels import *
+from model.model_utils import smooth
+#from model.kernels import *
 
-from scipy.integrate import solve_ivp
 import numpy as np
-import time
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 #plt.rcParams['text.usetex'] = True
 import gc
 
@@ -24,7 +20,7 @@ with elements used included in `third_party` for convenience.
 
 """
 
-class rkhs_ouroboros(nn.Module):
+class Ouroboros(nn.Module):
 
     def __init__(self,d_data:int,
                  kernel:nn.Module,

@@ -1,6 +1,6 @@
 from train.train import train,save_model,load_model
 from model.kernels import fullPolyModule
-from model.constrained_model import rkhs_ouroboros
+from model.model import Ouroboros
 from utils import sse 
 from visualization.model_vis import loss_plot
 from train.eval import eval_model_error
@@ -51,7 +51,7 @@ def model_cv_lambdas(dls,dt,nEpochs=100,lr=1e-3,\
         kernel = fullPolyModule(nTerms=n_kernels,device='cuda',x_dim=1,z_dim=2,\
                                 activation = lambda x: x,lam=lam,trend_filtering=True)
         reg_weights=True    
-        full_model_poly=rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
+        full_model_poly=Ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
                 d_conv=d_conv,expand_factor=expand_factor,tau=tau,\
                             smooth_len=smooth_len,kernel=kernel)
 

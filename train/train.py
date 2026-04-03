@@ -6,8 +6,7 @@ from utils import deriv_approx_d2y,deriv_approx_dy,sst,sse,euler_step_k
 import matplotlib.pyplot as plt
 import os
 import glob
-from model.constrained_model import rkhs_ouroboros,simple_ouroboros
-from model.filters import filter as filt
+from model.model import Ouroboros
 from model.kernels import *
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -80,6 +79,8 @@ def load_model(location,kernel_type='gauss'):
         d_conv=4
         expand_factor=4
     try:
+
+        ## should just be fullPolyModule
         if kernel_type == 'gauss':
             kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
         elif kernel_type == 'constant_gauss':
@@ -89,8 +90,8 @@ def load_model(location,kernel_type='gauss'):
         else:
             kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
         
-
-        model = rkhs_ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
+    ## should just be Ouroboros
+        model = Ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
                     d_conv=d_conv,expand_factor=expand_factor,tau=sd['tau'],\
                                 smooth_len=sd['smooth_len'],kernel=kernel)
     except:
