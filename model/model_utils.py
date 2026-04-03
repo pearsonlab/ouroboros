@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 
 
-def smooth(data:torch.FloatTensor,smooth_len:float):
+def smooth(data:torch.FloatTensor,smooth_len:float) -> torch.FloatTensor:
     """
     Smooth, using a causal uniform moving average. Uses cumsum
     to speed performance. By default, pre-pads with zeros

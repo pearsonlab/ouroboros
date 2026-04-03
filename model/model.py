@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from mambapy.mamba import Mamba, MambaConfig
 from model.model_utils import smooth
+from typing import Tuple,Union
 #from model.kernels import *
 
 import numpy as np
@@ -63,7 +64,7 @@ class Ouroboros(nn.Module):
         self.kernel.tau = self.tau
         self.names = [rf"$\omega$",rf"$\gamma$",'weighted kernels','states']
 
-    def forward(self,x:torch.FloatTensor,dxdt:torch.FloatTensor,dt:float,smoothing:bool=False):
+    def forward(self,x:torch.FloatTensor,dxdt:torch.FloatTensor,dt:float,smoothing:bool=False)->Tuple[torch.FloatTensor,torch.FloatTensor]:
         """
         predicts second derivative at time t.
         all other predictions should be done in the train loop (train_utils.py)
@@ -118,7 +119,12 @@ class Ouroboros(nn.Module):
 
         return yhat,weights
 
-    def get_funcs(self,x:torch.FloatTensor,dxdt:torch.FloatTensor,dt:float,smoothing:bool=False,max_len_t:int=4):
+    def get_funcs(self,x:torch.FloatTensor,dxdt:torch.FloatTensor,
+                  dt:float,smoothing:bool=False,max_len_t:int=4) -> Tuple[torch.FloatTensor,
+                                                                          torch.FloatTensor,
+                                                                          torch.FloatTensor,
+                                                                          torch.FloatTensor,
+                                                                          Union[list,torch.FloatTensor]]:
         """
         given data, returns learned model functions --- latent features
         
@@ -183,7 +189,12 @@ class Ouroboros(nn.Module):
         print("Don't use this to integrate. Instead, use the integration methods in train/eval.py")
         return 
     
-    def funcs_by_step(self,z:torch.FloatTensor,dt:float,smoothing:bool=False,step_size:int=10000):
+    def funcs_by_step(self,z:torch.FloatTensor,dt:float,
+                      smoothing:bool=False,step_size:int=10000)-> Tuple[torch.FloatTensor,
+                                                                        torch.FloatTensor,
+                                                                        torch.FloatTensor,
+                                                                        torch.FloatTensor,
+                                                                        torch.FloatTensor]:
         """
         if your audio segment is too long, we'll just get these functions step by step
         rather than all at once. This function assumes you do NOT need to backprop at all. That would probably take forever.

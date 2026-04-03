@@ -3,7 +3,7 @@ from abc import ABC,abstractmethod
 import torch
 from torch import nn
 from model.model_utils import smooth
-
+from typing import Tuple
 
 """
 These kernel functions define the nonlinearity of our model. They are separate to make analysis
@@ -64,7 +64,7 @@ class fullPolyModule(kernelModule):
         self.powers = torch.arange(0,self.poly_dim+1,device=self.device)
         self.lam = lam
 
-    def forward(self,x:torch.FloatTensor,z:torch.FloatTensor):
+    def forward(self,x:torch.FloatTensor,z:torch.FloatTensor)->Tuple[torch.FloatTensor,torch.FloatTensor]:
         """
         computes weights and polynomial kernel
 
@@ -103,7 +103,7 @@ class fullPolyModule(kernelModule):
 
         return x[:,:,None],weights
 
-    def forward_given_weights(self,x:torch.FloatTensor,weights:torch.FloatTensor):
+    def forward_given_weights(self,x:torch.FloatTensor,weights:torch.FloatTensor) -> torch.FloatTensor:
         """
         computes polynomial kernel given weights on polynomial terms
 
@@ -132,7 +132,7 @@ class fullPolyModule(kernelModule):
 
         return x[:,:,None]
     
-    def forward_given_weights_numpy(self,x:np.ndarray,weights:np.ndarray):
+    def forward_given_weights_numpy(self,x:np.ndarray,weights:np.ndarray) -> np.ndarray:
         """
         computes polynomial kernel given weights on polynomial terms.
         same as the above method, but using numpy instead of torch
