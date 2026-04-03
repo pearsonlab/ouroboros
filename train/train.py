@@ -11,28 +11,31 @@ from model.kernels import *
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-def save_filter(trained_filt,location,n_filters,filter_size):
+# filters removed
 
-    sd = {'filter_params':trained_filt.state_dict(),
-            'n_filters':n_filters,
-            'filter_size':filter_size
-            }
-    torch.save(sd,location)
-    return
+def save_model(model:torch.nn.Module,opt:torch.optim.Optimizer,location:str,\
+               n_layers:int=2,d_state:int=1,\
+                d_conv:int=4,expand_factor:int=4,
+                max_saved:int=5):
+    
+    """
+    save a model. requires information about the structure of 
+    the model as well, so that it can be reproduced upon loading
+    also, automatically removes older saves. It would probably be best to just keep
+    the 'best' epoch, but whatevah
 
-def load_filter(location):
-    sd = torch.load(location,weights_only=False)
-    trained_filt = filt(n_filters=sd['n_filters'],filter_size=sd['filter_size'])
-    trained_filt.load_state_dict(sd['filter_params'])
-
-    return trained_filt
-
-
-
-def save_model(model,opt,location,\
-               n_layers=2,d_state=1,\
-                d_conv=4,expand_factor=4,
-                max_saved=5):
+    inputs
+    -----
+        - model: Ouroboros model to be saved
+        - opt: optimizer for said model
+        - location: filename in which to save the model
+        - n_layers: number of mamba layers in encoder
+        - d_state: internal state dim of ssm
+        - d_conv: width of mamba convolutional kernel
+        - expand_factor: factor by which we expand input prior to feeding into ssm
+        - max_saved: max number of checkpoint files. we only keep the 5 most recent, assuming
+            they're saved with epoch number in the tag
+    """
     
     current_saves = glob.glob(os.path.join(
             '/'.join(location.split('/')[:-1]),'*.tar')
@@ -59,7 +62,28 @@ def save_model(model,opt,location,\
         
     torch.save(sd,location)
 
-def load_model(location,kernel_type='gauss'):
+def load_model(location:str)->Tuple[nn.Module,
+                                    torch.optim.Optimizer,
+                                    torch.optim.lr_scheduler.LRScheduler,
+                                    int]:
+
+    """
+    load a model. requires that save files contained information about the structure of 
+    the model as well, so that it can be reproduced upon loading
+    
+
+    inputs
+    -----
+        - location: save file directory you wish to load from. Assumes files include checkpoint number
+            and loads the most recent checkpoint
+
+    returns
+    -----
+        - model: an Ouroboros with weights and structure specified by savefile
+        - opt: optimizer for that Ouroboros
+        - scheduler: learning rate scheduler for that optimizer
+        - epoch: training epoch corresponding to this checkpoint
+    """
 
     model_files = glob.glob(os.path.join(location,'*.tar'))
     epochs = [int(m.split('/checkpoint_')[-1].split('.tar')[0]) for m in model_files]
@@ -80,97 +104,65 @@ def load_model(location,kernel_type='gauss'):
         expand_factor=4
     try:
 
-        ## should just be fullPolyModule
-        if kernel_type == 'gauss':
-            kernel = simpleGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
-        elif kernel_type == 'constant_gauss':
-            kernel = constantGaussModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,trend_filtering=1)
-        elif kernel_type == 'full_poly':
-            kernel = fullPolyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,lam=1,trend_filtering=1)
-        else:
-            kernel = polyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation = lambda x: x,lam=0.9,trend_filtering=1)
-        
-    ## should just be Ouroboros
+        # since this is a trained model and we only use lambda during training, i set it to 1 here...
+        # but probably should have saved it. oh well! we set to 1 for compatibility with all my saves.
+        kernel = fullPolyModule(nTerms=sd['n_kernel'],device='cuda',x_dim=1,z_dim=2,activation=lambda x: x,lam=1)
+
+   
         model = Ouroboros(d_data=1,n_layers=n_layers,d_state=d_state,\
                     d_conv=d_conv,expand_factor=expand_factor,tau=sd['tau'],\
                                 smooth_len=sd['smooth_len'],kernel=kernel)
     except:
-        model = simple_ouroboros(d_data=1,n_layers=2,d_state=1,\
-                d_conv=4,expand_factor=4,tau=sd['tau'],\
-                            smooth_len=sd['smooth_len'])
-    print(f"tau: {model.tau}")
+        print("no kernel in savefile!")
+        raise
+        
+    print(f"model tau: {model.tau}")
     opt = Adam(model.parameters(),
                 lr=1e-3)
     scheduler = ReduceLROnPlateau(opt,factor=0.75,patience=5,min_lr=1e-10)
     model.load_state_dict(sd['ouroboros'])
     opt.load_state_dict(sd['opt'])
+
     return model,opt,scheduler,epochs[most_recent]
-
-
-def train_separately(damped_harmonic_model,kernel,loaders,scheduler=None,\
-                     nEpochs=100,val_freq=25,runDir='.',dt=1/44100,\
-                    vis_freq=100,use_trend_filtering=False,trend_level=1,\
-                    alpha=1):
-    
-    harmonic_model,harmonic_opt = damped_harmonic_model
-    kernel_model,kernel_opt = kernel 
-
-    print(f'training damped harmonic model with trend filtering alpha = {alpha}')
-
-    writer = SummaryWriter(log_dir=runDir)
-
-    train_losses,val_losses=[],[]
-    
-    for epoch in tqdm(range(nEpochs),desc='training model'):
-
-        harmonic_model.train()
-        for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
-
-            harmonic_opt.zero_grad()
-            x,y = batch # each is bsz x seq len x n neurons + 1
-            bsz,_,n = x.shape
-
-            x = x.to('cuda').to(torch.float32)
-            y = y.to('cuda').to(torch.float32)
-
-            dy = deriv_approx_dy(x)
-            # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-            #change: scaling to "true" d2y
-            dy2 = deriv_approx_d2y(x)/(dt**2)
-            # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
-            
-            y2hat,state_pred,trend_penalty = harmonic_model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
-            
-            # change: scaling to "true" d2y
-            y2hat = y2hat * harmonic_model.tau**2 #* (model.tau*dt)**2
-            
-            yhat = y2hat
-
-            y = dy2
-            L = y.shape[1]
-            if vis_freq > 0:
-                if (idx % vis_freq) == 0:
-                    sse_sample = sse(yhat[:1,:,:1],y[:1,:,:1])
-                    sst_sample = sst(y[:1,:,:1])
-                    r2_sample = (1 - sse_sample/sst_sample).item()
-                    harmonic_model.visualize(x,dt)
-                
-                    on = np.random.choice(L-45)
-                    ax = plt.gca()
-                    ax.plot(yhat[0,:,0].detach().cpu().numpy(),label='model')
-                    ax.plot(y[0,:,0].detach().cpu().numpy(),label='data')
-                    ax.set_title(f"sample r2: {r2_sample: 0.4f}")
-                    ax.legend()
-                    plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
-                    plt.close()
-
 
 def train(model,optimizer,loss_fn,loaders,scheduler=None,
           nEpochs=100,val_freq=25,runDir='.',dt=1/44100,\
             vis_freq=100,smoothing=False,reg_weights=False,
-            start_epoch=0,model_info={},save_freq=0):
+            start_epoch=0,model_info={},save_freq=0)->Tuple[list[float],
+                                                            list[Tuple[int,float,float]],
+                                                            nn.Module,
+                                                            torch.optim.Optimizer]:
     
-    #print(f'training with trend filtering alpha = {alpha}')
+    """
+    main train loop for an Ouroboros model. takes a model, an optimizer, loss function, and dataloaders;
+    trains a model, and returns that model and train statistics
+
+    inputs
+    -----
+        - model: an Ouroboros
+        - optimizer: an optimizer for that Ouroboros
+        - loss_fn: a training objective. In all cases, we used MSE
+        - loaders: Dataloaders, one for the train set and one for the test set
+        - scheduler: a learning rate scheduler for the optimizer. Optional, but we use this
+        - nEpochs: number of passes through the entire training dataset
+        - val_freq: frequency of looking at the validation set to test performance
+        - runDir: directory to save tensorboard logs in
+        - dt: sampling timestep of the data
+        - vis_freq: frequency with which to visualize model reconstructions
+        - smoothing: whether or not to smooth latents during training. we do not,but you can
+        - reg_weights: whether or not to regularize weights, using procedure laid out in the paper. we always do
+        - start_epoch: starting epoch for training. if training a model, this should be 0; if loading a trained model
+            this might be higher
+        - model_info: dictionary of model structure specification. used for saving models
+        - save_freq: how often (in epochs) to save your model
+
+    returns
+    ----
+        - train_losses: train loss per epoch. 
+        - val losses: list of tuples, containing time point (in gradient updates) of val, val loss, and val regularization cost
+        - trained Ouroboros
+        - optimizer for that trained Ouroboros
+    """
 
     writer = SummaryWriter(log_dir=runDir)
 
@@ -183,33 +175,18 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
         for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
 
             optimizer.zero_grad()
-            x,dxdt,dx2dt2 = batch # each is bsz x seq len x n neurons + 1
+            x,dxdt,dx2dt2 = batch # each is bsz x seq len x 1
             bsz,_,n = x.shape
 
             x = x.to('cuda').to(torch.float32)
             dxdt = dxdt.to('cuda').to(torch.float32)
             dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2) * model.tau**2 # rescale dx2, rather than model output
 
-            #dy = deriv_approx_dy(x)
-            # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-            #change: scaling to "true" d2y
-            #dy2 = deriv_approx_d2y(x)/(dt**2)
-            # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
-            
             dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
             
-            # change: scaling to "true" d2y
-            #dx2hat = dx2hat / model.tau**2 #since we changed the meaning of \tau, need to rescale here as well
-             #* (model.tau*dt)**2
-            
-            #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
-            
-            #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
-            
-            yhat = dx2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
-            #print(yhat.shape)
-            # y starts as x[1:0]
-            y = dx2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
+            yhat = dx2hat 
+
+            y = dx2 
             L = x.shape[1]
 
             if vis_freq > 0:
@@ -254,7 +231,6 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     
 
                     fig.suptitle(f"sample r2: {r2_sample: 0.4f}")
-                    #ax.legend()
                     plt.tight_layout()
                     plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
                     plt.close()
@@ -262,28 +238,26 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             ##################################
             
             loss = loss_fn(y,yhat[:,:L,:]) 
-            #alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
-            l = loss# + alpha*trend_penalty
+
+            l = loss
             if reg_weights:
-                weights = weights #* model.tau
+
                 B,L,P,P = weights.shape
                 lam_mat = torch.arange(P,\
                                        dtype=torch.float32,\
                                         device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
-                #print(lam_mat.shape)
-                #assert torch.all(lam_mat >= 0)
-                #w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam # old
+
                 w = model.kernel.lam**(lam_mat + lam_mat.transpose(-1,-2)) # new
 
-                #penalty =  (w**2 *weights**2).sum(dim=(-1,-2)).mean() # old
-                penalty =  (w *weights**2).sum(dim=(-1,-2,-3)).mean() # new (sum over weights, time)
-                
+                penalty =  (w *weights**2).sum(dim=(-1,-2,-3)).mean() # new (sum over weights, time), average over samples. equivalent to squared L2 norm
+                # we take mean over samples to match the loss fn we use (MSE, with mean over samples)
                 l = l + penalty
-            #print(l)
+            
             l.backward()
             optimizer.step()
             tot = sst(y)
             train_losses.append(loss.item())
+            # we should probably be adding val loss here too...ugh
             writer.add_scalar('Loss/train',loss.item(),idx)
             if reg_weights:
                 writer.add_scalar('Penalty/train',penalty.item(),idx)
@@ -295,27 +269,18 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
             vn = 0.
             for idx,batch in enumerate(loaders['val'],start=epoch*len(loaders['train'])):
                 with torch.no_grad():
-                    x,dxdt,dx2dt2 = batch # each is bsz x seq len x n neurons + 1
+                    x,dxdt,dx2dt2 = batch # each is bsz x seq len x 1
                     bsz,_,n = x.shape
 
                     x = x.to('cuda').to(torch.float32)
                     dxdt = dxdt.to('cuda').to(torch.float32)
                     dx2 = dx2dt2.to('cuda').to(torch.float32)/(dt**2) * model.tau**2
                     
-                    dx2hat,weights = model(x,dxdt,dt,smoothing) #state: B x L x SD
-            
-                    ## scaling to "true" d2y
-                    #dx2hat = dx2hat / model.tau **2 # change to reflect updated scaling
-                    #(model.tau*dt)**2
+                    dx2hat,weights = model(x,dxdt,dt,smoothing) 
                     
-                    #y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3
-                    
-                    #yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes y[6:-2]
-                    
-                    yhat = dx2hat #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
-                    #print(yhat.shape)
-                    # y starts as x[1:0]
-                    y = dx2 #torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
+                    yhat = dx2hat 
+
+                    y = dx2 
                     L = y.shape[1]
                     if vis_freq > 0:
                         if idx == epoch*len(loaders['train']):
@@ -365,23 +330,20 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
                     l = loss_fn(y,yhat[:,:L,:])
                     tot = sst(y)
                     if reg_weights:
-                        weights = weights# * model.tau
+
                         B,L,P,P = weights.shape
                         lam_mat = torch.arange(P,\
                                             dtype=torch.float32,\
                                                 device=model.kernel.device)[None,None,:,None].expand(B,L,-1,P)
-                        #print(lam_mat.shape)
-                        #assert torch.all(lam_mat >= 0)
-                        #w = (lam_mat + lam_mat.transpose(-1,-2))*model.kernel.lam
+                        
                         exps = lam_mat + lam_mat.transpose(-1,-2)
                         w = model.kernel.lam ** exps
-                        penalty =  (w * weights**2).sum(dim=(-1,-2)).mean()#(w**2 *weights**2).sum(dim=(-1,-2)).mean()
-                        #l = l + penalty
-                    vl += l.item()#1 - l.item()/tot.item()
+                        penalty =  (w * weights**2).sum(dim=(-1,-2)).mean()
+
+                    vl += l.item()
 
                     if reg_weights:
                         vp += penalty.item()
-                    
                     
             if scheduler:
                 scheduler.step(vl/len(loaders['val']))
@@ -399,333 +361,3 @@ def train(model,optimizer,loss_fn,loaders,scheduler=None,
     writer.close()
     return train_losses,val_losses,model,optimizer
 
-def train_ksteps(model,filter,optimizer,loaders,scheduler=None,
-          nEpochs=100,val_freq=25,runDir='.',dt=1/44100,vis_freq=100,
-          use_trend_filtering=False,
-          trend_level=1,alpha=1,ksteps=1):
-    
-    print(f'training with trend filtering alpha = {alpha}')
-
-    writer = SummaryWriter(log_dir=runDir)
-
-    train_losses,val_losses=[],[]
-
-    loss_fn = lambda y,yhat: sse(yhat,y,reduction='none')
-    loss_scale = torch.FloatTensor([1,dt,dt**2])[None,:].to('cuda')
-    vis_test=False
-    for epoch in tqdm(range(nEpochs),desc='training model'):
-
-        model.train()
-        
-        for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
-            
-            optimizer.zero_grad()
-            x,y = batch # each is bsz x seq len x n neurons + 1
-            bsz,_,n = x.shape
-
-            x = x.to('cuda').to(torch.float32)
-            y = y.to('cuda').to(torch.float32)
-
-            dy = deriv_approx_dy(x)/dt
-            # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-            #change: scaling to "true" d2y
-            dy2 = deriv_approx_d2y(x)/(dt**2)
-            # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt 
-            y = x[:,4:-4,:]           
-            
-            y2hat,state_pred,trend_penalty = model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
-            
-            # change: scaling to "true" d2y
-            y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2, corresponding to x[4:-4]
-            
-            (y_target,dy_target),(yhat,dyhat) = euler_step_k(y,dy,y2hat,dt,k=ksteps) #dy + y2hat*dt # makes dy [5:-3], corresponding to x[5:-3]
-            #print(yhat.shape)
-            yhats = []
-            for yh in yhat:
-                yhats.append(filter(yh.transpose(0,1)).squeeze().transpose(0,1))
-            yhat = torch.stack(yhats,axis=0)#torch.vmap(filter,in_dims=-1,out_dims=-1)(yhat)
-            #yhat = x[:,5:-3] + y1hat *dt # makes corresponding to x[6:-2]
-            
-            #yhat = torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
-            #print(yhat.shape)
-            # y starts as x[1:0]
-            #y = torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
-            L = y.shape[1]
-
-            if vis_freq > 0:
-
-                if (idx % vis_freq) == 0:
-                    vis_test=True
-                    sse_sample = sse(yhat[:1,:,:1],y_target[:1,:,:1])
-                    sst_sample = sst(y_target[:1,:,:1])
-                    r2_sample = (1 - sse_sample/sst_sample).item()
-                    model.visualize(x,dt)
-                
-                    on = np.random.choice(L-45)
-                    ax = plt.gca()
-                    ax.plot(yhat[0,:,0].detach().cpu().numpy(),label='model')
-                    ax.plot(y_target[0,:,0].detach().cpu().numpy(),label='data')
-                    ax.set_title(f"sample r2: {r2_sample: 0.4f}")
-                    ax.legend()
-                    plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}.svg"))
-                    plt.close()
-
-            ##################################
-            y_loss = (loss_fn(y_target,yhat).sum(dim=-1)/ksteps).mean()
-            dy_loss = (loss_fn(dy_target,dyhat).sum(dim=-1)*dt/ksteps).mean()
-            d2y_loss = (loss_fn(dy2,y2hat).sum(dim=-1)*dt**2).mean()
-            loss = (y_loss +dy_loss + d2y_loss) 
-            alpha = 0# max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
-            l = loss + alpha*trend_penalty
-            #print(l)
-            l.backward()
-            optimizer.step()
-            tot1 = (sst(y_target,reduction='none').sum(dim=-1)/ksteps).mean()
-            tot2 = (sst(dy_target,reduction='none').sum(dim=-1)*dt/ksteps).mean()
-            tot3 = (sst(dy2,reduction='none').sum(dim=-1)*dt**2).mean()
-            full_tot = (tot1 + tot2 + tot3)
-            train_losses.append((1 - loss.item()/full_tot.item(),trend_penalty.item()))
-            writer.add_scalar('Loss/train',1 - loss.item()/full_tot.item(),idx)
-            writer.add_scalar('Loss/train, y',1 - y_loss.item()/tot1.item(),idx)
-            writer.add_scalar('Loss/train, dy',1 - dy_loss.item()/tot2.item(),idx)
-            writer.add_scalar('Loss/train, d2y',1 - d2y_loss.item()/tot3.item(),idx)
-            #writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
-
-        if epoch % val_freq == 0:
-            model.eval()
-            vl=0.
-            vly = 0.
-            vldy = 0.
-            vld2y = 0.
-            for idx,batch in enumerate(loaders['val'],start=epoch*len(loaders['train'])):
-                with torch.no_grad():
-                    x,y = batch
-                    x = x.to('cuda').to(torch.float32)
-                    y = y.to('cuda').to(torch.float32)
-                    
-                    dy = deriv_approx_dy(y)/dt
-                    # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-                    #scaling to "true" d2y
-                    dy2 = deriv_approx_d2y(y)/(dt**2)
-                    # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt  
-                    y = x[:,4:-4,:]          
-                    
-                    y2hat,state_pred,penalty = model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
-            
-                    ## scaling to "true" d2y
-                    y2hat = y2hat * model.tau **2 #(model.tau*dt)**2
-                    
-                    (y_target,dy_target),(yhat,dyhat) = euler_step_k(y,dy,y2hat,dt,k=ksteps)
-                    yhats = []
-                    for yh in yhat:
-                        yhats.append(filter(yh.transpose(0,1)).squeeze().transpose(0,1))
-                    yhat = torch.stack(yhats,axis=0)
-                    #yhat = torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
-                    #print(yhat.shape)
-                    # y starts as x[1:0]
-                    #y = torch.cat([x[:,6:-4],dy[:,2:],dy2[:,2:]],dim=-1)
-                    L = y.shape[1]
-                    if vis_freq > 0 & vis_test:
-                        if idx == epoch*len(loaders['train']):
-                            sse_sample = sse(yhat[:1,:,:1],y_target[:1,:,:1])
-                            sst_sample = sst(y_target[:1,:,:1])
-                            r2_sample = (1 - sse_sample/sst_sample).item()
-                            model.visualize(x,dt)
-                        
-                            on = np.random.choice(L-45)
-                            ax = plt.gca()
-                            ax.plot(yhat[0,on:on+600,0].detach().cpu().numpy(),label='model')
-                            ax.plot(y_target[0,on:on+600,0].detach().cpu().numpy(),label='data')
-                            ax.set_title(f"sample r2: {r2_sample: 0.4f}")
-                            ax.legend()
-                            plt.savefig(os.path.join(runDir,f"y_vs_yhat_batch_{idx}_test.svg"))
-                            plt.close()
-                        vis_test=False
-                    y_loss = (loss_fn(y_target,yhat).sum(dim=-1)/ksteps).mean()
-                    dy_loss = (loss_fn(dy_target,dyhat).sum(dim=-1)*dt/ksteps).mean()
-                    d2y_loss = (loss_fn(dy2,y2hat).sum(dim=-1)*dt**2).mean()
-                    l = (y_loss +dy_loss + d2y_loss) 
-                    #l =  (loss_fn(y,yhat[:,:L,:])*loss_scale).sum(dim=-1).mean() 
-                    tot1 = (sst(y_target,reduction='none').sum(dim=-1)/ksteps).mean()
-                    tot2 = (sst(dy_target,reduction='none').sum(dim=-1)*dt/ksteps).mean()
-                    tot3 = (sst(dy2,reduction='none').sum(dim=-1)*dt**2).mean()
-                    full_tot = (tot1 + tot2 + tot3)
-
-                    vl += 1 - l.item()/full_tot.item()
-                    
-                    vly += 1 - y_loss.item()/tot1.item()
-                    vldy += 1 - dy_loss.item()/tot2.item()
-                    vld2y += 1 - d2y_loss.item()/tot3.item()
-                    
-                    
-            if scheduler:
-                scheduler.step(vl/len(loaders['val']))
-            val_losses.append((epoch*len(loaders['train']),vl/len(loaders['val']),0))
-            writer.add_scalar('Loss/validation',vl/len(loaders['val']),idx)
-            writer.add_scalar('Loss/validation, y',1 - y_loss.item()/tot1.item(),idx)
-            writer.add_scalar('Loss/validation, dy',1 - dy_loss.item()/tot2.item(),idx)
-            writer.add_scalar('Loss/validation, d2y',1 - d2y_loss.item()/tot3.item(),idx)
-            #writer.add_scalar('Penalty/validation',vp/len(loaders['val']),idx)
-
-    writer.close()
-    return train_losses,val_losses,model,optimizer
-
-
-def train_filter(model,filter,optimizer,loss_fn,loaders,scheduler=None,
-          nEpochs=100,val_freq=25,
-          runDir='.',dt=1/44100,vis_freq=100,
-          use_trend_filtering=False,
-          trend_level=1,alpha=1):
-    
-    print(f'training with trend filtering alpha = {alpha}')
-
-    writer = SummaryWriter(log_dir=runDir)
-
-    train_losses,val_losses=[],[]
-    
-    for epoch in tqdm(range(nEpochs),desc='training model'):
-
-        model.train()
-
-        for idx,batch in enumerate(loaders['train'],start=epoch*len(loaders['train'])):
-
-            optimizer.zero_grad()
-            x,y = batch # each is bsz x seq len x n neurons + 1
-            bsz,_,n = x.shape
-
-            x = x.to('cuda').to(torch.float32)
-            y = y.to('cuda').to(torch.float32)
-
-            dy = deriv_approx_dy(x)
-            # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-            #change: scaling to "true" d2y
-            dy2 = deriv_approx_d2y(x)/(dt**2) # makes dy2 from x[4:-4] or y[3:-5]
-            # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
-            
-            y2hat,state_pred,trend_penalty = model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
-            
-            # change: scaling to "true" d2y
-            y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2 #y2hat from x[4:-4] (or y[3:-5])
-            
-            y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3, y1hat from x[5:-3] or y[4:-4]
-            
-            yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes x[6:-2] or y[5:-3]
-            filtered_yhat = filter(yhat)
-
-            ######### potentially add some shrinkage on filter #################
-
-            ####################################################################
-            
-            yhat = torch.cat([filtered_yhat[:,:-2,:],y2hat[:,2:,:]],dim=-1) #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
-            #print(yhat.shape)
-            # y starts as x[1:0]
-            y = torch.cat([y[:,5:-5,:],dy2[:,2:,:]],dim=-1) #dy2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1)
-            assert yhat.shape == y.shape,print(yhat.shape,y.shape)
-            L = y.shape[1]
-
-            if vis_freq > 0:
-                if (idx % vis_freq) == 0:
-                    model.visualize(x,dt)
-                
-                    on = np.random.choice(L-45)
-                    ax = plt.gca()
-                    ax.plot(yhat[0,on:on+40,0].detach().cpu().numpy())
-                    ax.plot(y[0,on:on+40,0].detach().cpu().numpy())
-                    ax.set_title("data (orange) vs model (blue)")
-                    plt.show()
-                    plt.close()
-
-            ##################################
-            
-            loss = loss_fn(y,yhat[:,:L,:]) 
-            sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
-            alpha = max(0,min(alpha,alpha*(idx-10*len(loaders['train']))/5000)) if use_trend_filtering else 0
-            l = loss + alpha*trend_penalty
-            #print(l)
-            l.backward()
-            optimizer.step()
-            train_losses.append((loss.item()/sse.item(),trend_penalty.item()))
-            writer.add_scalar('Loss/train',loss.item(),idx)
-            writer.add_scalar('Penalty/train',trend_penalty.item(),idx)
-
-        if epoch % val_freq == 0:
-            model.eval()
-            vl = 0.
-            vp = 0.
-            vn = 0.
-            for idx,batch in enumerate(loaders['val'],start=epoch*len(loaders['train'])):
-                with torch.no_grad():
-                    x,y = batch
-                    x = x.to('cuda').to(torch.float32)
-                    y = y.to('cuda').to(torch.float32)
-                    
-                    dy = deriv_approx_dy(y)
-                    # dy_4dt, dy_3dt, ...., dy_(L-4)dt
-                    #scaling to "true" d2y
-                    dy2 = deriv_approx_d2y(y)/(dt**2)
-                    # d2y_4dt, d2y_5dt, ..., d2y_(L-4)dt            
-                    
-                    y2hat,state_pred,penalty = model(x,dt,use_trend_filtering=use_trend_filtering,trend_level=trend_level) #state: B x L x SD
-            
-                    ## scaling to "true" d2y
-                    # change: scaling to "true" d2y
-                    y2hat = y2hat * model.tau**2 #* (model.tau*dt)**2 #y2hat from x[4:-4] (or y[3:-5])
-                    
-                    y1hat = dy + y2hat/(dt*model.tau) # makes dy 5:-3, y1hat from x[5:-3] or y[4:-4]
-                    
-                    yhat = x[:,5:-3] + y1hat * (dt*model.tau) # makes x[6:-2] or y[5:-3]
-                    filtered_yhat = filter(yhat)
-
-                    ######### potentially add some shrinkage on filter #################
-
-                    ####################################################################
-                    
-                    yhat = torch.cat([filtered_yhat[:,:-2,:],y2hat[:,2:,:]],dim=-1) #torch.cat([yhat[:,:-2],y1hat[:,1:-1],y2hat[:,2:]],dim=-1) #points 6:-4
-                    #print(yhat.shape)
-                    # y starts as x[1:0]
-                    y = torch.cat([y[:,5:-5,:],dy2[:,2:,:]],dim=-1) #dy2 #torch.cat([x[:,5:-5],dy[:,2:],dy2[:,2:]],dim=-1
-                    
-                    L = y.shape[1]
-                    l = loss_fn(y,yhat[:,:L,:])
-                    sse = ((y - y.mean(dim=1,keepdim=True))**2).mean()
-                    vl += l.item()/sse.item()
-
-                    """
-                    ### trend filtering penalty
-                    diff = torch.diff(state_pred,dim=1)
-                    penalty = torch.abs(diff).sum(dim=-1).mean()
-                    """
-
-                    """
-                    #### norm penalty
-                    
-                    alpha = 1/(state_pred.shape[-1] * state_pred.shape[-2])
-                    norm2 = torch.linalg.vector_norm(state_pred,ord=0.5,dim=-1)
-                    norm1 = torch.linalg.vector_norm(norm2,ord=1,dim=-1)
-                    penalty = alpha * norm1.mean()
-                    #vp += alpha*penalty.item()
-                    """ 
-
-                    """
-                    #### cov penalty
-
-                    cov = state_pred.transpose(-1,-2) @ state_pred /L 
-                    sds = torch.diagonal(cov,dim1=-1,dim2=-2).sqrt()[:,:,None]
-                    denom = sds @ sds.transpose(-1,-2)
-                    abscorr = (cov/denom).abs()
-            
-                    inds = torch.triu_indices(abscorr.shape[-1],abscorr.shape[-1],offset=-1,device=abscorr.device)
-                    penalty = abscorr[:,inds[0],inds[1]].sum(dim=-1).mean()
-                    """
-                    
-                    vp += penalty.item()
-                    
-                    
-            if scheduler:
-                scheduler.step(vl/len(loaders['val']))
-            val_losses.append((epoch*len(loaders['train']),vl/len(loaders['val']),vp/len(loaders['val'])))
-            writer.add_scalar('Loss/validation',vl/len(loaders['val']),idx)
-            writer.add_scalar('Penalty/validation',vp/len(loaders['val']),idx)
-
-    writer.close()
-    return train_losses,val_losses,model,optimizer
