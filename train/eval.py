@@ -8,30 +8,60 @@ from itertools import repeat
 from model.model_utils import smooth
 import os
 from torchdiffeq import odeint_adjoint
-from scipy.signal import savgol_filter,hilbert
+from scipy.signal import hilbert
 import time
 from scipy.interpolate import make_interp_spline
-from visualization.model_vis import format_axes
+#from visualization.model_vis import format_axes
 
-def correct(data,scale_env=False,env_data=[],n_rounds=1):
+"""
+tools for evaluating model performance. covers both regular evaluation and model integration
+
+"""
+
+def correct(data:np.ndarray)->np.ndarray:
+    """
+    corrects model integration using a low-pass filter. low-pass filters the data (assuming that 
+    in the integration window, your integrated signal shouldn't see any oscillations that are too slow
+    (/100 oscillations in the integration window), then subtracts out to remove trends
+
+    inputs
+    -----
+        - data: integrated second derivative
+    returns
+    -----
+        - corrected integration
+    """
     corrected = data.copy()
     low_pass = butter_filter(data,cutoff=100,fs=len(data),btype='low')
     corrected = data - low_pass
-    #for _ in range(n_rounds):
-    #    smoothed = savgol_filter(corrected,window_length=10,polyorder=3)
-    #    corrected = corrected - smoothed
-    if scale_env:
-        assert data.shape == env_data.shape,print(data.shape,env_data.shape)
-        x_env = smooth(np.abs(hilbert(env_data))[None,:],smooth_len=10).squeeze()
-        c_env = smooth(np.abs(hilbert(corrected))[None,:],smooth_len=10).squeeze()
 
-        corrected *= x_env/c_env
-        ## do smoothed envelope stuff here -- probably divide by
 
     return corrected
 
-def integrate_model_d2(model,audio,dt,method='rk4',use_omega=True,use_gamma=True,use_nonlinearity=True,
-                       null_comparison = False, smoothing=True,verbose=True):
+def integrate_model_d2(model:torch.nn.Module,audio:torch.FloatTensor,
+                       dt:float,method:str='rk4',
+                       use_omega:bool=True,use_gamma:bool=True,use_nonlinearity:bool=True,
+                       null_comparison:bool = False, smoothing:bool=True,verbose:bool=True)->np.ndarray:
+    """
+    integrate second derivative prediction from an ouroboros model for a segment of audio
+
+    inputs
+    -----
+        - model: a trained ouroboros
+        - audio: audio used as input
+        - dt:audio sampling spacing
+        - method: integration method
+        - use_omega: whether to use omega model output
+        - use_gamma: whether to use gamma model output
+        - use_nonlinearity: whether to use model nonlinearity
+        - null_comparison: whether we should just integrate audio (e.g., omega=gamma = 1)
+        - smoothing: whether we should smooth model functions before integration
+        - verbose: whether to be verbose or not
+
+    returns
+    -----
+        - integrated (and corrected) second derivative
+    """
 
     L = len(audio)
 
@@ -88,7 +118,22 @@ def integrate_model_d2(model,audio,dt,method='rk4',use_omega=True,use_gamma=True
 
     return integrated
 
-def integrate_estimated_d2(audio,dt,method='rk4',verbose=True):
+def integrate_estimated_d2(audio:torch.FloatTensor,dt:float,
+                           method:str='rk4',verbose:bool=True)->np.ndarray:
+    """
+    comparison integration: estimate second derivative from audio, then integrate
+
+    inputs
+    -----
+        - audio: audio to estimate
+        - dt: audio sampling timestep
+        - method: integration method
+        - verbose: whether to print things
+
+    returns
+    -----
+        - integrated and corrected second derivative
+    """
 
     L = len(audio)
 
@@ -102,7 +147,24 @@ def integrate_estimated_d2(audio,dt,method='rk4',verbose=True):
 
     return integrated
 
-def integrate_second_deriv(deriv_approx,ic,eval_times,method='rk4',verbose=True):
+def integrate_second_deriv(deriv_approx:np.ndarray,ic:torch.FloatTensor,
+                           eval_times:np.ndarray,method:str='rk4',
+                           verbose:bool=True)->np.ndarray:
+    """
+    integrates an approximate second derivative
+
+    inputs
+    -----
+        - deriv_approx: second deriv approximation
+        - ic: initial conditions
+        - eval_times: integration evaluation times. these will be kept, regardless of integration method
+        - method: integration method
+        - verbose: print progress or not
+
+    returns
+    -----
+        - integrated, corrected second derivative
+    """
 
     deriv_interp = make_interp_spline(eval_times,deriv_approx)
     #print(ic.shape)
@@ -129,10 +191,33 @@ def integrate_second_deriv(deriv_approx,ic,eval_times,method='rk4',verbose=True)
     return yhat
 
 
-def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
+def assess_integration_torch(model,x,dt,method='rk4',int_length=0.01,\
                              smoothing=True,strategy='interp',oversample_prop=1,\
-                                burn_in_length=0.001,int_start=0,plot=False):
+                                int_start=0,plot=False):
+        """
+        UNDER CONSTRUCTION. DO NOT USE
 
+
+        evaluate how well a trained model's second derivative approximates the audio,
+        after integration
+
+        inputs:
+        -----
+            - model: a trained ouroboros
+            - x: data to integrate
+            - dt: audio sampling timestep
+            - method: integration method
+            - int_length: how long to integrate for
+            - smoothing: whether or not to smooth model latents
+            - strategy: discretization strategy for integration. default is interp (use a spline interpolation)
+                the alternative is zero-order hold (interp is better)
+            - oversample prop: how often we want to get integration points relative to original sampling rate
+            - burn_in_length: how muc
+        """
+
+        print("function does not currently work. leave it alone. if you want to evaluate integration," \
+        "use the other functions in this file")
+        return
         # general integration params
         B,L,D = x.shape
 
@@ -394,7 +479,21 @@ def assess_integration_torch(model,x,dt,method='RK45',int_length=0.01,\
             (y1_corr,y2_corr,y3_corr),(truspec,intspec,int2spec,modelspec,(ittr,iftr)),\
             (pix_errs_emp,pix_errs_d2,pix_errs_mod)
 
-def eval_model_error(dls,model,dt,comparison='val',return_all=False):
+def eval_model_error(dls:dict,model:torch.nn.Module,dt:float,
+                     comparison:str='val')->tuple[tuple[float,float],
+                                                  tuple[float,float],
+                                                  tuple[np.ndarray,np.ndarray]]:
+    """
+    assess second derivative prediction error on the whole dataset. returns
+    results in terms of r^2
+
+    inputs
+    -----
+        - dls: dictionary of torch dataloaders, containing one for train and one for test
+        - model: a trained ouroboros
+        - dt: audio sampling timestep
+        - comparison: val or test. datasegment to evaluate on
+    """
 
     #tf = model.trend_filtering
 
@@ -463,7 +562,7 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
             reals.append(y.detach().cpu().numpy().squeeze())
             preds.append(dx2hat.detach().cpu().numpy().squeeze())
             #y = y.detach().cpu().numpy()
-            data.append(x.detach().cpu().numpy().squeeze())
+            #data.append(x.detach().cpu().numpy().squeeze())
             test_errors.append(err)
 
     mean_r2_train = np.nanmean(np.hstack(train_r2))
@@ -474,15 +573,18 @@ def eval_model_error(dls,model,dt,comparison='val',return_all=False):
     print(f"Train r2: {mean_r2_train} +- {sd_r2_train}")
     print(f"{comparison} r2: {mean_r2_test} +- {sd_r2_test}")
     #model.trend_filtering=tf
-    if return_all:
-        return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test),\
-            (np.hstack(train_r2),np.hstack(test_r2)),(np.vstack(preds),np.vstack(reals),np.vstack(data))
-    else:
-        return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test)
 
+    return (mean_r2_train,mean_r2_test),(sd_r2_train,sd_r2_test),\
+            (np.hstack(train_r2),np.hstack(test_r2))
+    
 
 def assess_kernels(dataloader,model,dt,saveDir=''):
+    """
+    assess structure of the kernels. this sure would be good to use! figure out how you can use it
+    """
 
+    print("unusable at the moment. figure out how to evaluate the learned nonlinearity")
+    return
     ypts = np.linspace(-1,1,25)
     dypts = np.linspace(-1/dt,1/dt,25)/2
     ygrid,dygrid = np.meshgrid(ypts,dypts)
@@ -560,7 +662,19 @@ def assess_kernels(dataloader,model,dt,saveDir=''):
     return kernels
 
 
-def pad_with_nan(l,target_len):
+def pad_with_nan(l:np.ndarray,target_len:int)->np.ndarray:
+    """
+    pads an array to a certain length with nans
+
+    inputs
+    -----
+        - l: array to pad
+        - target_len: desired length
+
+    returns
+    -----
+        - padded array
+    """
 
     l1 = len(l)
 
@@ -571,6 +685,12 @@ def pad_with_nan(l,target_len):
         return l
     
 def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
+    """
+    evaluate model integration./ DO NOT USE! UPDATE INSTEAD!
+    """
+
+    print("update this function before using!")
+    return
 
     #tf = model.trend_filtering
     #model.trend_filtering=False
@@ -664,6 +784,12 @@ def eval_model_integration(dls,model,dt,n_segs=100,st=0.05,comparison='val'):
 def full_eval_model(model,loaders=None,original_data=None,\
                     dt=1/44100,plot_dir='',use_results=False,
                     n_int=100,plot_steps=False):
+    """
+    fully evaluate model. DO NOT USE! UPDATE!!!
+    """
+
+    print("update before using")
+    return
 
 
     ### Characterize R2 and reconstructions #################

@@ -21,7 +21,7 @@ def model_cv_lambdas(dls:dict,dt:float,nEpochs:int=100,lr:float=1e-3,\
                     n_kernels:int=15,expand_factor:int=10,\
                     n_layers:int=4,d_state:int=1,d_conv:int=4,\
                     tau:float=1/1000,smooth_len:float=0.001,\
-                    model_path:str='',save_freq:int=5):
+                    model_path:str='',save_freq:int=5)->torch.nn.Module:
     """
     This function trains models and cross-validates across regularization strengths.
     We pick the minimum regularization strength to be 1.01 (to more heavily penalize
