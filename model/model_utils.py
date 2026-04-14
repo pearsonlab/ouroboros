@@ -1,8 +1,7 @@
 import torch
-from torch.utils.data import Dataset
 
 
-def smooth(data:torch.FloatTensor,smooth_len:float) -> torch.FloatTensor:
+def smooth(data: torch.FloatTensor, smooth_len: float) -> torch.FloatTensor:
     """
     Smooth, using a causal uniform moving average. Uses cumsum
     to speed performance. By default, pre-pads with zeros
@@ -17,14 +16,13 @@ def smooth(data:torch.FloatTensor,smooth_len:float) -> torch.FloatTensor:
         - smoothed data
     """
 
-    B,L,D = data.shape
+    B, L, D = data.shape
     if smooth_len == 1:
         return data
-    pad = torch.zeros((B,smooth_len,D),device=data.device)
+    pad = torch.zeros((B, smooth_len, D), device=data.device)
     try:
-        cumsum = torch.cumsum(torch.cat([pad,data],dim=1),dim=1)
+        cumsum = torch.cumsum(torch.cat([pad, data], dim=1), dim=1)
     except:
-        print(pad.shape,data.shape)
+        print(pad.shape, data.shape)
         raise
-    return (cumsum[:,smooth_len:,:] - cumsum[:,:-smooth_len,:])/float(smooth_len)
-
+    return (cumsum[:, smooth_len:, :] - cumsum[:, :-smooth_len, :]) / float(smooth_len)

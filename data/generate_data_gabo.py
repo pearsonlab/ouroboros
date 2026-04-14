@@ -3,75 +3,100 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax import lax
 
-import diffrax 
+import diffrax
 
 import os
-os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.1'
 
-from scipy.signal import stft
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.1"
+
 import scipy.io as sio
 import numpy as np
 import pickle
-from tqdm import tqdm
+
 
 def make_pulse_sequence(pulse_fun, arg_list):
     def applicator(carry, args):
-       t = carry
-       return t, pulse_fun(t, *args)
-    
+        t = carry
+        return t, pulse_fun(t, *args)
+
     def scan_and_sum(t):
         _, out = lax.scan(applicator, t, arg_list)
         return jnp.sum(out)
 
     return scan_and_sum
 
+
 ###### vS tension parameters #####
 kshape = 5  # shape parameter of gamma function
 kscale = 0.025  # rate parameter of gamma function (s)
 kpeak = 0.06  # peak value (Volts)
 klocs = jnp.array([0, 0.5, 1, 1.5])
-def make_tension_pulse_fn(shape=1, scale=1, peak=1):
-    norm = peak * jnp.exp(shape - shape * jnp.log(shape) - shape * jnp.log(scale)) 
 
-    fn = lambda t, loc: norm * jnp.exp((t - loc)/scale) * jnp.maximum((loc - t), 0)**shape 
+
+def make_tension_pulse_fn(shape=1, scale=1, peak=1):
+    norm = peak * jnp.exp(shape - shape * jnp.log(shape) - shape * jnp.log(scale))
+
+    fn = lambda t, loc: (
+        norm * jnp.exp((t - loc) / scale) * jnp.maximum((loc - t), 0) ** shape
+    )
 
     return fn
+
+
 ####################################
 
 ### dTb tension parameters ###########
-dfreq = 2 
-#dlocs1 = jnp.arange(0.1, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
-#dlocs2 = jnp.arange(0.45, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
-#dlocs = jnp.sort(jnp.concatenate([dlocs1, dlocs2]))
-dA = jnp.array([0.05, 0.02, 0.01, 0.05, 0.03,])
-dwid=0.01
+dfreq = 2
+# dlocs1 = jnp.arange(0.1, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
+# dlocs2 = jnp.arange(0.45, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
+# dlocs = jnp.sort(jnp.concatenate([dlocs1, dlocs2]))
+dA = jnp.array(
+    [
+        0.05,
+        0.02,
+        0.01,
+        0.05,
+        0.03,
+    ]
+)
+dwid = 0.01
+
+
 def make_dtb_pulse_fn(width=dwid):
 
-    return lambda t,loc,amp: amp*jnp.exp(-0.5 * (t - loc)**2/width**2)
+    return lambda t, loc, amp: amp * jnp.exp(-0.5 * (t - loc) ** 2 / width**2)
 
-def gpulse(t,loc,amp):
 
-    return amp*jnp.exp(-0.5 * (t - loc)**2/dwid**2)
+def gpulse(t, loc, amp):
+
+    return amp * jnp.exp(-0.5 * (t - loc) ** 2 / dwid**2)
+
+
 ########################################
 
 ##### Pressure parameters ######
 pA = 0.025
 p0 = -0.005
-pwid=0.08
-plocs = jnp.array([0.3,0.9])
+pwid = 0.08
+plocs = jnp.array([0.3, 0.9])
 
-def make_p_pulse_fn(amp=pA,width=pwid):
 
-    return lambda t,loc: amp * jnp.exp(-0.5 * (t - loc)**2/width**2) + p0
+def make_p_pulse_fn(amp=pA, width=pwid):
 
-def ppulse(t,loc,amp,width):
+    return lambda t, loc: amp * jnp.exp(-0.5 * (t - loc) ** 2 / width**2) + p0
 
-    return amp * jnp.exp(-0.5 * (t - loc)**2/width**2) + p0
+
+def ppulse(t, loc, amp, width):
+
+    return amp * jnp.exp(-0.5 * (t - loc) ** 2 / width**2) + p0
+
+
 ####################################
+
 
 def gradfun(t, y, args):
     # params: eps1, eps2, beta1, beta2, C, delta
-    #print(y.shape)
+    # print(y.shape)
     params, extra_args = args
     K, D, P = extra_args
     t_arr = jnp.array([t])
@@ -80,10 +105,11 @@ def gradfun(t, y, args):
     C = params[4] * 1e8
     D0 = params[5] * D(t_arr) * 1e7
 
-    xdot = y[1] 
-    ydot = -eps * y[0] - C * y[0]**2 * y[1] + B * y[1] - D0
+    xdot = y[1]
+    ydot = -eps * y[0] - C * y[0] ** 2 * y[1] + B * y[1] - D0
 
     return jnp.array((xdot, ydot[0]))
+
 
 ######## Simulation parameters ####
 
@@ -95,44 +121,49 @@ beta1 = -2e3
 beta2 = 5.3e5  # NOTE: 10x higher than in paper!
 C = 2e8
 delta = 15e6
-params_true = jnp.array([eps1/1e8, eps2/1e8, beta1/1e3, beta2/1e3, C/1e8, delta/1e7])
+params_true = jnp.array(
+    [eps1 / 1e8, eps2 / 1e8, beta1 / 1e3, beta2 / 1e3, C / 1e8, delta / 1e7]
+)
 #######################################
 
-def generate_vocal_dataset(key,n_vocs = 200,noise_sd=0.0002,audio_loc='',seg_loc='',func_loc=''):
+
+def generate_vocal_dataset(
+    key, n_vocs=200, noise_sd=0.0002, audio_loc="", seg_loc="", func_loc=""
+):
 
     if not os.path.isdir(audio_loc):
         os.mkdir(audio_loc)
-    if seg_loc == '':
+    if seg_loc == "":
         seg_loc = audio_loc
 
-    if func_loc == '':
+    if func_loc == "":
         func_loc = audio_loc
 
     if not os.path.isdir(seg_loc):
         os.mkdir(seg_loc)
-        
+
     if not os.path.isdir(func_loc):
         os.mkdir(func_loc)
 
-    length = 1.2 #1.2 s long vocalization
-    t_axis = jnp.arange(0, length, 1/SR) 
+    length = 1.2  # 1.2 s long vocalization
+    t_axis = jnp.arange(0, length, 1 / SR)
     saveat = diffrax.SaveAt(ts=jnp.linspace(0, length, int(SR)))
 
-    dlocs1 = jnp.arange(0.1, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
-    dlocs2 = jnp.arange(0.45, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
+    dlocs1 = jnp.arange(0.1, t_axis[-1], 1 / dfreq)  # pressure pulse frequency (Hz)
+    dlocs2 = jnp.arange(0.45, t_axis[-1], 1 / dfreq)  # pressure pulse frequency (Hz)
     dlocs = jnp.sort(jnp.concatenate([dlocs1, dlocs2]))
 
-    key,pKey,kKey,dKey,noiseKey = jr.split(key,5)
+    key, pKey, kKey, dKey, noiseKey = jr.split(key, 5)
 
     all_audio = []
     for voc_num in range(n_vocs):
-        p_amp = jr.uniform(pKey,maxval=0.025,minval=-0.005)
-        k_amp = jr.uniform(kKey,maxval=0.03,minval=-0.03)
-        d_amps = jr.uniform(dKey,maxval=0.03,minval=-0.005,shape=dA.shape)
+        p_amp = jr.uniform(pKey, maxval=0.025, minval=-0.005)
+        k_amp = jr.uniform(kKey, maxval=0.03, minval=-0.03)
+        d_amps = jr.uniform(dKey, maxval=0.03, minval=-0.005, shape=dA.shape)
 
-        ppulse = make_p_pulse_fn(amp=pA + p_amp,width=pwid)
+        ppulse = make_p_pulse_fn(amp=pA + p_amp, width=pwid)
         P = jax.vmap(make_pulse_sequence(ppulse, (plocs,)))
-        kpulse = make_tension_pulse_fn(shape=kshape, scale=kscale, peak=kpeak+k_amp)
+        kpulse = make_tension_pulse_fn(shape=kshape, scale=kscale, peak=kpeak + k_amp)
         K = jax.vmap(make_pulse_sequence(kpulse, (klocs,)))
         dpulse = make_dtb_pulse_fn(width=dwid)
         D = jax.vmap(make_pulse_sequence(dpulse, (dlocs, dA + d_amps)))
@@ -140,52 +171,68 @@ def generate_vocal_dataset(key,n_vocs = 200,noise_sd=0.0002,audio_loc='',seg_loc
         saveat = diffrax.SaveAt(ts=jnp.linspace(0, length, int(SR)))
         solver = diffrax.Dopri5()
         stepsize_controller = diffrax.PIDController(rtol=1e-5, atol=1e-5)
-        soln = diffrax.diffeqsolve(term, solver, t0=0, t1=length, dt0=0.5/SR, y0=jnp.array((0, 0)), saveat=saveat,
-                    stepsize_controller=stepsize_controller, args=(params_true, (K, D, P)), max_steps=int(1e6))
-        
+        soln = diffrax.diffeqsolve(
+            term,
+            solver,
+            t0=0,
+            t1=length,
+            dt0=0.5 / SR,
+            y0=jnp.array((0, 0)),
+            saveat=saveat,
+            stepsize_controller=stepsize_controller,
+            args=(params_true, (K, D, P)),
+            max_steps=int(1e6),
+        )
+
         audio = jnp.interp(t_axis, soln.ts, soln.ys[:, 0])
-        noise = jr.normal(noiseKey,shape = audio.shape) * noise_sd 
+        noise = jr.normal(noiseKey, shape=audio.shape) * noise_sd
         noisy_audio = np.array(audio + noise)
 
         all_audio.append(noisy_audio)
 
-        sio.wavfile.write(os.path.join(audio_loc,f'gabo_artificial_{voc_num}.wav'),rate=int(SR),data=noisy_audio)
+        sio.wavfile.write(
+            os.path.join(audio_loc, f"gabo_artificial_{voc_num}.wav"),
+            rate=int(SR),
+            data=noisy_audio,
+        )
 
-        onOffs = jnp.array([[0.2,0.45],[0.8,1.05]])
-        np.savetxt(os.path.join(seg_loc,f'gabo_artificial_{voc_num}.txt'),onOffs)
-        real_ps,real_ks,real_ds = P(t_axis),K(t_axis),D(t_axis)
-        stacked_fncs = jnp.stack([real_ps,real_ks,real_ds],axis=-1)
-        np.savetxt(os.path.join(func_loc,f'gabo_artificial_{voc_num}_PKD.txt'),stacked_fncs)
-        
-    
+        onOffs = jnp.array([[0.2, 0.45], [0.8, 1.05]])
+        np.savetxt(os.path.join(seg_loc, f"gabo_artificial_{voc_num}.txt"), onOffs)
+        real_ps, real_ks, real_ds = P(t_axis), K(t_axis), D(t_axis)
+        stacked_fncs = jnp.stack([real_ps, real_ks, real_ds], axis=-1)
+        np.savetxt(
+            os.path.join(func_loc, f"gabo_artificial_{voc_num}_PKD.txt"), stacked_fncs
+        )
+
     return all_audio
 
 
+def generate_vocalization(
+    key, length=1.2, n_p=4, n_k=6, dA_max=0.1, dA_min=0.01, save=True, saveloc=""
+):
 
-def generate_vocalization(key,length=1.2,n_p=4,n_k=6,dA_max=0.1,dA_min=0.01,save=True,saveloc=''):
+    t_axis = jnp.arange(0, length, 1 / SR)
 
-    t_axis = jnp.arange(0, length, 1/SR)
-    
     saveat = diffrax.SaveAt(ts=jnp.linspace(0, length, int(SR)))
 
+    # key = jax.random.key(1234)
+    key, pKey, kKey1, kKey2, dKey = jax.random.split(key, 5)
 
-    #key = jax.random.key(1234)
-    key,pKey,kKey1,kKey2,dKey = jax.random.split(key,5)
+    # plocs = jax.random.uniform(pKey,maxval=length,shape=(n_p,))
+    # plocs = jnp.linspace(0.2,length,n_p)
+    # klocs = jax.random.uniform(kKey,maxval=length,shape=(n_k,))
+    klocs = plocs - jax.random.uniform(
+        kKey1, maxval=0.1, minval=-0.1, shape=plocs.shape
+    )
+    klocs = jax.random.choice(kKey2, klocs, shape=(n_k,), replace=False)
+    klocs = jnp.sort(jnp.concatenate([klocs, klocs + 0.3]))
 
-    #plocs = jax.random.uniform(pKey,maxval=length,shape=(n_p,))
-    #plocs = jnp.linspace(0.2,length,n_p)
-    #klocs = jax.random.uniform(kKey,maxval=length,shape=(n_k,))
-    klocs=plocs - jax.random.uniform(kKey1,maxval=0.1,minval=-0.1,shape=plocs.shape)
-    klocs = jax.random.choice(kKey2,klocs,shape=(n_k,),replace=False)
-    klocs = jnp.sort(jnp.concatenate([klocs,klocs + 0.3]))
-    
-    
-    dlocs1 = jnp.arange(0.1, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
-    dlocs2 = jnp.arange(0.45, t_axis[-1], 1/dfreq)  # pressure pulse frequency (Hz)
+    dlocs1 = jnp.arange(0.1, t_axis[-1], 1 / dfreq)  # pressure pulse frequency (Hz)
+    dlocs2 = jnp.arange(0.45, t_axis[-1], 1 / dfreq)  # pressure pulse frequency (Hz)
     dlocs = jnp.sort(jnp.concatenate([dlocs1, dlocs2]))
-    
-    dA = jax.random.uniform(dKey,maxval=dA_max,minval=dA_min,shape=dlocs.shape)
-    
+
+    dA = jax.random.uniform(dKey, maxval=dA_max, minval=dA_min, shape=dlocs.shape)
+
     P = jax.vmap(make_pulse_sequence(ppulse, (plocs,)))
     pulse = make_tension_pulse_fn(shape=kshape, scale=kscale, peak=kpeak)
     K = jax.vmap(make_pulse_sequence(pulse, (klocs,)))
@@ -196,22 +243,29 @@ def generate_vocalization(key,length=1.2,n_p=4,n_k=6,dA_max=0.1,dA_min=0.01,save
     saveat = diffrax.SaveAt(ts=jnp.linspace(0, length, int(SR)))
     solver = diffrax.Dopri5()
     stepsize_controller = diffrax.PIDController(rtol=1e-5, atol=1e-5)
-    soln = diffrax.diffeqsolve(term, solver, t0=0, t1=length, dt0=0.5/SR, y0=jnp.array((0, 0)), saveat=saveat,
-                  stepsize_controller=stepsize_controller, args=(params_true, (K, D, P)), max_steps=int(1e6))
+    soln = diffrax.diffeqsolve(
+        term,
+        solver,
+        t0=0,
+        t1=length,
+        dt0=0.5 / SR,
+        y0=jnp.array((0, 0)),
+        saveat=saveat,
+        stepsize_controller=stepsize_controller,
+        args=(params_true, (K, D, P)),
+        max_steps=int(1e6),
+    )
 
-    #plt.plot(soln.ts, soln.ys[:, 0])
-    #plt.show()
-    #plt.close()
+    # plt.plot(soln.ts, soln.ys[:, 0])
+    # plt.show()
+    # plt.close()
 
-    
     audio = jnp.interp(t_axis, soln.ts, soln.ys[:, 0])
-    kt,dt,pt = K(t_axis),D(t_axis),P(t_axis)
+    kt, dt, pt = K(t_axis), D(t_axis), P(t_axis)
 
     if save:
-        sio.wavfile.write(saveloc + '.wav',int(SR),np.array(audio))
-        with open(saveloc + 'inputs.pkl','wb') as f:
-            pickle.dump([kt,dt,pt],f)
+        sio.wavfile.write(saveloc + ".wav", int(SR), np.array(audio))
+        with open(saveloc + "inputs.pkl", "wb") as f:
+            pickle.dump([kt, dt, pt], f)
 
-
-
-    return t_axis,audio
+    return t_axis, audio

@@ -1,53 +1,72 @@
 from data.real_data import *
 from data.data_utils import get_loaders
-from train.train import train,load_model,save_model
-from train.eval import eval_model_error
 from train.model_cv import model_cv_lambdas
-from model.constrained_model import rkhs_ouroboros
 from model.kernels import *
-import matplotlib.pyplot as plt
-import pandas as pd
-import fire 
-from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
-import pickle
-from visualization.model_vis import loss_plot
-from utils import sse
+import fire
 
 
-def run_model(audio_path,seg_path='', model_path= '',\
-              audio_subdir='',seg_subdir='',\
-              seg_filetype='.txt',audio_filetype='.wav',voctype='adultsong',\
-                context_len=0.3,max_pairs=1000,
-                nEpochs=100, seed=92,smooth_len=0.005,vis_freq=100,tau=1000,
-                    lr=1e-3,smoothing=False,\
-                        n_kernels=30,n_layers=2,expand_factor=4,d_conv=4,d_state=1):
-
-    
+def run_model(
+    audio_path,
+    seg_path="",
+    model_path="",
+    audio_subdir="",
+    seg_subdir="",
+    seg_filetype=".txt",
+    audio_filetype=".wav",
+    voctype="adultsong",
+    context_len=0.3,
+    max_pairs=1000,
+    nEpochs=100,
+    seed=92,
+    smooth_len=0.005,
+    vis_freq=100,
+    tau=1000,
+    lr=1e-3,
+    smoothing=False,
+    n_kernels=30,
+    n_layers=2,
+    expand_factor=4,
+    d_conv=4,
+    d_state=1,
+):
 
     use_trend = 1
-    if seg_path == '':
+    if seg_path == "":
         seg_path = audio_path
 
-    #model_path += '_' + str(seed)
+    # model_path += '_' + str(seed)
     if not os.path.isdir(model_path):
         os.mkdir(model_path)
- 
-    print('loading data')
-    
-    audios,sr = get_segmented_audio(audio_path,seg_path,audio_subdir=audio_subdir,\
-                                    seg_subdir=seg_subdir,envelope=False,context_len=context_len,\
-                                    audio_type=audio_filetype,seg_type=seg_filetype,max_pairs=max_pairs,seed=seed)
-    
-   
-    print(f'getting dataloaders with seed {seed}')
-    dls = get_loaders(np.vstack(audios),cv = True,train_size=0.6,seed=seed)
 
-    model_cv_lambdas(dls,1/sr,nEpochs=nEpochs,lr=lr,\
-                    n_kernels=n_kernels,expand_factor=8,\
-                    n_layers=3,\
-                    tau=1/sr,\
-                    model_path=model_path)
+    print("loading data")
+
+    audios, sr = get_segmented_audio(
+        audio_path,
+        seg_path,
+        audio_subdir=audio_subdir,
+        seg_subdir=seg_subdir,
+        envelope=False,
+        context_len=context_len,
+        audio_type=audio_filetype,
+        seg_type=seg_filetype,
+        max_pairs=max_pairs,
+        seed=seed,
+    )
+
+    print(f"getting dataloaders with seed {seed}")
+    dls = get_loaders(np.vstack(audios), cv=True, train_size=0.6, seed=seed)
+
+    model_cv_lambdas(
+        dls,
+        1 / sr,
+        nEpochs=nEpochs,
+        lr=lr,
+        n_kernels=n_kernels,
+        expand_factor=8,
+        n_layers=3,
+        tau=1 / sr,
+        model_path=model_path,
+    )
     """
     ## model cv lambda here
     lambdas = np.array([0.01,0.05,0.1,0.25,0.5,0.75,1.]) #* 10**2.5
@@ -132,6 +151,5 @@ def run_model(audio_path,seg_path='', model_path= '',\
     return
 
 
-if __name__ == '__main__':
-
+if __name__ == "__main__":
     fire.Fire(run_model)
