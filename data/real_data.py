@@ -1,5 +1,4 @@
 import numpy as np
-from tqdm import tqdm
 import warnings
 
 import os
@@ -7,15 +6,15 @@ import glob
 from scipy.io import wavfile
 import soundfile as sf
 from scipy.io import loadmat
-from utils import butter_filter
 import random
 from data.preprocess import filter_by_tags
 
-from typing import Tuple
+from typing import Tuple, Union
 
 
-def get_audio(audio:np.ndarray,
-               fs:float, onset:float, offset:float, context_len:float=0.3)->np.ndarray:
+def get_audio(
+    audio: np.ndarray, fs: float, onset: float, offset: float, context_len: float = 0.3
+) -> np.ndarray:
     """
     takes a full section of audio, extracts a short segment of it.
 
@@ -32,12 +31,11 @@ def get_audio(audio:np.ndarray,
         segment of audio
     """
 
-    
     difference = (offset - onset) - context_len
     if difference <= 0:
         # extend from the beginning, if shorter than context_len
-        onset += difference  
-    
+        onset += difference
+
     on = int(round(onset * fs))
     off = int(round(offset * fs))
 
@@ -47,16 +45,16 @@ def get_audio(audio:np.ndarray,
 
 
 def get_all_audio(
-    audio:np.ndarray,
-    fs:float,
-    onOffs:np.ndarray,
-    context_len:float=0.02,
-    max_vocs:int=600,
-    current_total:int=0,
-    full_vocs:bool=False,
-    extend:bool=True,
-    padding:float=0.0,
-)->list[np.ndarray]:
+    audio: np.ndarray,
+    fs: float,
+    onOffs: np.ndarray,
+    context_len: float = 0.02,
+    max_vocs: int = 600,
+    current_total: int = 0,
+    full_vocs: bool = False,
+    extend: bool = True,
+    padding: float = 0.0,
+) -> list[np.ndarray]:
     """
     segments a long audio file into a set of shorter chunks, based on onsets and offsets from onOffs.
     has two modes: one that grabs full vocalizations, based on true onsets and offsets (full_vocs=True).
@@ -94,18 +92,15 @@ def get_all_audio(
         diffs = max_len - lens
         onOffs[:, 1] += diffs
 
-
     onOffs[:, 0] = np.maximum(onOffs[:, 0] - padding, np.zeros(onOffs[:, 0].shape))
     onOffs[:, 1] = np.minimum(
         onOffs[:, 1] + padding, len(audio) / fs * np.ones(onOffs[:, 1].shape)
     )
 
-
     for onset, offset in onOffs:
         aud = get_audio(audio, fs, onset, offset, context_len)
 
         cut_len = np.mod(aud.shape[0], chunk_len)
-
 
         if aud.shape[0] >= chunk_len:
             if not full_vocs:
@@ -116,7 +111,7 @@ def get_all_audio(
 
                 for a in aud:
                     auds.append(a[None, :, :])
-                
+
             else:
                 aud = aud.reshape(1, -1, 1)
 
@@ -130,7 +125,7 @@ def get_all_audio(
     return auds
 
 
-def make_marmo_seg_file(matfile:str, savedir:str="")->Tuple[str,str]:
+def make_marmo_seg_file(matfile: str, savedir: str = "") -> Tuple[str, str]:
     """
     takes a marmoset audio file (in `.mat` format), converts to a `.wav` (audio) and
     `.txt` (onset offset) file
@@ -165,22 +160,22 @@ def make_marmo_seg_file(matfile:str, savedir:str="")->Tuple[str,str]:
 
     return new_fn_wav, new_fn_seg
 
+
 def get_segmented_audio(
-    audiopath,
-    segpath,
-    audio_subdir="",
-    seg_subdir="",
-    max_pairs=5000,
-    context_len=0.03,
-    envelope=False,
-    audio_type=".wav",
-    seg_type=".txt",
-    seed=None,
-    full_vocs=False,
-    extend=True,
-    padding=0.0,
-    shuffle_order=True,
-):
+    audiopath: str,
+    segpath: str,
+    audio_subdir: str = "",
+    seg_subdir: str = "",
+    max_vocs: int = 5000,
+    context_len: float = 0.03,
+    audio_type: str = ".wav",
+    seg_type: str = ".txt",
+    seed: Union[None, int] = None,
+    full_vocs: bool = False,
+    extend: bool = True,
+    padding: float = 0.0,
+    shuffle_order: bool = True,
+) -> list:
     """
     Takes as input a path to audio and segments (along with any
     shared subdirectories and file extensions),
@@ -188,15 +183,54 @@ def get_segmented_audio(
     1,L,1 audio chunks
     if used for analysis, use the full_vocs option:
     outputs a list of lists, with each inner list containing the
-    1,L_i,1 audio chunks (corresponding to vocalizations) within each audio file,
-    which is treated as a separate session.
+    1,L_i,1 audio chunks (corresponding to vocalizations) within each audio file
 
+    searches in audiopath and segpath for directories matching the structure specified
+    by audio_subdir and seg_subdir, respectively. it assumes that there is shared structure
+    in this directory structure between audio and segments, as follows:
+
+    audiopath/shared_1/rest/of/audio/subdir
+    audiopath/shared_2/rest/of/audio/subdir
+    ...
+    audiopath/shared_k/rest/of/audio/subdir
+
+    segpath/shared_1/rest/of/seg/subdir
+    segpath/shared_2/rest/of/seg/subdir
+    ...
+    segpath/shared_k/rest/of/seg/subdir
+
+    If all audio/seg files are in a single directory, leave audio_subdir and seg_subdir as defaults
+    Within each shared subdirectory, it then seaches for audio files that end with audio_type, and
+    segment files that end with seg_type. These are typically file extensions. Will only take audio
+    files that have filenames pre-extension matching segment files
+
+    Inputs
+    -----
+        - audiopath: parent folder holding all audio
+        - segpath: parent folder holding all segment paths
+        - audio_subdir: subdirectories holding audio, within audiopath
+        - seg_subdir: subdirectories holdign segments, within segpath
+        - max_vocs: maximum number of vocalizations to collect
+        - context_len: length of audio chunks, in seconds,
+        - audio_type: file extension of audio files
+        - seg_type: file extension of segment files
+        - seed: random seed, for reproducibility
+        - full_vocs: whether to take full vocalizations, from onset to offset,
+            or just chunks of length context_len
+        - extend: whether to extend full vocalizations to the same length
+        - padding: additional padding to onsets and offsets, in seconds
+        - shuffle_order: whether to shuffle order of .wav files before loading/segmenting audio
+
+    Returns
+    -----
+        - list of:
+            lists, with np.ndarray inside (in the case of full_vocs=True)
+            np.ndarray (in the case of full_vocs=False)
+            either way, these are the extracted chunks of audio
+        - sr: sampling rate of audio
     """
 
-    # if audio_subdir[-1] != '/' and audio_subdir != '':
-    #    audio_subdir += '/'
-    # if seg_subdir[-1] != '/' and seg_subdir != '':
-    #    seg_subdir += '/'
+
     random.seed(seed)
     audio_dirs = glob.glob(os.path.join(audiopath, audio_subdir))
     seg_dirs = glob.glob(os.path.join(segpath, seg_subdir))
@@ -217,25 +251,15 @@ def get_segmented_audio(
     assert len(audio_dirs) > 0, print(
         f"something went wrong with filtering! i recieved {audiopath},{segpath} as paths,{audio_subdir},{seg_subdir} as subdirs, found {audio_tags},{seg_tags} as tags"
     )
-    # print(audio_dirs,seg_dirs)
-    # days = glob.glob(os.path.join(data_dir,'[0-9]*[0-9]'))
-    # days = [d.split('/')[-1] for d in wav_dirs]
-    # print("running this code")
-    # assert False
-    # print(f"searching for audio in {os.path.join(audiopath,'*' + audio_type)}")
+
     wavs = sum([glob.glob(os.path.join(a, "*" + audio_type)) for a in audio_dirs], [])
     wavs.sort()
-    # print(f"searching for segments in {os.path.join(segpath,'*' + seg_type)}")
+
     segs = sum([glob.glob(os.path.join(s, "*" + seg_type)) for s in seg_dirs], [])
     segs.sort()
     audio_tags = [a.split(audio_type)[0].split("/")[-1] for a in wavs]
     seg_tags = [s.split(seg_type)[0].split("/")[-1] for s in segs]
 
-    # print(audio_tags,seg_tags)
-    # print(len(wavs))
-    # print(len(segs))
-    # print(wavs,segs)
-    # print(audio_tags[:5],seg_tags[:5])
     wavs, segs = filter_by_tags(wavs, segs, audio_tags, seg_tags)
     # print(wavs[:5],segs[:5])
     assert len(wavs) > 0, print(f"""
@@ -244,20 +268,7 @@ def get_segmented_audio(
               audio tags: {audio_tags[:5]}
               segment tags: {seg_tags[:5]}
               """)
-    # print(wavs,segs)
-    """
-    if len(wavs) != len(segs):
-        print("different number of wavs and segs! only taking ones with overlap")
-        wav_endings = [w.split('/')[-1].split(audio_type)[0] for w in wavs]
-        seg_endings = [s.split('/')[-1].split(seg_type)[0] for s in segs]
-        #print(wav_endings[:5])
-        #print(seg_endings[:5])
-        all_endings = set(wav_endings).intersection(seg_endings)
-        wavs = [w for w in wavs if w.split('/')[-1].split(audio_type[-4:])[0].split('_cleaned')[0] in all_endings]
-        segs = [s for s in segs if s.split('/')[-1].split(seg_type[-4:])[0] in all_endings]
-    """
-    # print(len(wavs))
-    # print(len(segs))
+
     assert len(wavs) == len(segs), print(
         f"different number of wavs and segments: {len(wavs)} wavs and {len(segs)} segments"
     )
@@ -266,63 +277,49 @@ def get_segmented_audio(
         wavs = [wavs[o] for o in order]
         segs = [segs[o] for o in order]
     audio_segs = []
-    # print(f'number of wavs: {len(wavs)}')
-    # print(f'number of segs: {len(segs)}')
+
     current_total = 0
-    # print(len(wavs),len(segs))
-    # print(max_pairs)
-    if ".mat" not in audio_type:
-        for ii, (w, v) in enumerate(zip(wavs, segs)):
-            if ".wav" in audio_type:
-                sr, audio = wavfile.read(w)
-            elif ".flac" in audio_type:
-                # print(f"file number {ii+1}")
-                audio, sr = sf.read(w)
-            if audio.dtype == np.int16:
-                audio = audio / -np.iinfo(audio.dtype).min
 
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                onoffs = np.loadtxt(v, usecols=(0, 1))
-            if len(onoffs) > 0:
-                if len(onoffs.shape) == 1:
-                    onoffs = onoffs[None, :]
-                if onoffs.shape[1] == 3:
-                    onoffs = onoffs[:, :2]
+    for _, (w, v) in enumerate(zip(wavs, segs)):
+        if ".wav" in audio_type:
+            sr, audio = wavfile.read(w)
+        elif ".flac" in audio_type:
+            # print(f"file number {ii+1}")
+            audio, sr = sf.read(w)
+        if audio.dtype == np.int16:
+            audio = audio / -np.iinfo(audio.dtype).min
 
-                audios = get_all_audio(
-                    audio,
-                    sr,
-                    onoffs,
-                    max_pairs=max_pairs,
-                    context_len=context_len,
-                    env=envelope,
-                    current_total=current_total,
-                    full_vocs=full_vocs,
-                    extend=extend,
-                    padding=padding,
-                )
-                # print(len(audios))
-                # print(len(audios))
-                if not full_vocs:
-                    audio_segs += audios
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            onoffs = np.loadtxt(v, usecols=(0, 1))
+        if len(onoffs) > 0:
+            if len(onoffs.shape) == 1:
+                onoffs = onoffs[None, :]
+            if onoffs.shape[1] == 3:
+                onoffs = onoffs[:, :2]
 
-                else:
-                    audio_segs.append(audios)
+            audios = get_all_audio(
+                audio,
+                sr,
+                onoffs,
+                max_pairs=max_vocs,
+                context_len=context_len,
+                current_total=current_total,
+                full_vocs=full_vocs,
+                extend=extend,
+                padding=padding,
+            )
 
-                current_total += len(audios)
-                # print(current_total)
-                # print(len(audio_segs))
-                # assert len(audio_segs) >= current_total,print("wtf")
-                if current_total >= max_pairs:
-                    return audio_segs[:max_pairs], sr
-    else:
-        random.shuffle(wavs)
-        for w in tqdm(wavs, desc="Getting audio from .mat files"):
-            audio, sr = get_audio_from_mat(w, context_len=context_len, env=envelope)
-            audio_segs += audio
-            if len(audio_segs) >= max_pairs:
-                return audio_segs[:max_pairs], sr
+            if not full_vocs:
+                audio_segs += audios
+
+            else:
+                audio_segs.append(audios)
+
+            current_total += len(audios)
+
+            if current_total >= max_vocs:
+                return audio_segs[:max_vocs], sr
 
     return audio_segs, sr
 
@@ -345,36 +342,3 @@ def grab_segments(seg_list, *args, fs=42000):
         # assert False
         # print(output)
     return output
-
-
-"""
-def get_feature_musd_dataset(samplerate,spiketimes,audio,onOffs,shoulder=0.01,data_type='rates'):
-
-    xi2,xi,N = np.zeros((6,)),np.zeros((6,)),0
-    for onset,offset,vocID in tqdm(onOffs,desc = "getting mean, sd of all audio"):
-
-        aud,spike,*_ = get_audio_rate_pairs(audio,samplerate,spiketimes,onset,offset,data_type=data_type)
-
-        #minLen = min(spike.shape[-1],aud.shape[-1])
-        #inData = from_numpy(np.concatenate([spike[:,:minLen],aud[None,:minLen]],axis=0)).T[None,:,:]
-        #if mask_audio:
-        #    mask = torch.ones(inData.shape,device=inData.device)
-        #    mask[:,:,-1] = 0
-        #    inData *= mask
-
-        #preds = (model(inData) + inData)[:,:,-1]
-        print(aud.shape)
-        features= get_features(from_numpy(aud)[None,:],samplerate=samplerate) ## needs to output time x feat num
-
-        xi2 += (features**2).sum(axis=0)
-        xi += features.sum(axis=0)
-        N += features.shape[0]
-        #print(features.shape)
-        #assert False
-
-        
-    mu = xi/N
-    sd = xi2/N - mu**2
-
-    return mu,sd
-"""
