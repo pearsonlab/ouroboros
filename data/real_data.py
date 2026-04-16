@@ -2,9 +2,6 @@ import numpy as np
 from tqdm import tqdm
 import warnings
 
-from scipy.signal import hilbert
-
-# from acoustic_features_torch import get_features
 import os
 import glob
 from scipy.io import wavfile
@@ -14,47 +11,80 @@ from utils import butter_filter
 import random
 from data.preprocess import filter_by_tags
 
+from typing import Tuple
 
-def get_audio(audio, fs, onset, offset, context_len=0.3):
 
-    # audiotimes = np.linspace(0,len(audio)/fs,len(audio))
+def get_audio(audio:np.ndarray,
+               fs:float, onset:float, offset:float, context_len:float=0.3)->np.ndarray:
+    """
+    takes a full section of audio, extracts a short segment of it.
+
+    inputs
+    -----
+        - audio: audio to extract
+        - fs: audio sampling rate
+        - onset: onset of segment to extract, in seconds
+        - offset: offset of segment to extract, in seconds
+        - context_len: minimum length of audio to extract
+
+    returns
+    -----
+        segment of audio
+    """
+
+    
     difference = (offset - onset) - context_len
     if difference <= 0:
-        onset += difference  # context_len//2
-    # on,off = np.searchsorted(audiotimes,onset),np.searchsorted(audiotimes,offset)
+        # extend from the beginning, if shorter than context_len
+        onset += difference  
+    
     on = int(round(onset * fs))
     off = int(round(offset * fs))
 
     a = audio[on:off]
 
-    # print(a.shape)
     return a[:, None]
 
 
 def get_all_audio(
-    audio,
-    fs,
-    onOffs,
-    context_len=0.02,
-    max_pairs=600,
-    env=False,
-    current_total=0,
-    full_vocs=False,
-    extend=True,
-    padding=0.0,
-):
+    audio:np.ndarray,
+    fs:float,
+    onOffs:np.ndarray,
+    context_len:float=0.02,
+    max_vocs:int=600,
+    current_total:int=0,
+    full_vocs:bool=False,
+    extend:bool=True,
+    padding:float=0.0,
+)->list[np.ndarray]:
+    """
+    segments a long audio file into a set of shorter chunks, based on onsets and offsets from onOffs.
+    has two modes: one that grabs full vocalizations, based on true onsets and offsets (full_vocs=True).
+    This is used for evaluation.
+    The default (full_vocs=False), grabs segments of length context_len. This is used for training.
 
-    spikes = []
+    Inputs
+    -----
+        - audio: full audio from a wav file
+        - fs: audio sample rate
+        - onOffs: segments of audio from audio. These don't need to be discrete vocal units, but they should
+        be segments that contain vocalizations
+        - context_len: length of segmented audio in seconds, when full_vocs = False
+        - max_vocs: maximum number of vocalizations to grab from the audio, total
+        - current_total: number of vocalizations collected before this audio file
+        - full_vocs: whether to grab full vocalizations (analysis) or short chunks (training)
+        - extend: whether to extend full vocalizations to all match in length (samples)
+        - padding: amount of padding to add to onsets and offsets, in seconds
+
+    Returns
+    -----
+        - a list of collected audio
+    """
+
     auds = []
     ii = current_total
-    total_vocs = len(onOffs)
 
     chunk_len = int(round(context_len * fs))
-    if env:
-        analytic_signal = hilbert(audio)
-        envelope = np.abs(analytic_signal)
-    else:
-        envelope = []
 
     if full_vocs and extend:
         # extend onoffs in a sensible way -- maybe to length of max onoff
@@ -64,24 +94,18 @@ def get_all_audio(
         diffs = max_len - lens
         onOffs[:, 1] += diffs
 
-    # print(onOffs[:5,:])
-    # print(f"padding by {padding} seconds")
+
     onOffs[:, 0] = np.maximum(onOffs[:, 0] - padding, np.zeros(onOffs[:, 0].shape))
     onOffs[:, 1] = np.minimum(
         onOffs[:, 1] + padding, len(audio) / fs * np.ones(onOffs[:, 1].shape)
     )
-    # print(onOffs[:5,:])
-    # assert False
-    # onOffs =
+
 
     for onset, offset in onOffs:
         aud = get_audio(audio, fs, onset, offset, context_len)
-        # print(aud.shape)
-        ts = np.arange(0, (len(aud) + 1) / fs, 1 / fs)[: len(aud)]
-        # spl = make_smoothing_spline(ts,aud)
+
         cut_len = np.mod(aud.shape[0], chunk_len)
-        # print(cut_len)
-        # print(aud[:minLen].shape)
+
 
         if aud.shape[0] >= chunk_len:
             if not full_vocs:
@@ -92,7 +116,7 @@ def get_all_audio(
 
                 for a in aud:
                     auds.append(a[None, :, :])
-                # auds.append([a[None,:,:] for a in aud])
+                
             else:
                 aud = aud.reshape(1, -1, 1)
 
@@ -100,14 +124,26 @@ def get_all_audio(
 
             ii += len(aud)
             print(f"current_total: {ii} samples", end="\r", flush=True)
-            if ii >= max_pairs:
+            if ii >= max_vocs:
                 break
 
-    # print(f"kept {ii}/{total_vocs} vocalizations more than 20 ms long")
     return auds
 
 
-def make_marmo_seg_file(matfile, savedir=""):
+def make_marmo_seg_file(matfile:str, savedir:str="")->Tuple[str,str]:
+    """
+    takes a marmoset audio file (in `.mat` format), converts to a `.wav` (audio) and
+    `.txt` (onset offset) file
+
+    Inputs
+    -----
+        - matfile: location of `.mat` file
+        - savedir: location to save the new file
+    Returns
+    -----
+        - new_fn_wav: location of `.wav` file
+        - new_fn_set: location of `.seg` file
+    """
 
     d = loadmat(matfile)
     vocal = d["vocal"][0][0]
@@ -128,48 +164,6 @@ def make_marmo_seg_file(matfile, savedir=""):
     wavfile.write(new_fn_wav, rate=fs, data=aud)
 
     return new_fn_wav, new_fn_seg
-
-
-def get_audio_from_mat(matfile, context_len=0.02, max_pairs=600, env=False):
-
-    d = loadmat(matfile)
-    vocal = d["vocal"][0][0]
-    data = vocal[0]
-    if data.dtype == np.int16:
-        data = data / -np.iinfo(data.dtype).min
-    fs = vocal[1].squeeze()
-    dt = 1 / fs
-    chunk_len = int(round(context_len * fs))
-
-    data = butter_filter(data.squeeze(), cutoff=600, order=5, fs=fs, btype="high")[
-        :, None
-    ]
-    cut_len = np.mod(len(data), chunk_len)
-    if len(data) >= chunk_len:
-        if cut_len > 0:
-            data = data[:-cut_len]
-
-        data = data.reshape(-1, chunk_len, 1)
-        return [data], fs
-    else:
-        return [], fs
-
-
-def get_sylltype_from_mat(matfiles, max_vocs=500, voctype="trill"):
-
-    random.shuffle(matfiles)
-    vocal_data = []
-    for f in matfiles:
-        d = loadmat(f)["vocal"][0][0]
-        dvoc = d[5]
-        if dvoc == voctype:
-            vocal_data.append(d[0])
-
-        if len(vocal_data) >= max_vocs:
-            break
-
-    return vocal_data, d[1]
-
 
 def get_segmented_audio(
     audiopath,
