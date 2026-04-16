@@ -1,7 +1,6 @@
 from ssqueezepy import ssq_cwt, issq_cwt, ssq_stft
 from ssqueezepy.visuals import imshow, plot
 
-# from ssqueezepy.toolkit import lin_band
 from scipy.io import wavfile
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,6 +11,11 @@ from itertools import repeat
 from joblib import Parallel, delayed
 from utils import butter_filter
 import noisereduce as nr
+
+from typing import Union, Tuple
+
+# much of the code in this section comes from ssqueezepy, please check out this
+# library! it's very good
 
 ### wavelets:
 # morlet: higher mu -> greater frequency, lesser time resolution. for mu > 6
@@ -49,8 +53,11 @@ FILTER_DICT = {"chunk length": 10000, "band min": 1000.0, "band max": 10000.0}
 
 
 def viz(x, Tx, Wx, vmin=None, vmax=None, axs=True):
+    """
+    visualization function from ssqueezepy
+    """
     ax = plt.gca()
-    if vmin != None and vmax != None:
+    if vmin is not None and vmax is not None:
         plt.imshow(np.abs(Wx), aspect="auto", cmap="turbo", vmin=vmin, vmax=vmax)
     else:
         plt.imshow(np.abs(Wx), aspect="auto", cmap="turbo")
@@ -61,7 +68,30 @@ def viz(x, Tx, Wx, vmin=None, vmax=None, axs=True):
     plt.show()
 
 
-def lin_band(Tx, slope, offset, bw, show=True, **kw):
+def lin_band(
+    Tx: np.ndarray, slope: float, offset: float, bw: float, show: bool = True, **kw
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    create a linear band of frequencies (or scales, on the scaleogram
+    from a SSQ transform) to preserve. Adapted from
+    ssqueezepy.
+
+    Inputs
+    -----
+        - Tx: frequency or scaleogram
+        - slope: slope of linear band
+        - offset: vertical offset (in frequency of scale space)
+            of linear band
+        - bw: width of linear band, as a portion of frequencies/scales
+            ranges between 0,1
+        - show: whether to plot and show results immediately
+        - **kw: visualization keywords
+
+    Returns
+    -----
+        Cs: lower bound of frequency band, in terms of scaelogram
+        freqband: full frequency band
+    """
 
     na, N = Tx.shape
     tcs = np.linspace(0, 1, N)
@@ -78,17 +108,39 @@ def lin_band(Tx, slope, offset, bw, show=True, **kw):
 
 
 def band_pass_preprocess(
-    data,
-    chunk_len,
-    low_cut,
-    high_cut,
-    fs,
-    kw,
-    tn,
-    return_full_ssq=True,
-    order=5,
-    show=True,
-):
+    data: np.ndarray,
+    chunk_len: float,
+    low_cut: float,
+    high_cut: float,
+    fs: float,
+    kw: dict,
+    tn: np.ndarray,
+    return_full_ssq: bool = True,
+    order: int = 5,
+) -> Tuple[np.ndarray, Union[np.ndarray, None], Union[np.ndarray, None]]:
+    """
+    Remove certain frequencies using a band-pass filter
+
+    Inputs
+    -----
+        - data: data to filter
+        - chunk_len: length of audio to filter at once
+        - low_cut: low frequency to cut
+        - high_cut: high frequency to cut
+        - fs: samplerate of audio
+        - kw: synchrosqueezing keywords
+        - tn: sample timepoints of audio
+        - return_full_ssq: whether to return original frequencies, scaleogram
+            in addition to processed audio
+        - order: order of butterworth filter for band-passing
+
+    Returns
+    -----
+        - full_rec: filtered data
+        If return_full_ssq:
+            - frequencies for scaleogram
+            - original scaleogram
+    """
 
     print("using band-pass preprocessing")
 
@@ -110,21 +162,37 @@ def band_pass_preprocess(
 
 
 def ssq_preprocess(
-    data,
-    tn,
-    kw,
-    chunk_len,
-    show=True,
-    min_band=0.01,
-    max_band=0.35,
-    return_full_ssq=True,
-):
+    data: np.ndarray,
+    tn: np.ndarray,
+    kw: dict,
+    chunk_len: float,
+    show: bool = True,
+    min_band: float = 0.01,
+    max_band: float = 0.35,
+    return_full_ssq: bool = True,
+) -> Tuple[np.ndarray, Union[np.ndarray, None], Union[np.ndarray, None]]:
+    """
+    Remove certain frequencies using a linear band on synchrosqueezed scaleogram
 
-    if show:
-        pass
-        # _Tn = np.pad(Tn, [[4, 4]])  # improve display of top- & bottom-most freqs
-        # imshow(Wn, **pkw)
-        # imshow(_Tn, norm=(0, 4e-1), **pkw)
+    Inputs
+    -----
+        - data: data to filter
+        - tn: sample timepoints of audio
+        - kw: synchrosqueezing keywords
+        - chunk_len: length of audio to filter at once
+        - show: whether to directly plot outputs
+        - min_band: bottom of retained frequency band
+        - max_band: top of retained frequency band
+        - return_full_ssq: whether to return original frequencies, scaleogram
+            in addition to processed audio
+
+    Returns
+    -----
+        - full_rec: filtered data
+        If return_full_ssq:
+            - frequencies for spectrogram
+            - original spectrogram
+    """
 
     full_rec = []
     slopen = -0.00  # flat band across time
@@ -133,12 +201,10 @@ def ssq_preprocess(
     # print(data.shape,tn.shape)
 
     for ii, on in enumerate(chunk_ons):
-        # print(f"running chunk {ii+1}/{len(chunk_ons)}",end='\r')
         off = min(len(data), on + chunk_len)
         nrec = np.zeros(data.shape)
         Tn, _, ssq_freqs, scales, *_ = ssq_cwt(data[on:off], t=tn[on:off], **kw)
         if max_band > 1:
-            # print(max_band,min_band)
             nf = Tn.shape[0]
 
             max_band_new = np.sum(ssq_freqs >= min_band) / nf
@@ -146,7 +212,7 @@ def ssq_preprocess(
 
             min_band = min_band_new
             max_band = max_band_new
-            # assert False
+
         bwn = (max_band - min_band) / 2
         offsetn = (min_band + max_band) / 2
         Csn, freqbandn = lin_band(Tn, slopen, offsetn, bwn, norm=(0, 4e-1), show=show)
@@ -179,29 +245,50 @@ def ssq_preprocess(
             vmax=np.amax(np.abs(Sxo)),
         )
     if return_full_ssq:
-        # print(full_rec.shape)
-
         full_ssq, _, full_freqs, full_scales, *_ = ssq_cwt(data, t=tn, **kw)
-        # print(full_freqs[-1],full_freqs[0],ssq_freqs[-1],ssq_freqs[0])
-        # assert full_ssq.shape[0] == Tn.shape[0]
+
         return full_rec, full_freqs, full_ssq
     else:
         return full_rec, ssq_freqs, None
 
 
 def check_valid(data, dtype, default=""):
+    """
+    checks if inputs (from terminal) are valid,
+    based on expected dtype.
+
+    Inputs
+    -----
+        - data: data to check dtype of
+        - dtype: expected dtype
+        - default: default value of input
+
+    Returns
+    -----
+        input as expected dtype
+        flag of whether data was valid or not
+    """
 
     if data == default:
         return data, True
     try:
         d = dtype(data)
         return d, True
-    except:
+    except ValueError:
         return data, False
 
 
-def _tune_input_helper(p):
-    """Get parameter adjustments from the user."""
+def _tune_input_helper(p: dict) -> dict:
+    """Get parameter adjustments from the user.
+
+    Inputs
+    -----
+        p: dictionary of tuning parameters
+    Returns
+    -----
+        updated tuning parameters
+
+    """
     for key in p.keys():
         curr_dtype = type(p[key])
         # temp = 'not (number or empty)'
@@ -216,19 +303,40 @@ def _tune_input_helper(p):
 
 
 def _tuning_plot(
-    orig_spec,
-    denoised_spec,
-    cleaned_spec,
-    ts,
-    spec_freqs,
-    scale_freqs,
-    scaleogram,
-    min_band,
-    max_band,
-    vmin=-0.5,
-    vmax=1.5,
-    save_loc="./pp.pdf",
+    orig_spec: np.ndarray,
+    denoised_spec: np.ndarray,
+    cleaned_spec: np.ndarray,
+    ts: np.ndarray,
+    spec_freqs: np.ndarray,
+    scale_freqs: np.ndarray,
+    scaleogram: np.ndarray,
+    min_band: float,
+    max_band: float,
+    vmin: float = -0.5,
+    vmax: float = 1.5,
+    save_loc: str = "./pp.pdf",
 ):
+    """
+    Make a plot to assess parameter tuning
+
+    Inputs
+    -----
+        - orig_spec: original spectrogram
+        - denoised_spec: denoised spectrogram (using noisereduce)
+        - cleaned_spec: cleaned spectrogram (removing certain frequency bands)
+        - ts: audio timepoints
+        - spec_freqs: spectrogram frequencies
+        - scale_freqs: scaleogram frequencies
+        - scaleogram: scaleogram
+        - min_band: minimum of linear band of retained frequencies
+        - max_band: maximum of lienar band of retained frequencies
+        - vmin: minimum value for plots
+        - vmax: maximum value for plots
+        - save_loc: location to save out the tuning plot
+    Returns
+    -----
+        nothing
+    """
 
     nf, T = scaleogram.shape
     # assert len(scale_freqs) == ns, print(ns,len(scale_freqs))
@@ -306,23 +414,27 @@ def _tuning_plot(
 
 
 def tune_preprocessing(
-    audio_files,
-    segment_files,
-    hp_dict,
-    preprocess_type="ssq",
-    img_fn="./pp.pdf",
-    reduce_noise=True,
-):
+    audio_files: list[str],
+    segment_files: list[str],
+    hp_dict: dict,
+    preprocess_type: str = "ssq",
+    img_fn: str = "./pp.pdf",
+    reduce_noise: bool = True,
+) -> dict:
     """
     tune preprocessing parameters for denoising spectrograms
-    Parameters
+
+    Inputs
     ----------
-    audio_files : list of str
-        Audio files
-    seg_files : list of str
-        Segment files
-    p : dict
-        Preprocessing parameters: Add a reference!
+        - audio_files : list of str
+            Audio files
+        - seg_files : list of str
+            Segment files
+        - hp_dict : dict
+            Preprocessing parameters
+        - preprocess_type: ssq or band-pass
+        - img_fn: save filename for tuning plot
+        - reduce noise: whether to use noise_reduce prior to linear filtering
 
     Returns
     -------
@@ -490,14 +602,27 @@ def filter_by_tags(audio_files, seg_files, audio_tags, seg_tags):
 
 
 def preprocess_helper(
-    in_dir,
-    out_dir,
-    hyperparameters,
-    audio_ext,
-    reprocess,
-    preprocess_type,
-    reduce_noise,
+    in_dir: str,
+    out_dir: str,
+    hyperparameters: dict,
+    audio_ext: str,
+    reprocess: bool,
+    preprocess_type: str,
+    reduce_noise: bool,
 ):
+    """
+    helper function for preprocessing audio
+
+    Inputs
+    -----
+        - in_dir: directory of audio files to process
+        - out_dir: location to put processed audio files
+        - hyperparameters: preprocessing hyperparams
+        - audio_ext: extension of original audio files
+        - reprocess: whether to reprocess, if there are existing files
+        - preprocess_type: ssq or band-pass
+        - reduce_noise: whether to use noise_reduce
+    """
 
     print(f"processing directory {in_dir} \n")
     print(f"{'' if reprocess else 'not '}reprocessing files")
@@ -529,7 +654,7 @@ def preprocess_helper(
                 y=orig_audio,
                 sr=sr,
                 prop_decrease=hyperparameters["prop_reduce"],
-                time_constant_s=p["time_constant_s"],
+                time_constant_s=hyperparameters["time_constant_s"],
                 stationary=False,
                 freq_mask_smooth_hz=freq_mask_smooth_hz,
             )
@@ -571,30 +696,44 @@ def preprocess_helper(
             else:
                 recon_a = orig_audio
 
-        except:
+        except Exception:
             print(f"error in processing {af}")
             print(t.shape)
             print(orig_audio.shape)
-            assert False
+            raise
         recon_a = recon_a.astype(orig_dtype)
         wavfile.write(new_fn, rate=sr, data=recon_a)
 
 
 def preprocess(
-    audio_dirs,
-    out_dirs,
-    hp_dict,
-    audio_ext=".wav",
-    parallel=False,
-    reprocess=True,
-    preprocess_type="ssq",
-    reduce_noise=True,
+    audio_dirs: list[str],
+    out_dirs: list[str],
+    hp_dict: dict,
+    audio_ext: str = ".wav",
+    parallel: bool = False,
+    reprocess: bool = True,
+    preprocess_type: str = "ssq",
+    reduce_noise: bool = True,
 ):
+    """
+    function for preprocessing your audio
+
+    Inputs
+    -----
+        - audio_dirs: audio file directories to process
+        - out_dirs: locations to put processed audio files
+        - hyperparameters: preprocessing hyperparams
+        - audio_ext: extension of original audio files
+        - parallel: whether to process in parallel
+        - reprocess: whether to reprocess, if there are existing files
+        - preprocess_type: ssq or band-pass
+        - reduce_noise: whether to use noise_reduce
+    """
 
     assert len(audio_dirs) == len(out_dirs), print(
         f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs"
     )
-    # print(hp_dict)
+
     if parallel:
         n_jobs = int(os.cpu_count() // 2)
         gen = zip(
