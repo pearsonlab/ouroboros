@@ -116,7 +116,7 @@ def get_loaders(
     else:
         pass
     test_size = 1 - train_size
-    val_size = test_size / 2
+    
     X_train, X_test = train_test_split(data, test_size=test_size, random_state=seed)
 
     if cv:
@@ -183,7 +183,7 @@ def get_loaders_interp(
     else:
         pass
     test_size = 1 - train_size
-    val_size = test_size / 2
+    
     X_train, X_test = train_test_split(data, test_size=test_size, random_state=seed)
     t = np.arange(0, X_train.shape[1] * dt, dt)[: X_train.shape[1]]
     t_train = np.tile(t[None, :], (X_train.shape[0], 1))
