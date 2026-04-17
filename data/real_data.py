@@ -175,7 +175,7 @@ def get_segmented_audio(
     extend: bool = True,
     padding: float = 0.0,
     shuffle_order: bool = True,
-) -> list:
+) -> Tuple[list,int]:
     """
     Takes as input a path to audio and segments (along with any
     shared subdirectories and file extensions),
@@ -302,7 +302,7 @@ def get_segmented_audio(
                 audio,
                 sr,
                 onoffs,
-                max_pairs=max_vocs,
+                max_vocs=max_vocs,
                 context_len=context_len,
                 current_total=current_total,
                 full_vocs=full_vocs,

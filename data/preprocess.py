@@ -546,6 +546,7 @@ def tune_preprocessing(
                     show=False,
                     min_band=band_min,
                     max_band=band_max,
+                    return_full_ssq=True
                 )
             else:
                 recon_a, cwt_freqs, ssq_scaleogram = band_pass_preprocess(
@@ -557,23 +558,24 @@ def tune_preprocessing(
                     return_full_ssq=True,
                     kw=cwt_kws,
                     tn=t,
-                    show=False,
                     order=p["order"],
                 )
             recon_a = recon_a.astype(orig_dtype)
             wavfile.write("./test_wav.wav", rate=sr, data=recon_a)
             _, sx_recon, *_ = ssq_stft(recon_a, fs=sr)
             recon_spec = np.abs(sx_recon)
+            scaleogram = np.abs(ssq_scaleogram)
+
             _tuning_plot(
-                orig_spec,
-                denoised_spec,
-                recon_spec,
-                t,
-                sx_freqs,
-                cwt_freqs,
-                np.abs(ssq_scaleogram),
-                p["band min"],
-                p["band max"],
+                orig_spec=orig_spec,
+                denoised_spec=denoised_spec,
+                cleaned_spec=recon_spec,
+                ts=t,
+                spec_freqs=sx_freqs,
+                scale_freqs=cwt_freqs,
+                scaleogram=scaleogram,
+                min_band=p["band min"],
+                max_band=p["band max"],
                 vmin=vmin,
                 vmax=vmax,
                 save_loc=img_fn,
@@ -690,8 +692,7 @@ def preprocess_helper(
                         fs=sr,
                         return_full_ssq=True,
                         kw=cwt_kws,
-                        tn=t,
-                        show=False,
+                        tn=t
                     )
             else:
                 recon_a = orig_audio
@@ -734,8 +735,10 @@ def preprocess(
         f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs"
     )
 
-    if parallel:
-        n_jobs = int(os.cpu_count() // 2)
+    n_cpu = os.cpu_count()
+    if parallel and n_cpu is not None:
+       
+        n_jobs = n_cpu //2
         gen = zip(
             audio_dirs,
             out_dirs,
@@ -750,5 +753,5 @@ def preprocess(
     else:
         for ii, (in_dir, out_dir) in enumerate(zip(audio_dirs, out_dirs)):
             preprocess_helper(
-                in_dir, out_dir, hp_dict, audio_ext, reprocess, preprocess_type
+                in_dir, out_dir, hp_dict, audio_ext, reprocess, preprocess_type,reduce_noise
             )
