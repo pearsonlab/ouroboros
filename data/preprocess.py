@@ -396,7 +396,7 @@ def preprocess_helper(in_dir,out_dir,hyperparameters,audio_ext,reprocess,preproc
             freq_mask_smooth_hz = int(round(2.5*nyquist/100)) #default: 500, scale by frequency range (let's do 2.5% of frequency range)
 
             orig_audio = nr.reduce_noise(y=orig_audio,sr=sr,prop_decrease=hyperparameters['prop_reduce'],
-                                         time_constant_s=p['time_constant_s'],stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
+                                         time_constant_s=hyperparameters['time_constant_s'],stationary=False,freq_mask_smooth_hz=freq_mask_smooth_hz)
 
         cwt_kws = {'wavelet': (hyperparameters['wavelet'],WAVELET_HP_DICT[hyperparameters['wavelet']]),
                     'nv':hyperparameters['nv'],

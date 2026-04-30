@@ -18,7 +18,7 @@ def run_experiments(audio_path='',
                     model_path='',seed=92,tau=1e-4,lr=1e-3,n_kernels=10,
                     max_sylls=3000,nEpochs=200):
     
-    seg_path = os.path.join(audio_path,'segs')
+    seg_path = os.path.join(audio_path,'segs/')
     days = glob.glob(os.path.join(seg_path,'[6-9][0-9]'))
     syllables = glob.glob(os.path.join(days[0],'syllable*'))
     n_sylls = len(syllables)
@@ -28,7 +28,7 @@ def run_experiments(audio_path='',
         syll = syll.split(days[0])[-1].split('/')[-1]
         #print(seg_path,syll)
         print(f"loading {max_per_syll} sylls from {syll}")
-        seg_subdir = os.path.join('[6-9][0-9]',syll) #syll.split(days[0])[-1]
+        seg_subdir = os.path.join('[6-9][0-9]',syll +'/') #syll.split(days[0])[-1]
         #print(seg_subdir)
         #print(max_per_syll)
         a,sr = get_segmented_audio(audio_path,seg_path,audio_subdir='[6-9][0-9]/double_denoised',\

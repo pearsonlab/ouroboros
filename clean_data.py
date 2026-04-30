@@ -24,18 +24,22 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
 
     ## this part assumes that the top subdirectory in audio_subdirs is the one matched across 
     ## audio, seg
-    split_aud_sub = audio_subdirs.split('/')
-    split_seg_sub = seg_subdirs.split('/')
+    #split_aud_sub = audio_subdirs.split('/')
+    #split_seg_sub = seg_subdirs.split('/')
     #print(split_aud_sub,split_seg_sub)
 
-    aud_sub_depth=len(split_aud_sub)
-    seg_sub_depth=len(split_seg_sub)
+    split_aud_sub = audio_subdirs.split('/')
+    split_seg_sub = seg_subdirs.split('/')
+    aud_sub_depth=1 if audio_subdirs == '' else len(split_aud_sub)
+    seg_sub_depth=1 if seg_subdirs == '' else len(split_seg_sub)
+
 
     #print(split_aud_sub)
     #print(split_seg_sub)
     #print(seg_dirs)
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
+    #print(audio_tags,seg_tags)
 
     #print(audio_tags,seg_tags)
     audio_dirs,seg_dirs  = filter_by_tags(audio_dirs,seg_dirs,audio_tags,seg_tags)
@@ -55,7 +59,7 @@ def preprocess_data(audio_loc,seg_loc,out_ext,\
     seg_files.sort()
     audio_tags = [a.split(audio_ext)[0].split('/')[-1] for a in audio_files]
     seg_tags = [s.split(seg_ext)[0].split('/')[-1] for s in seg_files]
-
+    #print(audio_tags[:5],seg_tags[:5])
     audio_files,seg_files = filter_by_tags(audio_files,seg_files,audio_tags,seg_tags)
     if len(audio_files) == 0:
         print("Lost all files!")

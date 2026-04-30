@@ -107,8 +107,9 @@ def make_marmo_seg_file(matfile,savedir = ''):
     savedir = ''.join(matfile.split('/')[:-1]) if savedir == '' else savedir
     fn = matfile.split('/')[-1].split('.mat')[0]    
 
-    new_fn_wav = fn + '_' + voctype + '.wav'
-    new_fn_seg = fn + '_' + voctype + '.txt'
+    new_fn_wav = os.path.join(savedir,fn + '_' + voctype + '.wav')
+    new_fn_seg = os.path.join(savedir,fn + '_' + voctype + '.txt')
+
 
     with open(new_fn_seg,'w') as f:
         f.write(str(onset) + '\t' + str(offset) + '\t' + str(voctype))
@@ -183,11 +184,15 @@ def get_segmented_audio(audiopath,segpath,audio_subdir='',seg_subdir='',\
     seg_dirs.sort()
     split_aud_sub = audio_subdir.split('/')
     split_seg_sub = seg_subdir.split('/')
-    aud_sub_depth=0 if audio_subdir == '' else len(split_aud_sub)
-    seg_sub_depth=0 if seg_subdir == '' else len(split_seg_sub)
+    aud_sub_depth=1 if audio_subdir == '' else len(split_aud_sub)
+    seg_sub_depth=1 if seg_subdir == '' else len(split_seg_sub)
 
-    aud_sub_depth += 1
-    seg_sub_depth += 1
+    #aud_sub_depth += 1
+    #seg_sub_depth += 1
+
+    #print()
+    #print(aud_sub_depth,seg_sub_depth)
+    #print(seg_dirs,audio_dirs)
 
     audio_tags = [a.split('/')[-aud_sub_depth] for a in audio_dirs]
     seg_tags = [s.split('/')[-seg_sub_depth] for s in seg_dirs]
