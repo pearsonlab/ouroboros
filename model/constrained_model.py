@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from mambapy.mamba import Mamba, MambaConfig
+from third_party.mamba import *
 from model.model_utils import smooth, NonNegClipper
 from utils import deriv_approx_dy,deriv_approx_d2y
 from model.kernels import *
