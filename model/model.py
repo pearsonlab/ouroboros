@@ -336,42 +336,45 @@ class Ouroboros(nn.Module):
         with torch.no_grad():
             for ii in tqdm(
                 range(0, L_new, step_size),
-                total=L,
+                total=L_new//step_size + 1,
                 desc=f"iterating through segment of length {L}",
             ):
                 if np.mod(ii, 10000) == 0:
                     ## clean up stuff every so often
                     gc.collect()
-                s = x_in[:, ii : ii + step_size, :]
+                end_ind = min(L_new,ii+step_size)
+                s = x_in[:, ii : end_ind, :]
 
                 omega, omega_cache = self.omega_mamba.step(s, omega_cache)
                 gamma, gamma_cache = self.omega_mamba.step(s, gamma_cache)
                 w, weights_cache = self.omega_mamba.step(s, weights_cache)
 
-                s = z[:, ii : ii + 1, :]
-                if ii >= L:
-                    print(ii * dt)
-                    omega = self.omega_net(omega).abs()
-                    gamma = self.gamma_net(gamma)
-                    weights.append(w.detach().cpu().numpy())
-                    omegas.append(omega.detach().cpu().numpy())
-                    gammas.append(gamma.detach().cpu().numpy())
-                    weighted_kernels, _ = self.kernel(s, w)
-                    kernel.append(weighted_kernels.detach().cpu().numpy())
+                start_ind = max(0,ii-L)
+                s = z[:, start_ind : end_ind-L, :]
+                if end_ind-L > 0:
+
+                    start_ind = max(0,L-ii)
+                    omega = self.omega_net(omega[:,start_ind:]).abs()
+                    gamma = self.gamma_net(gamma[:,start_ind:])
+                    weights.append(w[:,start_ind:].detach().cpu().numpy().squeeze())
+                    omegas.append(omega.detach().cpu().numpy().squeeze())
+                    gammas.append(gamma.detach().cpu().numpy().squeeze())
+                    weighted_kernels, _ = self.kernel(s, w[:,start_ind:],smooth_len)
+                    kernel.append(weighted_kernels.detach().cpu().numpy().squeeze())
 
         z[:, :, 1] /= dt
-        omegas = np.stack(omegas, axis=1)
-        gammas = np.stack(gammas, axis=1)
-        weights = np.stack(weights, dim=1)
-        kernel = np.stack(kernel, dim=1)
+        omegas = np.concatenate(omegas)
+        gammas = np.concatenate(gammas)
+        weights = np.concatenate(weights)
+        kernel = np.concatenate(kernel)
 
         z1 = z[:, :, :1].detach().cpu().numpy().squeeze() / dt
         z2 = z[:, :, 1:].detach().cpu().numpy().squeeze()
 
-        yhat = -(omegas**2) * z1 - gammas * z2 - weighted_kernels
+        yhat = -(omegas**2) * z1 - gammas * z2 - kernel
 
         if smoothing:
-            omegas = smooth(omegas, smooth_len)
-            gammas = smooth(gammas, smooth_len)
+            omegas = smooth(omegas[None,:,None], smooth_len).squeeze()
+            gammas = smooth(gammas[None,:,None], smooth_len).squeeze()
 
         return yhat, omegas, gammas, kernel, weights
