@@ -19,11 +19,44 @@ from scipy.io.wavfile import WavFileWarning
 from scipy.signal import stft
 import warnings
 
-from amplitude_segmentation import get_spec_ava
+from amplitude_segmentation import get_spec_ava,get_onsets_offsets
 
 # Constants
 EPSILON = 1e-12
 
+P = {
+		'min_freq': 500, # minimum frequency
+		'max_freq': 18e3, #maximum frequency
+		'nperseg': 512, # FFT, length of Hann window
+		'noverlap': 256, # FFT, overlap in sequences
+		'spec_min_val': 2.0, # minimum log-spectrogram value
+		'spec_max_val': 4.0, # maximum log-spectrogram value
+		'fs': 44111, # audio samplerate
+		'get_spec': get_spec_ava, # figure out what this is
+		'min_dur': 1., # minimum syllable duration
+		'max_dur': 7.0, #maximum syllable duration
+		'window_dur': 8, # length of visualized window
+		'smoothing_timescale': 0.1, #amplitude
+		'temperature': 0.5, # softmax temperature parameter
+		'softmax': False, # apply softmax to frequency bins to calculate amplitude
+		'th_1': 1.5, # segmenting threshold 1
+		'th_2': 3.5, # segmenting threshold 2
+		'th_3': 2.75, # segmenting threshold 3
+		'th_4': -1, # max value 
+		'window_length': 0.01, # shotgun vae window
+		'algorithm': get_onsets_offsets, #finding syllables
+		'num_freq_bins': 128,
+		'num_time_bins': 128,
+		'mel': True, # Frequency spacing: mel-spacing for birbs
+		'time_stretch': True, #are we warping time?
+		'within_syll_normalize': False, #normalize within syllables?
+		'real_preprocess_params': ('min_freq', 'max_freq', 'spec_min_val', \
+				'spec_max_val'), #I'm sure this does something
+		'int_preprocess_params': tuple([]), #i'm ALSO sure this does something
+		'binary_preprocess_params': ('mel', 'within_syll_normalize'), #shrug,
+		'sylls_per_file': 20,
+		'max_num_syllables': None
+		}
 
 
 def segment(audio_dir, seg_dir, p, verbose=True):

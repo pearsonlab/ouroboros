@@ -5,9 +5,7 @@ from scipy.io import wavfile
 import numpy as np
 import matplotlib.pyplot as plt
 import soundfile as sf
-import os
-from itertools import repeat
-from joblib import Parallel, delayed
+import os, glob
 from utils import butter_filter
 import noisereduce as nr
 
@@ -610,7 +608,7 @@ def preprocess_helper(
     preprocess_type: str,
     reduce_noise: bool,
 ):
-    # change to one audio file at a time
+    
     """
     helper function for preprocessing audio
 
@@ -701,10 +699,9 @@ def preprocess_helper(
 
 
 def preprocess(
-    audio_files: list[str],
+    audio_dir: str,
     out_dir: str,
     hp_dict: dict,
-    parallel: bool = False,
     reprocess: bool = True,
     preprocess_type: str = "ssq",
     reduce_noise: bool = True,
@@ -726,22 +723,10 @@ def preprocess(
 
     if not os.path.isdir(out_dir):
         os.mkdir(out_dir)
-    n_cpu = os.cpu_count()
-    if parallel and n_cpu is not None:
-       
-        n_jobs = n_cpu //2
-        gen = zip(
-            audio_files,
-            repeat(out_dir),
-            repeat(hp_dict),
-            repeat(reprocess),
-            repeat(preprocess_type),
-            repeat(reduce_noise),
-        )
-        Parallel(n_jobs=n_jobs)(delayed(preprocess_helper)(*args) for args in gen)
 
-    else:
-        for in_file in audio_files:
-            preprocess_helper(
-                in_file, out_dir, hp_dict, reprocess, preprocess_type,reduce_noise
-            )
+    audio_files = glob.glob(os.path.join(audio_dir,'*.wav'))
+
+    for in_file in audio_files:
+        preprocess_helper(
+            in_file, out_dir, hp_dict, reprocess, preprocess_type,reduce_noise
+        )
