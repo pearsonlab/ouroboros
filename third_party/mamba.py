@@ -11,6 +11,8 @@ from pscan import pscan
 """
 This file comes from the MambaPy package, located here: https://github.com/alxndrTL/mamba.py
 It is included for stability. Implementation by alxndrTL.
+Included under MIT License
+
 
 This file closely follows the mamba_simple.py from the official Mamba implementation, and the mamba-minimal by @johnma2006.
 The major differences are :
