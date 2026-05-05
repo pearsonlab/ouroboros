@@ -19,7 +19,7 @@ from scipy.io.wavfile import WavFileWarning
 from scipy.signal import stft
 import warnings
 
-from amplitude_segmentation import get_spec_ava,get_onsets_offsets
+from third_party.amplitude_segmentation import get_spec_ava,get_onsets_offsets
 
 # Constants
 EPSILON = 1e-12
