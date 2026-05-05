@@ -5,7 +5,6 @@ from scipy.io import wavfile
 import numpy as np
 import matplotlib.pyplot as plt
 import soundfile as sf
-import glob
 import os
 from itertools import repeat
 from joblib import Parallel, delayed
@@ -604,113 +603,107 @@ def filter_by_tags(audio_files, seg_files, audio_tags, seg_tags):
 
 
 def preprocess_helper(
-    in_dir: str,
+    audio_file: str,
     out_dir: str,
     hyperparameters: dict,
-    audio_ext: str,
     reprocess: bool,
     preprocess_type: str,
     reduce_noise: bool,
 ):
+    # change to one audio file at a time
     """
     helper function for preprocessing audio
 
     Inputs
     -----
-        - in_dir: directory of audio files to process
-        - out_dir: location to put processed audio files
+        - audio_file: 
+        - out_dir: location to put processed audio file
         - hyperparameters: preprocessing hyperparams
-        - audio_ext: extension of original audio files
+        - audio_id: extension of original audio files
         - reprocess: whether to reprocess, if there are existing files
         - preprocess_type: ssq or band-pass
         - reduce_noise: whether to use noise_reduce
     """
 
-    print(f"processing directory {in_dir} \n")
-    print(f"{'' if reprocess else 'not '}reprocessing files")
-
     if not os.path.isdir(out_dir):
         os.mkdir(out_dir)
 
-    afs = glob.glob(os.path.join(in_dir, "*" + audio_ext))
+    
+    new_fn = audio_file.split("/")[-1]
+    new_fn = os.path.join(out_dir, new_fn)
+    if os.path.isfile(new_fn) and not reprocess:
+        return
 
-    for af in afs:
-        new_fn = af.split("/")[-1].split(audio_ext)[0] + "_cleaned.wav"
-        new_fn = os.path.join(out_dir, new_fn)
-        if os.path.isfile(new_fn) and not reprocess:
-            continue
+    if ".wav" in audio_file:
+        sr, orig_audio = wavfile.read(audio_file)
+    elif ".flac" in audio_file:
+        orig_audio, sr = sf.read(audio_file)
 
-        if ".wav" in af:
-            sr, orig_audio = wavfile.read(af)
-        elif ".flac" in af:
-            orig_audio, sr = sf.read(af)
+    orig_dtype = orig_audio.dtype
+    if reduce_noise:
+        nyquist = sr // 2
+        freq_mask_smooth_hz = int(
+            round(2.5 * nyquist / 100)
+        )  # default: 500, scale by frequency range (let's do 2.5% of frequency range)
 
-        orig_dtype = orig_audio.dtype
-        if reduce_noise:
-            nyquist = sr // 2
-            freq_mask_smooth_hz = int(
-                round(2.5 * nyquist / 100)
-            )  # default: 500, scale by frequency range (let's do 2.5% of frequency range)
+        orig_audio = nr.reduce_noise(
+            y=orig_audio,
+            sr=sr,
+            prop_decrease=hyperparameters["prop_reduce"],
+            time_constant_s=hyperparameters["time_constant_s"],
+            stationary=False,
+            freq_mask_smooth_hz=freq_mask_smooth_hz,
+        )
 
-            orig_audio = nr.reduce_noise(
-                y=orig_audio,
-                sr=sr,
-                prop_decrease=hyperparameters["prop_reduce"],
-                time_constant_s=hyperparameters["time_constant_s"],
-                stationary=False,
-                freq_mask_smooth_hz=freq_mask_smooth_hz,
-            )
+    cwt_kws = {
+        "wavelet": (
+            hyperparameters["wavelet"],
+            WAVELET_HP_DICT[hyperparameters["wavelet"]],
+        ),
+        "nv": hyperparameters["nv"],
+        "scales": hyperparameters["scales"],
+    }
+    try:
+        t = np.arange(0, len(orig_audio) / sr, 1 / sr)[: len(orig_audio)]
+        if hyperparameters["squeeze_freqs"]:
+            if preprocess_type == "ssq":
+                recon_a, *_ = ssq_preprocess(
+                    orig_audio,
+                    t,
+                    cwt_kws,
+                    hyperparameters["chunk length"],
+                    show=False,
+                    min_band=hyperparameters["band min"],
+                    max_band=hyperparameters["band max"],
+                    return_full_ssq=False,
+                )
+            elif preprocess_type == "band-pass":
+                recon_a, *_ = band_pass_preprocess(
+                    orig_audio,
+                    hyperparameters["chunk length"],
+                    low_cut=hyperparameters["band min"],
+                    high_cut=hyperparameters["band max"],
+                    fs=sr,
+                    return_full_ssq=True,
+                    kw=cwt_kws,
+                    tn=t
+                )
+        else:
+            recon_a = orig_audio
 
-        cwt_kws = {
-            "wavelet": (
-                hyperparameters["wavelet"],
-                WAVELET_HP_DICT[hyperparameters["wavelet"]],
-            ),
-            "nv": hyperparameters["nv"],
-            "scales": hyperparameters["scales"],
-        }
-        try:
-            t = np.arange(0, len(orig_audio) / sr, 1 / sr)[: len(orig_audio)]
-            if hyperparameters["squeeze_freqs"]:
-                if preprocess_type == "ssq":
-                    recon_a, *_ = ssq_preprocess(
-                        orig_audio,
-                        t,
-                        cwt_kws,
-                        hyperparameters["chunk length"],
-                        show=False,
-                        min_band=hyperparameters["band min"],
-                        max_band=hyperparameters["band max"],
-                        return_full_ssq=False,
-                    )
-                elif preprocess_type == "band-pass":
-                    recon_a, *_ = band_pass_preprocess(
-                        orig_audio,
-                        hyperparameters["chunk length"],
-                        low_cut=hyperparameters["band min"],
-                        high_cut=hyperparameters["band max"],
-                        fs=sr,
-                        return_full_ssq=True,
-                        kw=cwt_kws,
-                        tn=t
-                    )
-            else:
-                recon_a = orig_audio
-
-        except Exception:
-            print(f"error in processing {af}")
-            print(t.shape)
-            print(orig_audio.shape)
-            raise
-        recon_a = recon_a.astype(orig_dtype)
-        wavfile.write(new_fn, rate=sr, data=recon_a)
+    except Exception:
+        print(f"error in processing {audio_file}")
+        print(t.shape)
+        print(orig_audio.shape)
+        raise
+    recon_a = recon_a.astype(orig_dtype)
+    wavfile.write(new_fn, rate=sr, data=recon_a)
 
 
 def preprocess(
-    audio_dirs: list[str],
-    out_dirs: list[str],
+    audio_files: list[str],
+    out_dir: str,
     hp_dict: dict,
-    audio_ext: str = ".wav",
     parallel: bool = False,
     reprocess: bool = True,
     preprocess_type: str = "ssq",
@@ -721,8 +714,8 @@ def preprocess(
 
     Inputs
     -----
-        - audio_dirs: audio file directories to process
-        - out_dirs: locations to put processed audio files
+        - audio_files: audio file directories to process
+        - out_dir: locations to put processed audio files
         - hyperparameters: preprocessing hyperparams
         - audio_ext: extension of original audio files
         - parallel: whether to process in parallel
@@ -731,19 +724,16 @@ def preprocess(
         - reduce_noise: whether to use noise_reduce
     """
 
-    assert len(audio_dirs) == len(out_dirs), print(
-        f"need one out dir per audio dir! {len(audio_dirs)} audio dirs and {len(out_dirs)} out dirs"
-    )
-
+    if not os.path.isdir(out_dir):
+        os.mkdir(out_dir)
     n_cpu = os.cpu_count()
     if parallel and n_cpu is not None:
        
         n_jobs = n_cpu //2
         gen = zip(
-            audio_dirs,
-            out_dirs,
+            audio_files,
+            repeat(out_dir),
             repeat(hp_dict),
-            repeat(audio_ext),
             repeat(reprocess),
             repeat(preprocess_type),
             repeat(reduce_noise),
@@ -751,7 +741,7 @@ def preprocess(
         Parallel(n_jobs=n_jobs)(delayed(preprocess_helper)(*args) for args in gen)
 
     else:
-        for ii, (in_dir, out_dir) in enumerate(zip(audio_dirs, out_dirs)):
+        for in_file in audio_files:
             preprocess_helper(
-                in_dir, out_dir, hp_dict, audio_ext, reprocess, preprocess_type,reduce_noise
+                in_file, out_dir, hp_dict, reprocess, preprocess_type,reduce_noise
             )
