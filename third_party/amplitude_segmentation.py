@@ -48,8 +48,9 @@ def get_spec_ava(audio:np.ndarray, p:dict)->Tuple[np.ndarray,float,np.ndarray]:
 	win = ('hann_periodic',p['nperseg']) # updates for recent scipy
 	stft = STFFT.from_window(win,fs=p['fs'],nperseg=p['nperseg'],
 						  noverlap=p['noverlap'],
-						  return_onesided=True,scale_to='magnitude',
+						  fft_mode='onesided',scale_to='magnitude',
 						  phase_shift=None)
+	
 	spec = stft.stft(audio)
 	f,t = stft.f,stft.t(audio.shape)
 
