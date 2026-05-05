@@ -53,7 +53,7 @@ def get_spec_ava(audio:np.ndarray, p:dict)->Tuple[np.ndarray,float,np.ndarray]:
 						  symmetric_win=True)
 	
 	spec = stft.stft(audio)
-	f,t = stft.f,stft.t(audio.shape)
+	f,t = stft.f,stft.t(audio.size)
 
 	#t_lo,t_hi,f_lo,f_hi = stft.extent(len(audio),center_bins=False)
 	#f, t, spec = stft(audio, fs=p['fs'], nperseg=p['nperseg'], \
