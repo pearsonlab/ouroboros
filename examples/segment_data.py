@@ -7,7 +7,7 @@ from itertools import repeat
 
 def segment_data(audio_dirs: list[str], seg_dirs: list[str], hp_loc: str, max_jobs=1):
     """
-    example script for segmenting data. takes audio from
+    function for segmenting data. takes audio from
     audio_dirs, places corresponding segmentation files
     into seg_dirs. saves the hyperparameters used
     for segmentation in hp_loc. does this in parallel

@@ -19,6 +19,29 @@ def train_model(
     batch_size: int = 32,
     n_epochs: int = 100,
 ):
+    """
+    function for segmenting data. takes audio from
+    audio_dirs, places corresponding segmentation files
+    into seg_dirs. saves the hyperparameters used
+    for segmentation in hp_loc. does this in parallel
+
+    inputs
+    --------
+            audio_dirs: list of folders with audio
+            seg_dirs: list of folders with segmentation decisions
+            model_dir: location to save model checkpoints and plots
+            max_vocs: max number of vocal chunks to train on
+            context_len: context window to train model on
+            seed: random seed for reproducibility 
+            shuffle_order: whether to shuffle audio files for gathering train data
+            max_jobs: max number of jobs for dataloader
+            batch_size: batch size during training
+            n_epochs: max number of passes through the data during training
+
+    returns
+    --------
+            best model after hyperparameter cross-validation
+    """
 
     n_cpu = os.cpu_count()
 
