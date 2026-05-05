@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 plt.switch_backend('agg')
 import numpy as np
 import os
-from scipy.io import wavfile, loadmat
+from scipy.io import wavfile
 from scipy.io.wavfile import WavFileWarning
 from scipy.signal import stft
 import warnings

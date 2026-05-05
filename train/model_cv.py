@@ -20,7 +20,7 @@ import seaborn as sns
 def model_cv_lambdas(
     dls: dict,
     dt: float,
-    nEpochs: int = 100,
+    n_epochs: int = 100,
     lr: float = 1e-3,
     n_kernels: int = 15,
     expand_factor: int = 10,
@@ -105,12 +105,12 @@ def model_cv_lambdas(
 
         full_opt_poly = Adam(full_model_poly.parameters(), lr=lr)
         full_scheduler_poly = ReduceLROnPlateau(
-            full_opt_poly, factor=0.5, patience=max(nEpochs // 25, 2), min_lr=1e-10
+            full_opt_poly, factor=0.5, patience=max(n_epochs // 25, 2), min_lr=1e-10
         )
         model_path_full_poly = (
             model_path + f"/kernelborous_poly_end_to_end_lambda_{lam}"
         )
-        save_loc_poly = model_path_full_poly + f"/checkpoint_{nEpochs}.tar"
+        save_loc_poly = model_path_full_poly + f"/checkpoint_{n_epochs}.tar"
         save_files = glob.glob(os.path.join(model_path_full_poly, "*.tar"))
 
         start_epoch = 0
@@ -119,18 +119,18 @@ def model_cv_lambdas(
                 load_model(model_path_full_poly, kernel_type="full_poly")
             )
 
-        if start_epoch < nEpochs:
+        if start_epoch < n_epochs:
             tl, vl, full_model_poly, full_opt_poly = train(
                 full_model_poly,
                 full_opt_poly,
                 loss_fn=lambda y, yhat: sse(yhat, y, reduction="mean"),
                 loaders=dls,
                 scheduler=full_scheduler_poly,
-                nEpochs=nEpochs,
+                nEpochs=n_epochs,
                 val_freq=1,
                 runDir=model_path_full_poly,
                 dt=dt,
-                vis_freq=max(nEpochs // 10, 1),
+                vis_freq=max(n_epochs // 10, 1),
                 smoothing=False,
                 reg_weights=reg_weights,
                 start_epoch=start_epoch,
