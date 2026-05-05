@@ -45,8 +45,8 @@ def get_spec_ava(audio:np.ndarray, p:dict)->Tuple[np.ndarray,float,np.ndarray]:
 	assert len(audio) >= p['nperseg'], \
 			"len(audio): " + str(len(audio)) + ", nperseg: " + str(p['nperseg'])
 	
-	win = ('hann',p['nperseg']) # updates for recent scipy
-	stft = STFFT.from_window(win,fs=p['fs'],nperseg=p['nperseg'],
+	
+	stft = STFFT.from_window('hann',fs=p['fs'],nperseg=p['nperseg'],
 						  noverlap=p['noverlap'],
 						  fft_mode='onesided',scale_to='magnitude',
 						  phase_shift=None,
