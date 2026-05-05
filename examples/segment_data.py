@@ -53,5 +53,6 @@ def segment_data(audio_dirs:list[str],
 			segment(ad,sd,p)
 
 
+
 if __name__ == "__main__":
-	Fire(segment_data)
+	pass

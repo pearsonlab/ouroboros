@@ -6,8 +6,6 @@ from fire import Fire
 import yaml
 from joblib import repeat,Parallel,delayed
 
-### TO DO! change back to multiple dirs......
-### change structure to match segment funcs
 def preprocess_data(
 	audio_dirs:list[str],
 	seg_dirs:list[str],
@@ -66,4 +64,4 @@ def preprocess_data(
 	)
 
 if __name__ == "__main__":
-	Fire(preprocess_data)
+	pass
