@@ -2,10 +2,10 @@ import torch
 import numpy as np
 
 from scipy.signal.windows import hann
-from scipy.signal import ShortTimeFFT as STFFT
+
+from scipy import signal
 from scipy.interpolate import RegularGridInterpolator
 from scipy.integrate import solve_ivp
-from scipy.signal import savgol_filter
 
 ## keep as working on numpy anyhow
 def deriv_approx_dy(y,pad=True):
@@ -26,16 +26,6 @@ def deriv_approx_d2y(y,pad=True):
     return (-9 * y[:,:-8,:] + 128*y[:,1:-7,:] -1008*y[:,2:-6,:] + 8064*y[:,3:-5,:]- 14350*y[:,4:-4,:] + \
             8064*y[:,5:-3,:] - 1008*y[:,6:-2,:] + 128* y[:,7:-1,:] - 9*y[:,8:,:])/5040
 
-"""
-def deriv_approx_dy(data):
-    ### only works on numpy now, not on torch anymore
-
-    return savgol_filter(data,window_length=5,polyorder=3,deriv=1,axis=1)
-def deriv_approx_d2y(data):
-    ### only works on numpy now, not on torch anymore
-
-    return savgol_filter(data,window_length=5,polyorder=3,deriv=2,axis=1)
-"""
 
 def sse(yhat,y,reduction='mean'):
     if reduction == 'mean':
@@ -67,12 +57,12 @@ def euler_step_k(y,dy,d2y,dt,k=1):
     yhat_out = []
     _,L,_ = y.shape
     for step in range(k):
-        #print(step)
+        
         y_step = y[:,step+1:(L - k+1)+step,:]
         dy_step = dy[:,step:L-k+step,:]
         y_out.append(y_step)
         dy_out.append(dy_step)
-        #print(y_step.shape,dy_step.shape)
+        
         if step == 0:
             dy_pred = dy_out[0] + d2ydt[:,step:-k+step,:]
         else:
@@ -96,7 +86,7 @@ def euler_step_k(y,dy,d2y,dt,k=1):
 
 def from_numpy(data,device='cuda'):
 
-    return torch.from_numpy(data).type(torch.FloatTensor).to(device)
+    return torch.from_numpy(data).to(torch.FloatTensor).to(device)
 
 def remove_axes(axis):
 
@@ -117,7 +107,7 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,in
     N = len(t)
     w = hann(win_len, sym=True)  # symmetric Gaussian window
 
-    transform = STFFT(w,hop=16,fs=fs,mfft = 1028)
+    transform = signal.ShortTimeFFT(w,hop=16,fs=fs,mfft = 1028)
 
     Sx = transform.stft(a)
     
@@ -140,9 +130,9 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,in
         print(f"error: {spec_type} spectrogram not implemented")
         assert False 
     if normalize:
-        if min == None:
+        if min is None:
             min = np.amin(Sx)
-        if max == None:
+        if max is None:
             max = np.amax(Sx)
         
         Sx = (Sx - min) / max
@@ -161,9 +151,6 @@ def get_spec(audio,fs,onset,offset,shoulder=0.05,n_freq_bins = 64,win_len=128,in
     
     return Sx,target_ts,target_freqs,flag
 
-
-
-from scipy import signal
 
 def butter(cutoff, fs, order=5,btype='high'):
     nyq = 0.5 * fs
@@ -186,20 +173,11 @@ def huber_loss(x,delta=1):
     mask = (x.abs() <= delta).to(torch.float64)
     nMasked = mask.sum(dim=(1))
     unMasked = torch.maximum(L - nMasked,torch.ones(nMasked.shape,device=mask.device))
-    maskedInds = nMasked > 0
-    unMaskedInds = unMasked >0
-
     
     t1 = (((x*mask) **2) /2).sum(dim=1)/nMasked
-    #else:
-    #    t1 = 0
-    #if unMasked > 0:
+
     t2 = ((delta*(x.abs() - delta/2))*(1 - mask)).sum(dim=1)/unMasked
-    #else:
-    #    t2 = 0
-    #t2NonZero = t2[t2!=0]
-    #print(t2NonZero.shape)
-    #assert torch.all(t2NonZero >= 0), print(t2NonZero,nMasked,unMasked)
+
     assert torch.all(t1 >= 0), print('t1 should be greater than or equal to 0')
     assert torch.all(t2 >= 0), print('t2 should be greater than or equal to 0')
     return  t1 + t2
@@ -210,22 +188,19 @@ def smooth(data,smooth_len,smooth_type='causal'):
     if smooth_len == 1:
         return data
     if smooth_type == 'causal':
-        start = smooth_len
-        end = L
+
         pad = np.zeros((D,smooth_len))
         padded = np.hstack([pad,data])
     elif smooth_type == 'centered':
         
-        frontLen = smooth_len // 2#+ smooth_len - 2* (smooth_len // 2)
-        endLen = smooth_len // 2
-        start = frontLen
-        end = L + smooth_len - endLen - 1
+        frontLen = smooth_len // 2
+
+
         frontPad = np.zeros((D,frontLen))
-        #endPad = np.zeros((D,endLen))
+        
         padded = np.hstack([frontPad,data])
     else:
-        start = 1
-        end = L + 1
+
         pad = np.zeros((D,smooth_len))
         padded = np.hstack([np.zeros((D,1)),data,pad])
 
@@ -236,7 +211,7 @@ def smooth(data,smooth_len,smooth_type='causal'):
         corrected = cumsum[:,frontLen:] - cumsum[:,:L]
     else:
         corrected = cumsum[:,smooth_len+1:] - cumsum[:,:L] 
-    #print(corrected.shape)
+
     
     return corrected / float(smooth_len)
 
@@ -248,8 +223,9 @@ def remove_rm(integrated_data,rm_length=5,smooth_type='causal'):
 
 def integrate_d2y(d2y,t_samples,init_cond,method='RK45'):
 
-    interp_d2y = lambda t: np.interp(t,t_samples,d2y)
-
+    
+    def interp_d2y(t):
+        np.interp(t,t_samples,d2y)
 
     def dz(t,z):
 

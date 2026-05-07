@@ -6,6 +6,7 @@ import torch.nn.functional as F
 """
 This file comes from the MambaPy package, located here: https://github.com/alxndrTL/mamba.py
 It is included for stability. Implementation by alxndrTL.
+Included under MIT License
 
 An implementation of the parallel scan operation in PyTorch (Blelloch version).
 Please see docs/pscan.ipynb for a detailed explanation of what happens here.
