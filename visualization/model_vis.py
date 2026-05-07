@@ -218,7 +218,7 @@ def quantities_figure(
             np.searchsorted(spec_t, off),
         )
 
-        fig, axs = plt.subplotrs(
+        fig, axs = plt.subplots(
             nrows=len(model.names), ncols=1, figsize=(10, 3 * len(model.names))
         )
         for ax, term, name in zip(axs[1:], terms, model.names):
@@ -278,7 +278,7 @@ def pad_with_nans(x, target_length, axis=0):
     else:
         return x
 
-
+"""
 def make_gif(
     model,
     syllable,
@@ -358,3 +358,4 @@ def make_gif(
     plt.close()
 
     return
+"""

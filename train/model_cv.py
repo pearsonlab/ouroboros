@@ -71,8 +71,6 @@ def model_cv_lambdas(
     max_lambda = 10 ** (4 / (2 * n_kernels))
 
     lambdas = np.linspace(min_lambda, max_lambda, 7)
-
-    lambda_xaxis = np.arange(len(lambdas))
     #
     lam_train_cv_err = []
     lam_test_cv_err = []

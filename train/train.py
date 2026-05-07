@@ -7,9 +7,12 @@ import matplotlib.pyplot as plt
 import os
 import glob
 from model.model import Ouroboros
-from model.kernels import *
+from model.kernels import fullPolyModule
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import torch.nn as nn
+
+from typing import Tuple
 
 # filters removed
 
@@ -64,7 +67,7 @@ def save_model(
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
-    except:
+    except KeyError:
         pass
 
     torch.save(sd, location)
@@ -103,7 +106,7 @@ def load_model(
         d_state = sd["d_state"]
         d_conv = sd["d_conv"]
         expand_factor = sd["expand_factor"]
-    except:
+    except KeyError:
         n_layers = 2
         d_state = 1
         d_conv = 4
@@ -264,9 +267,9 @@ def train(
                     ax6.hist(resids, bins=100, density=True)
                     xlims = ax6.get_xlim()
                     sd = np.nanstd(resids)
-                    px = lambda x: (
-                        (1 / np.sqrt(2 * np.pi * sd**2)) * np.exp(-(x**2) / (2 * sd**2))
-                    )
+                    def px(x):
+                        return (1 / np.sqrt(2 * np.pi * sd**2)) * np.exp(-(x**2) / (2 * sd**2))
+                    
                     xax = np.linspace(xlims[0], xlims[1], 1000)
                     yax = px(xax)
                     ax6.plot(xax, yax, color="tab:red")
@@ -284,9 +287,9 @@ def train(
 
             ##################################
 
-            loss = loss_fn(y, yhat[:, :L, :])
+            train_loss = loss_fn(y, yhat[:, :L, :])
 
-            l = loss
+            #l = loss
             if reg_weights:
                 B, L, P, P = weights.shape
                 lam_mat = torch.arange(
@@ -299,14 +302,14 @@ def train(
                     (w * weights**2).sum(dim=(-1, -2, -3)).mean()
                 )  # new (sum over weights, time), average over samples. equivalent to squared L2 norm
                 # we take mean over samples to match the loss fn we use (MSE, with mean over samples)
-                l = l + penalty
+                total_loss = train_loss + penalty
 
-            l.backward()
+            total_loss.backward()
             optimizer.step()
-            tot = sst(y)
-            train_losses.append(loss.item())
+            
+            train_losses.append(train_loss.item())
             # we should probably be adding val loss here too...ugh
-            writer.add_scalar("Loss/train", loss.item(), idx)
+            writer.add_scalar("Loss/train", train_loss.item(), idx)
             if reg_weights:
                 writer.add_scalar("Penalty/train", penalty.item(), idx)
 
@@ -314,7 +317,7 @@ def train(
             model.eval()
             vl = 0.0
             vp = 0.0
-            vn = 0.0
+
             for idx, batch in enumerate(
                 loaders["val"], start=epoch * len(loaders["train"])
             ):
@@ -385,10 +388,9 @@ def train(
                             ax6.hist(resids, bins=100, density=True)
                             xlims = ax6.get_xlim()
                             sd = np.nanstd(resids)
-                            px = lambda x: (
-                                (1 / np.sqrt(2 * np.pi * sd**2))
-                                * np.exp(-(x**2) / (2 * sd**2))
-                            )
+                            def px(x):
+                                return (1 / np.sqrt(2 * np.pi * sd**2))* np.exp(-(x**2) / (2 * sd**2))
+                            
                             xax = np.linspace(xlims[0], xlims[1], 1000)
                             yax = px(xax)
                             ax6.plot(xax, yax, color="tab:red")
@@ -405,8 +407,8 @@ def train(
                             )
                             plt.close()
 
-                    l = loss_fn(y, yhat[:, :L, :])
-                    tot = sst(y)
+                    val_loss = loss_fn(y, yhat[:, :L, :])
+                    
                     if reg_weights:
                         B, L, P, P = weights.shape
                         lam_mat = torch.arange(
@@ -417,7 +419,7 @@ def train(
                         w = model.kernel.lam**exps
                         penalty = (w * weights**2).sum(dim=(-1, -2)).mean()
 
-                    vl += l.item()
+                    vl += val_loss.item()
 
                     if reg_weights:
                         vp += penalty.item()
