@@ -79,6 +79,10 @@ def model_cv_lambdas(
 
     lam_train_cv_sd = []
     lam_test_cv_sd = []
+
+    lam_train_cv_r2 = []
+    lam_test_cv_r2 = []
+
     for ii, lam in enumerate(lambdas):
         print(f"Regularizing with lambda={lam}")
 
@@ -151,7 +155,7 @@ def model_cv_lambdas(
 
         full_model_poly.eval()
         with torch.no_grad():
-            (train_mu, test_mu), (train_sd, test_sd) = eval_model_error(
+            (train_mu, test_mu), (train_sd, test_sd), (train_r2,test_r2) = eval_model_error(
                 dls, full_model_poly, dt=dt
             )
         lam_train_cv_err.append(train_mu)
@@ -159,6 +163,9 @@ def model_cv_lambdas(
 
         lam_train_cv_sd.append(train_sd)
         lam_test_cv_sd.append(test_sd)
+
+        lam_train_cv_r2.append(train_r2)
+        lam_test_cv_r2.append(test_r2)
 
     interleaved_cvs = []
     splits = ["train"] * len(lam_train_cv_err) + ["val"] * len(lam_test_cv_err)

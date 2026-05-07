@@ -670,6 +670,12 @@ def eval_model_error(
         - model: a trained ouroboros
         - dt: audio sampling timestep
         - comparison: val or test. datasegment to evaluate on
+
+    returns
+    -----
+        (train,test) mean r2 
+        (train, test) sd r2
+        (train, test) all r2
     """
 
     # tf = model.trend_filtering
