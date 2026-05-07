@@ -444,12 +444,15 @@ def tune_preprocessing(
         "number of audio files is not same as number of segments!"
     )
 
-    audio_files = [glob.glob(os.path.join(ad,'*.wav')) for ad in audio_dirs]
-    segment_files =  [[os.path.join(sd,af.split('/')[-1].split('.wav')[0] + '.txt') for af in ad] for ad,sd in zip(audio_dirs,seg_dirs)]
+    audio_files = [glob.glob(os.path.join(ad, "*.wav")) for ad in audio_dirs]
+    segment_files = [
+        [os.path.join(sd, af.split("/")[-1].split(".wav")[0] + ".txt") for af in ad]
+        for ad, sd in zip(audio_dirs, segment_dirs)
+    ]
 
-    audio_files = sum(audio_files,[])
-    segment_files = sum(segment_files,[])
-    
+    audio_files = sum(audio_files, [])
+    segment_files = sum(segment_files, [])
+
     while True:
         p = _tune_input_helper(hp_dict)
         resp = "nothing yet"
@@ -549,7 +552,7 @@ def tune_preprocessing(
                     show=False,
                     min_band=band_min,
                     max_band=band_max,
-                    return_full_ssq=True
+                    return_full_ssq=True,
                 )
             else:
                 recon_a, cwt_freqs, ssq_scaleogram = band_pass_preprocess(
@@ -614,13 +617,12 @@ def preprocess_helper(
     preprocess_type: str,
     reduce_noise: bool,
 ):
-    
     """
     helper function for preprocessing audio
 
     Inputs
     -----
-        - audio_file: 
+        - audio_file:
         - out_dir: location to put processed audio file
         - hyperparameters: preprocessing hyperparams
         - audio_id: extension of original audio files
@@ -632,7 +634,6 @@ def preprocess_helper(
     if not os.path.isdir(out_dir):
         os.mkdir(out_dir)
 
-    
     new_fn = audio_file.split("/")[-1]
     new_fn = os.path.join(out_dir, new_fn)
     if os.path.isfile(new_fn) and not reprocess:
@@ -690,7 +691,7 @@ def preprocess_helper(
                     fs=sr,
                     return_full_ssq=True,
                     kw=cwt_kws,
-                    tn=t
+                    tn=t,
                 )
         else:
             recon_a = orig_audio
@@ -730,9 +731,9 @@ def preprocess(
     if not os.path.isdir(out_dir):
         os.mkdir(out_dir)
 
-    audio_files = glob.glob(os.path.join(audio_dir,'*.wav'))
+    audio_files = glob.glob(os.path.join(audio_dir, "*.wav"))
 
     for in_file in audio_files:
         preprocess_helper(
-            in_file, out_dir, hp_dict, reprocess, preprocess_type,reduce_noise
+            in_file, out_dir, hp_dict, reprocess, preprocess_type, reduce_noise
         )
