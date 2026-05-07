@@ -42,6 +42,8 @@ def get_audio_training(audio_files:list[str],
         if os.path.isfile(a) and os.path.isfile(s):
             sr,aud = wavfile.read(a) # here, we assume 
             # all loaded files have the same sample rate
+            if aud.dtype == np.int16:
+                aud = aud / -np.iinfo(aud.dtype).min
 
             chunk_len = int(round(context_len*sr))
             L = aud.size
