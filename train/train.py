@@ -228,6 +228,7 @@ def train(
 
                     on = np.random.choice(L - 600)
                     resids = (y[0, :, 0] - yhat[0, :, 0]).detach().cpu().numpy() #* dt**2
+                    print(resids[:100])
                     fig, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(
                         nrows=1, ncols=6, sharey=False, figsize=(20, 5)
                     )
