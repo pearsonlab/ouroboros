@@ -181,7 +181,7 @@ def get_segmented_audio(
         #seg_files = [seg_files[o] for o in order]
 
     audio_tags = [a.split('/')[-1].split(audio_id)[0] for a in audio_files]
-    seg_files = [os.path.join(seg_path,a) for a in audio_tags]
+    seg_files = [os.path.join(seg_path,a + '.txt') for a in audio_tags]
 
     if training:
 
