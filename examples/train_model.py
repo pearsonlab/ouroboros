@@ -5,6 +5,8 @@ from train.model_cv import model_cv_lambdas
 
 from typing import Union
 import os
+import torch
+import numpy as np
 
 
 def train_model(
@@ -18,12 +20,11 @@ def train_model(
     max_jobs: int = 4,
     batch_size: int = 32,
     n_epochs: int = 100,
-):
+)->torch.nn.Module:
     """
-    function for segmenting data. takes audio from
-    audio_dirs, places corresponding segmentation files
-    into seg_dirs. saves the hyperparameters used
-    for segmentation in hp_loc. does this in parallel
+    function for training a model. takes audio from
+    audio_dirs, onsets and offsets from segmentation files
+    in seg_dirs. cross-validates over the one hyperparameter of this model
 
     inputs
     --------
@@ -32,7 +33,7 @@ def train_model(
             model_dir: location to save model checkpoints and plots
             max_vocs: max number of vocal chunks to train on
             context_len: context window to train model on
-            seed: random seed for reproducibility 
+            seed: random seed for reproducibility
             shuffle_order: whether to shuffle audio files for gathering train data
             max_jobs: max number of jobs for dataloader
             batch_size: batch size during training
@@ -70,7 +71,7 @@ def train_model(
         chunks += audio
     dt = 1 / sr
     dataloaders = get_loaders(
-        chunks,
+        np.concatenate(chunks,axis=0),
         num_workers=n_jobs,
         batch_size=batch_size,
         train_size=0.6,

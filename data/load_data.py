@@ -4,10 +4,7 @@ import warnings
 import os
 import glob
 from scipy.io import wavfile
-import soundfile as sf
-from scipy.io import loadmat
-import random
-from data.preprocess import filter_by_tags
+
 
 from typing import Tuple, Union
 
@@ -48,9 +45,11 @@ def get_audio_training(audio_files:list[str],
 
             chunk_len = int(round(context_len*sr))
             L = aud.size
-            L_s = L/sr
+            #L_s = L/sr
 
-            seg_onoffs = np.loadtxt(s)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                seg_onoffs = np.loadtxt(s, usecols=(0, 1))
             
             if len(seg_onoffs) == 0:
                 continue
