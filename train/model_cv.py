@@ -89,7 +89,6 @@ def model_cv_lambdas(
             z_dim=2,
             activation=lambda x: x,
             lam=lam,
-            trend_filtering=True,
         )
         reg_weights = True
         full_model_poly = Ouroboros(
