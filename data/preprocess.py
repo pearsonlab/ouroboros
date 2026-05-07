@@ -447,7 +447,7 @@ def tune_preprocessing(
     audio_files = [glob.glob(os.path.join(ad, "*.wav")) for ad in audio_dirs]
     segment_files = [
         [os.path.join(sd, af.split("/")[-1].split(".wav")[0] + ".txt") for af in ad]
-        for ad, sd in zip(audio_dirs, segment_dirs)
+        for ad, sd in zip(audio_files, segment_dirs)
     ]
 
     audio_files = sum(audio_files, [])
