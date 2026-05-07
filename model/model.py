@@ -136,12 +136,12 @@ class Ouroboros(nn.Module):
             omega = smooth(omega, smooth_len)
             gamma = smooth(gamma, smooth_len)
         weighted_kernels, weights = self.kernel(z, kernelControl)
-        
+
         z1 = z[:, :, :1]
         z2 = z[:, :, 1:]
 
         yhat = -(omega**2) * z1 - gamma * z2 - weighted_kernels
-        
+
         return yhat, weights
 
     def get_funcs(
@@ -336,30 +336,29 @@ class Ouroboros(nn.Module):
         with torch.no_grad():
             for ii in tqdm(
                 range(0, L_new, step_size),
-                total=L_new//step_size + 1,
+                total=L_new // step_size + 1,
                 desc=f"iterating through segment of length {L}",
             ):
                 if np.mod(ii, 10000) == 0:
                     ## clean up stuff every so often
                     gc.collect()
-                end_ind = min(L_new,ii+step_size)
-                s = x_in[:, ii : end_ind, :]
+                end_ind = min(L_new, ii + step_size)
+                s = x_in[:, ii:end_ind, :]
 
                 omega, omega_cache = self.omega_mamba.step(s, omega_cache)
                 gamma, gamma_cache = self.omega_mamba.step(s, gamma_cache)
                 w, weights_cache = self.omega_mamba.step(s, weights_cache)
 
-                start_ind = max(0,ii-L)
-                s = z[:, start_ind : end_ind-L, :]
-                if end_ind-L > 0:
-
-                    start_ind = max(0,L-ii)
-                    omega = self.omega_net(omega[:,start_ind:]).abs()
-                    gamma = self.gamma_net(gamma[:,start_ind:])
-                    weights.append(w[:,start_ind:].detach().cpu().numpy().squeeze())
+                start_ind = max(0, ii - L)
+                s = z[:, start_ind : end_ind - L, :]
+                if end_ind - L > 0:
+                    start_ind = max(0, L - ii)
+                    omega = self.omega_net(omega[:, start_ind:]).abs()
+                    gamma = self.gamma_net(gamma[:, start_ind:])
+                    weights.append(w[:, start_ind:].detach().cpu().numpy().squeeze())
                     omegas.append(omega.detach().cpu().numpy().squeeze())
                     gammas.append(gamma.detach().cpu().numpy().squeeze())
-                    weighted_kernels, _ = self.kernel(s, w[:,start_ind:],smooth_len)
+                    weighted_kernels, _ = self.kernel(s, w[:, start_ind:], smooth_len)
                     kernel.append(weighted_kernels.detach().cpu().numpy().squeeze())
 
         z[:, :, 1] /= dt
@@ -374,7 +373,7 @@ class Ouroboros(nn.Module):
         yhat = -(omegas**2) * z1 - gammas * z2 - kernel
 
         if smoothing:
-            omegas = smooth(omegas[None,:,None], smooth_len).squeeze()
-            gammas = smooth(gammas[None,:,None], smooth_len).squeeze()
+            omegas = smooth(omegas[None, :, None], smooth_len).squeeze()
+            gammas = smooth(gammas[None, :, None], smooth_len).squeeze()
 
         return yhat, omegas, gammas, kernel, weights

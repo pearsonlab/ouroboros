@@ -5,7 +5,8 @@ from scipy.io import wavfile
 import numpy as np
 import matplotlib.pyplot as plt
 import soundfile as sf
-import os, glob
+import os
+import glob
 from utils import butter_filter
 import noisereduce as nr
 
@@ -732,7 +733,7 @@ def preprocess(
         os.mkdir(out_dir)
 
     audio_files = glob.glob(os.path.join(audio_dir, "*.wav"))
-    print(f'cleaning {len(audio_files)} files in {audio_dir}')
+    print(f"cleaning {len(audio_files)} files in {audio_dir}")
     for in_file in audio_files:
         preprocess_helper(
             in_file, out_dir, hp_dict, reprocess, preprocess_type, reduce_noise

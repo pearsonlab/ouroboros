@@ -673,7 +673,7 @@ def eval_model_error(
 
     returns
     -----
-        (train,test) mean r2 
+        (train,test) mean r2
         (train, test) sd r2
         (train, test) all r2
     """

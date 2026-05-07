@@ -212,10 +212,9 @@ def train(
             dx2 = (
                 dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
             )  # rescale dx2, rather than model output
-       
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD
-            
+
             yhat = dx2hat
 
             y = dx2
@@ -228,14 +227,14 @@ def train(
                     r2_sample = (1 - sse_sample / sst_sample).item()
 
                     on = np.random.choice(L - 600)
-                    resids = (y[0, :, 0] - yhat[0, :, 0]).detach().cpu().numpy() #* dt**2
+                    resids = (
+                        (y[0, :, 0] - yhat[0, :, 0]).detach().cpu().numpy()
+                    )  # * dt**2
                     fig, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(
                         nrows=1, ncols=6, sharey=False, figsize=(20, 5)
                     )
 
-                    ax1.plot(
-                        yhat[0, :, 0].detach().cpu().numpy() , label="model"
-                    )
+                    ax1.plot(yhat[0, :, 0].detach().cpu().numpy(), label="model")
                     ax1.set_title("model")
                     ax1.set_ylabel("a.u.")
                     ax2.plot(
@@ -342,8 +341,11 @@ def train(
                             on = np.random.choice(L - 600)
 
                             resids = (
-                                y[0, on : on + 600, 0] - yhat[0, on : on + 600, 0]
-                            ).detach().cpu().numpy() 
+                                (y[0, on : on + 600, 0] - yhat[0, on : on + 600, 0])
+                                .detach()
+                                .cpu()
+                                .numpy()
+                            )
                             fig, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(
                                 nrows=1, ncols=6, sharey=False, figsize=(20, 5)
                             )

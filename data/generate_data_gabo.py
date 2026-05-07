@@ -36,11 +36,12 @@ klocs = jnp.array([0, 0.5, 1, 1.5])
 def make_tension_pulse_fn(shape=1, scale=1, peak=1):
     norm = peak * jnp.exp(shape - shape * jnp.log(shape) - shape * jnp.log(scale))
 
-    fn = lambda t, loc: (
-        norm * jnp.exp((t - loc) / scale) * jnp.maximum((loc - t), 0) ** shape
-    )
+    def t_func(t,loc):
+        return    norm * jnp.exp((t - loc) / scale) * jnp.maximum((loc - t), 0) ** shape
+    
 
-    return fn
+
+    return t_func
 
 
 ####################################

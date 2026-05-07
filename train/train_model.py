@@ -21,8 +21,8 @@ def train_model(
     max_jobs: int = 4,
     batch_size: int = 32,
     n_epochs: int = 100,
-    save_freq: int = 5
-)->torch.nn.Module:
+    save_freq: int = 5,
+) -> torch.nn.Module:
     """
     function for training a model. takes audio from
     audio_dirs, onsets and offsets from segmentation files
@@ -59,7 +59,9 @@ def train_model(
     chunks_per_dir = max_vocs // len(audio_dirs)
     chunks = []
 
-    for audio_dir, seg_dir in tqdm(zip(audio_dirs, seg_dirs),desc='Gathering training data', total=len(audio_dirs)):
+    for audio_dir, seg_dir in tqdm(
+        zip(audio_dirs, seg_dirs), desc="Gathering training data", total=len(audio_dirs)
+    ):
         audio, sr = get_segmented_audio(
             audio_dir,
             seg_dir,
@@ -75,7 +77,7 @@ def train_model(
     print(f"Gathered {len(chunks)}/{max_vocs} allowed vocalizations")
     dt = 1 / sr
     dataloaders = get_loaders(
-        np.stack(chunks,axis=0),
+        np.stack(chunks, axis=0),
         num_workers=n_jobs,
         batch_size=batch_size,
         train_size=0.6,
