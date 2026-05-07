@@ -225,7 +225,6 @@ def train(
                     sse_sample = sse(yhat[:1, :, :1], y[:1, :, :1])
                     sst_sample = sst(y[:1, :, :1])
                     r2_sample = (1 - sse_sample / sst_sample).item()
-                    model.visualize(x, dxdt, dt)
 
                     on = np.random.choice(L - 600)
                     resids = (y[0, :, 0] - yhat[0, :, 0]).detach().cpu().numpy() * dt**2
@@ -338,7 +337,6 @@ def train(
                             sse_sample = sse(yhat[:1, :, :1], y[:1, :, :1])
                             sst_sample = sst(y[:1, :, :1])
                             r2_sample = (1 - sse_sample / sst_sample).item()
-                            model.visualize(x, dxdt, dt)
 
                             on = np.random.choice(L - 600)
 
