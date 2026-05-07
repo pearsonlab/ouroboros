@@ -7,6 +7,7 @@ from typing import Union
 import os
 import torch
 import numpy as np
+from tqdm import tqdm
 
 
 def train_model(
@@ -57,7 +58,7 @@ def train_model(
     chunks_per_dir = max_vocs // len(audio_dirs)
     chunks = []
 
-    for audio_dir, seg_dir in zip(audio_dirs, seg_dirs):
+    for audio_dir, seg_dir in tqdm(zip(audio_dirs, seg_dirs),desc='Gathering training data', total=len(audio_dirs)):
         audio, sr = get_segmented_audio(
             audio_dir,
             seg_dir,
@@ -69,6 +70,8 @@ def train_model(
             shuffle_order=shuffle_order,
         )
         chunks += audio
+        
+    print(f"Gathered {len(chunks)}/{max_vocs} allowed vocalizations")
     dt = 1 / sr
     dataloaders = get_loaders(
         np.concatenate(chunks,axis=0),
