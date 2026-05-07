@@ -119,7 +119,7 @@ def model_cv_lambdas(
         start_epoch = 0
         if len(save_files) > 0:
             full_model_poly, full_opt_poly, full_scheduler_poly, start_epoch = (
-                load_model(model_path_full_poly, kernel_type="full_poly")
+                load_model(model_path_full_poly)
             )
 
         if start_epoch < n_epochs:
@@ -203,11 +203,11 @@ def model_cv_lambdas(
     )
 
     full_model_poly, full_opt_poly, full_scheduler_poly, _ = load_model(
-        model_path_best, kernel_type="full_poly"
+        model_path_best
     )
     full_model_poly.eval()
     with torch.no_grad():
-        (train_mu, test_mu), (train_sd, test_sd) = eval_model_error(
+        (train_mu, test_mu), (train_sd, test_sd),(train_r2,test_r2) = eval_model_error(
             dls, full_model_poly, dt=dt, comparison="test"
         )
 
