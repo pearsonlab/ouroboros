@@ -111,6 +111,9 @@ class Ouroboros(nn.Module):
 
         dxdt /= dt  # this is now \tau dx
 
+        print(x[0,:100,:])
+        print(dxdt[0,:100,:])
+
         B, L, D = x.shape
 
         # x: x_0, x_dt, x_2dt,...
@@ -136,12 +139,12 @@ class Ouroboros(nn.Module):
             omega = smooth(omega, smooth_len)
             gamma = smooth(gamma, smooth_len)
         weighted_kernels, weights = self.kernel(z, kernelControl)
-
+        print(weighted_kernels[0,:100,:])
         z1 = z[:, :, :1]
         z2 = z[:, :, 1:]
 
         yhat = -(omega**2) * z1 - gamma * z2 - weighted_kernels
-
+        
         return yhat, weights
 
     def get_funcs(
