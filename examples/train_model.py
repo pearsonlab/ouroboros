@@ -70,11 +70,11 @@ def train_model(
             shuffle_order=shuffle_order,
         )
         chunks += audio
-        
+
     print(f"Gathered {len(chunks)}/{max_vocs} allowed vocalizations")
     dt = 1 / sr
     dataloaders = get_loaders(
-        np.concatenate(chunks,axis=0),
+        np.stack(chunks,axis=0),
         num_workers=n_jobs,
         batch_size=batch_size,
         train_size=0.6,
