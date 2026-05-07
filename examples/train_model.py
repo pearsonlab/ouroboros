@@ -21,6 +21,7 @@ def train_model(
     max_jobs: int = 4,
     batch_size: int = 32,
     n_epochs: int = 100,
+    save_freq: int = 5
 )->torch.nn.Module:
     """
     function for training a model. takes audio from
@@ -39,7 +40,7 @@ def train_model(
             max_jobs: max number of jobs for dataloader
             batch_size: batch size during training
             n_epochs: max number of passes through the data during training
-
+            save_freq: how often (in epochs) we want to checkpoint model
     returns
     --------
             best model after hyperparameter cross-validation
@@ -95,7 +96,7 @@ def train_model(
         d_conv=4,
         tau=dt,
         model_path=model_dir,
-        save_freq=5,
+        save_freq=save_freq,
     )
 
     return best_model

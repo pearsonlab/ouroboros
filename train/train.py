@@ -212,10 +212,10 @@ def train(
             dx2 = (
                 dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
             )  # rescale dx2, rather than model output
-            #print(dx2[0,:100,:])
+       
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD
-            #print(dx2hat[0,:100,:])
+            
             yhat = dx2hat
 
             y = dx2
@@ -229,7 +229,6 @@ def train(
 
                     on = np.random.choice(L - 600)
                     resids = (y[0, :, 0] - yhat[0, :, 0]).detach().cpu().numpy() #* dt**2
-                    print(resids[:100])
                     fig, (ax1, ax2, ax3, ax4, ax5, ax6) = plt.subplots(
                         nrows=1, ncols=6, sharey=False, figsize=(20, 5)
                     )
