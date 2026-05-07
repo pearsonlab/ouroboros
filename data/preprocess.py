@@ -411,8 +411,8 @@ def _tuning_plot(
 
 
 def tune_preprocessing(
-    audio_files: list[str],
-    segment_files: list[str],
+    audio_dirs: list[str],
+    segment_dirs: list[str],
     hp_dict: dict,
     preprocess_type: str = "ssq",
     img_fn: str = "./pp.pdf",
@@ -440,10 +440,16 @@ def tune_preprocessing(
 
     """
 
-    assert len(audio_files) == len(segment_files), print(
+    assert len(audio_dirs) == len(segment_dirs), print(
         "number of audio files is not same as number of segments!"
     )
 
+    audio_files = [glob.glob(os.path.join(ad,'*.wav')) for ad in audio_dirs]
+    segment_files =  [[os.path.join(sd,af.split('/')[-1].split('.wav')[0] + '.txt') for af in ad] for ad,sd in zip(audio_dirs,seg_dirs)]
+
+    audio_files = sum(audio_files,[])
+    segment_files = sum(segment_files,[])
+    
     while True:
         p = _tune_input_helper(hp_dict)
         resp = "nothing yet"
