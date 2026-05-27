@@ -63,6 +63,9 @@ def main():
     p.add_argument("--d-state", type=int, default=16)
     p.add_argument("--d-conv", type=int, default=4)
     p.add_argument("--expand-factor", type=int, default=10)
+    p.add_argument("--drive-lowpass-ms", type=float, default=1.0,
+                   help="hard low-pass alpha/beta/delta at this Gaussian timescale (ms); "
+                        "default 1 ms (slow drives, cold-start stable). 0 disables.")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--n-jobs", type=int, default=4)
     args = p.parse_args()
@@ -80,11 +83,11 @@ def main():
 
     model = ArneodoOuroboros(
         d_data=1, n_layers=args.n_layers, d_state=args.d_state, d_conv=args.d_conv,
-        expand_factor=args.expand_factor, tau=dt,
+        expand_factor=args.expand_factor, tau=dt, drive_lowpass_ms=args.drive_lowpass_ms,
     )
     n_params = sum(q.numel() for q in model.parameters())
     print(f"model: n_layers={args.n_layers} d_state={args.d_state} d_conv={args.d_conv} "
-          f"expand={args.expand_factor} -> {n_params} params; tau={dt:.2e}")
+          f"expand={args.expand_factor} lowpass={args.drive_lowpass_ms}ms -> {n_params} params; tau={dt:.2e}")
 
     opt = Adam(model.parameters(), lr=args.lr)
     scheduler = ReduceLROnPlateau(opt, factor=0.5, patience=max(args.seg, 3), min_lr=1e-10)

@@ -227,6 +227,7 @@ def train_arneodo(
     smooth_len: float = 0.001,
     model_path: str = "",
     save_freq: int = 5,
+    drive_lowpass_ms: float = 1.0,
 ) -> torch.nn.Module:
     """
     trains a single `ArneodoOuroboros` model (the biomechanical syrinx parameterization).
@@ -249,6 +250,9 @@ def train_arneodo(
         - smooth_len: smoothing length for model functions (not used in training)
         - model_path: place to save the model and training artifacts
         - save_freq: how often (in epochs) to checkpoint the model
+        - drive_lowpass_ms: hard low-pass timescale (ms) on the alpha/beta/delta drives.
+            Defaults to 1 ms (slow, physiological drives + cold-start-stable autonomous
+            dynamics, at a teacher-forced R^2 cost). Set 0.0 for the unregularized model.
 
     returns
     -----
@@ -270,6 +274,7 @@ def train_arneodo(
         expand_factor=expand_factor,
         tau=tau,
         smooth_len=smooth_len,
+        drive_lowpass_ms=drive_lowpass_ms,
     )
 
     opt = Adam(model.parameters(), lr=lr)

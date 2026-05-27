@@ -466,7 +466,7 @@ class ArneodoOuroboros(nn.Module):
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
         gamma_init: float = 1.0,
-        drive_lowpass_ms: float = 0.0,
+        drive_lowpass_ms: float = 1.0,
     ):
 
         super().__init__()
@@ -532,6 +532,10 @@ class ArneodoOuroboros(nn.Module):
         # this timescale (ms) by low-pass filtering the Mamba heads' outputs (always, train
         # + eval). Encodes a known physiological control-rate prior and prevents the drives
         # from carrying carrier-frequency content. Gaussian sigma = drive_lowpass_ms.
+        # Defaults to 1 ms: across a 1-5 ms sweep R2 is flat (~0.75) and the drives are slow
+        # either way, and 1 ms gave the best autonomous (noise-sustained) spectral fidelity
+        # and cold-start stability. Set 0.0 for the unregularized model (higher one-step R2,
+        # but fast/spiky drives and an unstable cold start).
         self.drive_lowpass_ms = drive_lowpass_ms
         self.names = [r"$\alpha$", r"$\beta$", r"$\delta$", r"$\gamma$"]
 

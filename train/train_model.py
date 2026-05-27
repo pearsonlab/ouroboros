@@ -28,6 +28,7 @@ def train_model(
     d_state: int = 1,
     d_conv: int = 4,
     expand_factor: int = 10,
+    drive_lowpass_ms: float = 1.0,
 ) -> torch.nn.Module:
     """
     function for training a model. takes audio from
@@ -58,6 +59,9 @@ def train_model(
                 parallel scan allocates ~batch * npo2(2*seq) * 2*expand_factor * d_state.
             d_conv: width of the mamba convolutional kernel
             expand_factor: channel expansion from audio to mamba input
+            drive_lowpass_ms: (arneodo only) hard low-pass timescale (ms) on the
+                alpha/beta/delta drives; default 1 ms gives slow, physiological drives and
+                cold-start-stable autonomous dynamics. Set 0.0 for the unregularized model.
     returns
     --------
             best model after hyperparameter cross-validation
@@ -116,6 +120,7 @@ def train_model(
             tau=dt,
             model_path=model_dir,
             save_freq=save_freq,
+            drive_lowpass_ms=drive_lowpass_ms,
         )
     else:
         best_model = model_cv_lambdas(
