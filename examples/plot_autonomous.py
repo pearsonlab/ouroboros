@@ -33,44 +33,52 @@ plt.rcParams["text.usetex"] = False
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", default="./arneodo_run")
-    parser.add_argument("--n-integrate", type=int, default=11000, help="samples to integrate")
-    parser.add_argument("--pre-onset-ms", type=float, default=10.0,
-                        help="start the rollout this many ms before the vocalization onset")
+    parser.add_argument("--n-integrate", type=int, default=8000, help="samples to integrate")
+    parser.add_argument("--start-offset-ms", type=float, default=50.0,
+                        help="begin the rollout this many ms relative to onset; positive = into the "
+                             "vocalization (seed on the limit cycle), negative = before onset (cold start)")
     parser.add_argument("--seed", type=int, default=1234)
     parser.add_argument("--fmax", type=float, default=10000.0, help="max spectrogram freq (Hz)")
     parser.add_argument("--method", default="rk4")
+    parser.add_argument("--model-dir", default=None,
+                        help="checkpoint dir (default <out-dir>/model/arneodo)")
+    parser.add_argument("--data-dir", default=None,
+                        help="gabo data dir (default <out-dir>/gabo_data)")
     args = parser.parse_args()
 
     out_dir = os.path.abspath(args.out_dir)
-    data_dir = os.path.join(out_dir, "gabo_data")
-    model_dir = os.path.join(out_dir, "model", "arneodo")
+    data_dir = os.path.abspath(args.data_dir) if args.data_dir else os.path.join(out_dir, "gabo_data")
+    model_dir = os.path.abspath(args.model_dir) if args.model_dir else os.path.join(out_dir, "model", "arneodo")
 
     # load the trained model -----------------------------------------------------------
     model, _, _, epoch = load_model(model_dir)
     model.eval()
     print(f"loaded {type(model).__name__} (epoch {epoch})")
 
-    # held-out vocalization, windowed to start `pre_onset_ms` BEFORE the first onset, so the
-    # rollout is seeded from (near) rest just before vocalization and must spin the
-    # oscillation up itself. analysis mode returns aud[onset - padding : offset], so passing
-    # padding = pre_onset gives exactly that window (scale-consistent with training loading).
-    pre_onset_s = args.pre_onset_ms / 1e3
+    # held-out vocalization. analysis mode returns aud[onset - padding : offset]; we then begin
+    # the rollout at `start_offset_ms` relative to onset. A positive offset seeds the integrator
+    # on the established limit cycle (the stable, sensible IC); a negative offset is a cold start
+    # from near-silence (which can be near an unstable fixed point of the learned field).
+    analysis_pad_s = max(0.03, -args.start_offset_ms / 1e3 + 0.005)
     chunks, sr = get_segmented_audio(
         data_dir,
         data_dir,
         max_vocs=40,
         seed=args.seed + 1,
         training=False,
-        padding=pre_onset_s,
+        padding=analysis_pad_s,
         shuffle_order=True,
     )
     dt = 1 / sr
-    segment = np.asarray(chunks[0]).squeeze()
-    n = min(args.n_integrate, len(segment))
-    segment = segment[:n]
+    full = np.asarray(chunks[0]).squeeze()
+    onset_idx = int(round(analysis_pad_s * sr))  # onset position within the analysis window
+    start_idx = max(0, onset_idx + int(round(args.start_offset_ms / 1e3 * sr)))
+    segment = full[start_idx : start_idx + args.n_integrate]
+    n = len(segment)
 
+    rel = "after" if args.start_offset_ms >= 0 else "before"
     print(
-        f"rollout starts {args.pre_onset_ms:.0f} ms before onset; "
+        f"rollout starts {abs(args.start_offset_ms):.0f} ms {rel} onset; "
         f"autonomously integrating {n} samples ({n * dt * 1e3:.1f} ms) ..."
     )
     x_gen = integrate_model_autonomous(
@@ -121,7 +129,7 @@ def main():
         fig.colorbar(pcm, ax=ax, label="power (dB)")
 
     fig.suptitle(
-        f"Arneodo autonomous integration  |  start {args.pre_onset_ms:.0f} ms pre-onset  |  "
+        f"Arneodo autonomous integration  |  start {args.start_offset_ms:+.0f} ms rel. onset  |  "
         f"{n * dt * 1e3:.0f} ms  |  sr {sr} Hz",
         y=1.00,
     )
