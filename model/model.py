@@ -38,6 +38,7 @@ class Ouroboros(nn.Module):
         device: str = "cuda",
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
+        drive_lowpass_ms: float = 0.0,
     ):
 
         super().__init__()
@@ -82,9 +83,33 @@ class Ouroboros(nn.Module):
 
         self.tau = tau
         self.smooth_len = smooth_len
+        # if > 0, low-pass the drives omega(t), gamma(t), and the kernel weights w(t) with a
+        # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Matches the
+        # mechanism added to ArneodoOuroboros so the drives stay slow / control-rate.
+        self.drive_lowpass_ms = drive_lowpass_ms
         self.kernel = kernel
         self.kernel.tau = self.tau
         self.names = [r"$\omega$", r"$\gamma$", "weighted kernels", "states"]
+
+    def _lowpass(self, x: torch.FloatTensor, dt: float) -> torch.FloatTensor:
+        """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series."""
+        sigma = (self.drive_lowpass_ms / 1e3) / dt  # samples
+        if sigma <= 0:
+            return x
+        radius = max(1, int(round(3 * sigma)))
+        t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
+        kern = torch.exp(-0.5 * (t / sigma) ** 2)
+        kern = kern / kern.sum()
+        C = x.shape[-1]
+        k = kern.view(1, 1, -1).expand(C, 1, -1)
+        xc = F.pad(x.transpose(1, 2), (radius, radius), mode="reflect")
+        return F.conv1d(xc, k, groups=C).transpose(1, 2)
+
+    def _lowpass_weights(self, weights: torch.FloatTensor, dt: float) -> torch.FloatTensor:
+        """low-pass the polynomial kernel weights (B, L, P, P) along time."""
+        B, L, P, P2 = weights.shape
+        w = self._lowpass(weights.reshape(B, L, P * P2), dt)
+        return w.reshape(B, L, P, P2)
 
     def forward(
         self,
@@ -134,11 +159,18 @@ class Ouroboros(nn.Module):
             omegaControl
         ).abs()  # Since we take omega^2 anyway, we take the absolute value to prevent things from switching around too much
         gamma = self.gamma_net(gammaControl)
-        if smoothing:
+        weighted_kernels, weights = self.kernel(z, kernelControl)
+        if self.drive_lowpass_ms > 0:
+            # low-pass the drives in the loop, then recompute the nonlinearity from the
+            # low-passed weights so yhat is consistent with the (slow) drives
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             # smooth our model functions, if we choose to do so. I do not.
             omega = smooth(omega, smooth_len)
             gamma = smooth(gamma, smooth_len)
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         z1 = z[:, :, :1]
         z2 = z[:, :, 1:]
@@ -211,12 +243,16 @@ class Ouroboros(nn.Module):
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
+        weighted_kernels, weights = self.kernel(z, kernelControl)
 
-        if smoothing:
+        if self.drive_lowpass_ms > 0:
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             omega = smooth(omega.abs(), smooth_len)
             gamma = smooth(gamma, smooth_len)
-
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         return (
             omega,
@@ -430,6 +466,7 @@ class ArneodoOuroboros(nn.Module):
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
         gamma_init: float = 1.0,
+        drive_lowpass_ms: float = 0.0,
     ):
 
         super().__init__()
@@ -491,12 +528,33 @@ class ArneodoOuroboros(nn.Module):
 
         self.tau = tau
         self.smooth_len = smooth_len
+        # if >0, hard-constrain the control series alpha/beta/delta to vary no faster than
+        # this timescale (ms) by low-pass filtering the Mamba heads' outputs (always, train
+        # + eval). Encodes a known physiological control-rate prior and prevents the drives
+        # from carrying carrier-frequency content. Gaussian sigma = drive_lowpass_ms.
+        self.drive_lowpass_ms = drive_lowpass_ms
         self.names = [r"$\alpha$", r"$\beta$", r"$\delta$", r"$\gamma$"]
 
     @property
     def gamma(self) -> torch.FloatTensor:
         """rescaled, strictly-positive time-scaling scalar g = softplus(log_gamma)."""
         return F.softplus(self.log_gamma)
+
+    def _lowpass(self, x: torch.FloatTensor, dt: float) -> torch.FloatTensor:
+        """
+        centered, zero-phase Gaussian low-pass along time (sigma = self.drive_lowpass_ms),
+        applied to a control series x of shape (B, L, 1). Differentiable (fixed kernel);
+        reflection-padded to avoid edge artifacts / phase delay.
+        """
+        sigma = (self.drive_lowpass_ms / 1e3) / dt  # samples
+        if sigma <= 0:
+            return x
+        radius = max(1, int(round(3 * sigma)))
+        t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
+        kern = torch.exp(-0.5 * (t / sigma) ** 2)
+        kern = (kern / kern.sum()).view(1, 1, -1)
+        xc = F.pad(x.transpose(1, 2), (radius, radius), mode="reflect")
+        return F.conv1d(xc, kern).transpose(1, 2)
 
     def _encode(
         self,
@@ -529,7 +587,12 @@ class ArneodoOuroboros(nn.Module):
         beta = self.beta_net(betaControl)
         delta = self.delta_net(deltaControl)
 
-        if smoothing:
+        if self.drive_lowpass_ms > 0:
+            # hard timescale constraint: low-pass the drives (always, train + eval)
+            alpha = self._lowpass(alpha, dt)
+            beta = self._lowpass(beta, dt)
+            delta = self._lowpass(delta, dt)
+        elif smoothing:
             smooth_len = int(round(self.smooth_len / dt))
             alpha = smooth(alpha, smooth_len)
             beta = smooth(beta, smooth_len)

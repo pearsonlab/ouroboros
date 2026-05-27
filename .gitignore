@@ -166,4 +166,8 @@ cython_debug/
 arneodo_run/
 arneodo_big/
 arneodo_feas/
+arneodo_ft/
+arneodo_lp/
+arneodo_sweep/
+poly_lp/
 data500/

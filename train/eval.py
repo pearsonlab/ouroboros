@@ -333,6 +333,110 @@ def integrate_model_autonomous(
     return x_gen
 
 
+def integrate_poly_autonomous(
+    model: torch.nn.Module,
+    audio: np.ndarray,
+    dt: float,
+    method: str = "rk4",
+    detrend: bool = True,
+    noise_sd: float = 0.0,
+    seed: int = 0,
+    verbose: bool = True,
+) -> np.ndarray:
+    """
+    fully autonomous (closed-loop) integration of a polynomial `Ouroboros`.
+
+    Precomputes the drives omega(t), gamma(t) and the kernel weights w(t) from `audio` (these are
+    low-passed inside `get_funcs` if the model was trained with `drive_lowpass_ms`), then integrates
+
+        dx/ds  = x'
+        dx'/ds = -omega(s)^2 x - gamma(s) x' - kernel(x, x'; w(s))
+
+    in the model's rescaled time s = t/tau, feeding the generated state (x, x') back into the
+    nonlinearity each step. Only the drives (from data) and the initial condition come from outside.
+    """
+
+    L = len(audio)
+    t_steps = np.arange(0, L * dt + dt / 2, dt)[:L]
+    s_steps = t_steps / model.tau
+
+    audio_3d = audio[None, :, None]
+    dy = deriv_approx_dy(audio_3d)
+    audio_t = torch.from_numpy(audio_3d).to(torch.float32).to("cuda")
+    dy_t = torch.from_numpy(dy).to(torch.float32).to("cuda")
+
+    with torch.no_grad():
+        omega, gamma, _, weights, _ = model.get_funcs(audio_t, dy_t, dt)
+    omega = omega.detach().cpu().numpy().squeeze()
+    gamma = gamma.detach().cpu().numpy().squeeze()
+    weights = weights.detach().cpu().numpy()  # (1, L, P, P)
+    _, _, P, P2 = weights.shape
+    w_flat = weights.reshape(L, P * P2)
+
+    omega_interp = make_interp_spline(s_steps, omega)
+    gamma_interp = make_interp_spline(s_steps, gamma)
+    w_interp = make_interp_spline(s_steps, w_flat)  # vector-valued spline over time
+
+    x0 = float(audio[0])
+    xp0 = (model.tau / dt) * float(dy[0, 0, 0])
+    ic = torch.tensor([x0, xp0], dtype=torch.float32, device="cuda")
+    kernel = model.kernel
+
+    if noise_sd > 0:
+        # stochastic forcing (Euler-Maruyama on the velocity) to sustain a noise-driven
+        # oscillation at the data amplitude. RK4 drift per sample (drives held constant over
+        # the 1-sample step, fine since they are low-passed), plus additive noise on x'.
+        rng = np.random.default_rng(seed)
+        x, xp = x0, xp0
+        xs = [x]
+        ww = weights.reshape(L, 1, 1, P, P2)
+        for k in range(L - 1):
+            om, ga, wk = omega[k], gamma[k], ww[k]
+
+            def f(xx, vv):
+                kern = float(kernel.forward_given_weights_numpy(np.array([[[xx, vv]]]), wk).squeeze())
+                return vv, -(om**2) * xx - ga * vv - kern
+
+            k1x, k1v = f(x, xp)
+            k2x, k2v = f(x + 0.5 * k1x, xp + 0.5 * k1v)
+            k3x, k3v = f(x + 0.5 * k2x, xp + 0.5 * k2v)
+            k4x, k4v = f(x + k3x, xp + k3v)
+            x = x + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
+            xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6 + noise_sd * rng.standard_normal()
+            xs.append(x)
+        x_gen = np.array(xs)
+        return correct(x_gen) if detrend else x_gen
+
+    def dz_hat(s, z):
+        if verbose:
+            print(
+                f"{(s - s_steps[0]) / (s_steps[-1] - s_steps[0]) * 100:0.3f}%,",
+                end="\r",
+            )
+        s_np = s.detach().cpu().numpy()
+        om = float(omega_interp(s_np))
+        ga = float(gamma_interp(s_np))
+        w = w_interp(s_np).reshape(1, 1, P, P2)
+        x = float(z[0])
+        xp = float(z[1])
+        kern = float(
+            kernel.forward_given_weights_numpy(np.array([[[x, xp]]]), w).squeeze()
+        )
+        dxp = -(om**2) * x - ga * xp - kern
+        return torch.tensor([xp, dxp], dtype=torch.float32, device=z.device)
+
+    eval_times = torch.from_numpy(s_steps).to(ic.device)
+    with torch.no_grad():
+        sol = odeint_adjoint(
+            dz_hat, ic, eval_times, adjoint_params=(), method=method, options=dict()
+        ).transpose(0, 1)
+
+    x_gen = sol[0].detach().cpu().numpy().squeeze()
+    if detrend:
+        x_gen = correct(x_gen)
+    return x_gen
+
+
 def eval_model_error(
     dls: dict, model: torch.nn.Module, dt: float, comparison: str = "val"
 ) -> tuple[tuple[float, float], tuple[float, float], tuple[np.ndarray, np.ndarray]]:

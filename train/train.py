@@ -67,6 +67,7 @@ def save_model(
         "d_conv": d_conv,
         "expand_factor": expand_factor,
         "parameterization": parameterization,
+        "drive_lowpass_ms": getattr(model, "drive_lowpass_ms", 0.0),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -124,6 +125,7 @@ def load_model(
             expand_factor=expand_factor,
             tau=sd["tau"],
             smooth_len=sd["smooth_len"],
+            drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
         )
     else:
         try:
@@ -147,6 +149,7 @@ def load_model(
                 tau=sd["tau"],
                 smooth_len=sd["smooth_len"],
                 kernel=kernel,
+                drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
             )
         except:
             print("no kernel in savefile!")
