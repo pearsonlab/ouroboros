@@ -164,3 +164,6 @@ cython_debug/
 
 # example run outputs (generated data, checkpoints, plots)
 arneodo_run/
+arneodo_big/
+arneodo_feas/
+data500/

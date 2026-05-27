@@ -23,6 +23,11 @@ def train_model(
     n_epochs: int = 100,
     save_freq: int = 5,
     parameterization: str = "poly",
+    lr: float = 1e-3,
+    n_layers: int = 3,
+    d_state: int = 1,
+    d_conv: int = 4,
+    expand_factor: int = 10,
 ) -> torch.nn.Module:
     """
     function for training a model. takes audio from
@@ -45,6 +50,14 @@ def train_model(
             parameterization: "poly" for the full-polynomial Ouroboros (with lambda
                 cross-validation), or "arneodo" for the Arneodo 2021 syrinx ODE
                 parameterization (single fit, no regularization CV)
+            lr: learning rate
+            n_layers: number of mamba layers in each encoder
+            d_state: internal SSM state size of the mamba encoders. The default (1) is
+                small; bumping it (e.g. 4) substantially improves fit -- with enough data
+                the arneodo model reaches R^2 > 0.98 at d_state=4. Mind GPU memory: the
+                parallel scan allocates ~batch * npo2(2*seq) * 2*expand_factor * d_state.
+            d_conv: width of the mamba convolutional kernel
+            expand_factor: channel expansion from audio to mamba input
     returns
     --------
             best model after hyperparameter cross-validation
@@ -95,11 +108,11 @@ def train_model(
             dls=dataloaders,
             dt=dt,
             n_epochs=n_epochs,
-            lr=1e-3,
-            expand_factor=10,
-            n_layers=3,
-            d_state=1,
-            d_conv=4,
+            lr=lr,
+            expand_factor=expand_factor,
+            n_layers=n_layers,
+            d_state=d_state,
+            d_conv=d_conv,
             tau=dt,
             model_path=model_dir,
             save_freq=save_freq,
@@ -109,12 +122,12 @@ def train_model(
             dls=dataloaders,
             dt=dt,
             n_epochs=n_epochs,
-            lr=1e-3,
+            lr=lr,
             n_kernels=15,
-            expand_factor=10,
-            n_layers=3,
-            d_state=1,
-            d_conv=4,
+            expand_factor=expand_factor,
+            n_layers=n_layers,
+            d_state=d_state,
+            d_conv=d_conv,
             tau=dt,
             model_path=model_dir,
             save_freq=save_freq,
