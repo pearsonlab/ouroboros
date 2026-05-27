@@ -6,7 +6,7 @@ from utils import sst, sse
 import matplotlib.pyplot as plt
 import os
 import glob
-from model.model import Ouroboros
+from model.model import Ouroboros, ArneodoOuroboros
 from model.kernels import fullPolyModule
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -55,6 +55,8 @@ def save_model(
         ordered_saves = [current_saves[o] for o in save_order]
         for ii in range(len(current_saves) - max_saved + 1):
             os.remove(ordered_saves[ii])
+    # "poly" models carry a kernel module; the Arneodo parameterization does not.
+    parameterization = "poly" if hasattr(model, "kernel") else "arneodo"
     sd = {
         "ouroboros": model.state_dict(),
         "opt": opt.state_dict(),
@@ -64,10 +66,11 @@ def save_model(
         "d_state": d_state,
         "d_conv": d_conv,
         "expand_factor": expand_factor,
+        "parameterization": parameterization,
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
-    except KeyError:
+    except (KeyError, AttributeError):
         pass
 
     torch.save(sd, location)
@@ -111,19 +114,9 @@ def load_model(
         d_state = 1
         d_conv = 4
         expand_factor = 4
-    try:
-        # since this is a trained model and we only use lambda during training, i set it to 1 here...
-        # but probably should have saved it. oh well! we set to 1 for compatibility with all my saves.
-        kernel = fullPolyModule(
-            nTerms=sd["n_kernel"],
-            device="cuda",
-            x_dim=1,
-            z_dim=2,
-            activation=lambda x: x,
-            lam=1,
-        )
-
-        model = Ouroboros(
+    parameterization = sd.get("parameterization", "poly")
+    if parameterization == "arneodo":
+        model = ArneodoOuroboros(
             d_data=1,
             n_layers=n_layers,
             d_state=d_state,
@@ -131,11 +124,33 @@ def load_model(
             expand_factor=expand_factor,
             tau=sd["tau"],
             smooth_len=sd["smooth_len"],
-            kernel=kernel,
         )
-    except:
-        print("no kernel in savefile!")
-        raise
+    else:
+        try:
+            # since this is a trained model and we only use lambda during training, i set it to 1 here...
+            # but probably should have saved it. oh well! we set to 1 for compatibility with all my saves.
+            kernel = fullPolyModule(
+                nTerms=sd["n_kernel"],
+                device="cuda",
+                x_dim=1,
+                z_dim=2,
+                activation=lambda x: x,
+                lam=1,
+            )
+
+            model = Ouroboros(
+                d_data=1,
+                n_layers=n_layers,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand_factor=expand_factor,
+                tau=sd["tau"],
+                smooth_len=sd["smooth_len"],
+                kernel=kernel,
+            )
+        except:
+            print("no kernel in savefile!")
+            raise
 
     print(f"model tau: {model.tau}")
     opt = Adam(model.parameters(), lr=1e-3)
@@ -289,7 +304,10 @@ def train(
 
             train_loss = loss_fn(y, yhat[:, :L, :])
 
-            #l = loss
+            # default objective is the data loss; the polynomial parameterization adds a
+            # weight-complexity penalty when reg_weights=True. Parameterizations without
+            # kernel weights (e.g. ArneodoOuroboros) train with reg_weights=False.
+            total_loss = train_loss
             if reg_weights:
                 B, L, P, P = weights.shape
                 lam_mat = torch.arange(

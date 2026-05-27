@@ -1,6 +1,6 @@
 from train.train import train, save_model, load_model
 from model.kernels import fullPolyModule
-from model.model import Ouroboros
+from model.model import Ouroboros, ArneodoOuroboros
 from utils import sse
 from visualization.model_vis import loss_plot
 from train.eval import eval_model_error
@@ -212,3 +212,113 @@ def model_cv_lambdas(
     data_df.to_csv(os.path.join(model_path, "cv_errs.csv"))
 
     return full_model_poly
+
+
+def train_arneodo(
+    dls: dict,
+    dt: float,
+    n_epochs: int = 100,
+    lr: float = 1e-3,
+    expand_factor: int = 10,
+    n_layers: int = 4,
+    d_state: int = 1,
+    d_conv: int = 4,
+    tau: float = 1 / 1000,
+    smooth_len: float = 0.001,
+    model_path: str = "",
+    save_freq: int = 5,
+) -> torch.nn.Module:
+    """
+    trains a single `ArneodoOuroboros` model (the biomechanical syrinx parameterization).
+
+    Unlike `model_cv_lambdas`, there is no regularization-strength cross-validation: the
+    Arneodo RHS has no polynomial kernel weights to penalize, so we fit one model with
+    `reg_weights=False`. The trained model is saved and returned in memory.
+
+    inputs
+    -----
+        - dls: dictionary of dataloaders (train / val / test)
+        - dt: spacing between audio samples, in seconds
+        - n_epochs: number of passes through the training data
+        - lr: learning rate
+        - expand_factor: expansion from audio to mamba input
+        - n_layers: number of mamba layers in each encoder
+        - d_state: internal state size of mamba model
+        - d_conv: length of internal convolution of mamba model
+        - tau: timescale for model decoder, to de-dimensionalize the data
+        - smooth_len: smoothing length for model functions (not used in training)
+        - model_path: place to save the model and training artifacts
+        - save_freq: how often (in epochs) to checkpoint the model
+
+    returns
+    -----
+        - the trained ArneodoOuroboros
+    """
+
+    model_info = {
+        "n layers": n_layers,
+        "d state": d_state,
+        "d conv": d_conv,
+        "expand factor": expand_factor,
+    }
+
+    model = ArneodoOuroboros(
+        d_data=1,
+        n_layers=n_layers,
+        d_state=d_state,
+        d_conv=d_conv,
+        expand_factor=expand_factor,
+        tau=tau,
+        smooth_len=smooth_len,
+    )
+
+    opt = Adam(model.parameters(), lr=lr)
+    scheduler = ReduceLROnPlateau(
+        opt, factor=0.5, patience=max(n_epochs // 25, 2), min_lr=1e-10
+    )
+
+    run_dir = os.path.join(model_path, "arneodo")
+    os.makedirs(run_dir, exist_ok=True)
+    save_loc = os.path.join(run_dir, f"checkpoint_{n_epochs}.tar")
+
+    tl, vl, model, opt = train(
+        model,
+        opt,
+        loss_fn=lambda y, yhat: sse(yhat, y, reduction="mean"),
+        loaders=dls,
+        scheduler=scheduler,
+        nEpochs=n_epochs,
+        val_freq=1,
+        runDir=run_dir,
+        dt=dt,
+        vis_freq=max(n_epochs // 10, 1),
+        smoothing=False,
+        reg_weights=False,  # no kernel weights to regularize in the Arneodo RHS
+        start_epoch=0,
+        save_freq=save_freq,
+        model_info=model_info,
+    )
+
+    loss_plot(tl, vl, save_loc=run_dir, show=False)
+
+    save_model(
+        model,
+        opt,
+        save_loc,
+        n_layers=n_layers,
+        d_state=d_state,
+        expand_factor=expand_factor,
+        d_conv=d_conv,
+    )
+
+    model.eval()
+    with torch.no_grad():
+        (train_mu, test_mu), (train_sd, test_sd), _ = eval_model_error(
+            dls, model, dt=dt, comparison="test"
+        )
+    print(
+        f"Arneodo model R2 -- train: {train_mu:.4f} +- {train_sd:.4f}, "
+        f"test: {test_mu:.4f} +- {test_sd:.4f}"
+    )
+
+    return model

@@ -222,6 +222,117 @@ def integrate_second_deriv(
     return yhat
 
 
+def integrate_model_autonomous(
+    model: torch.nn.Module,
+    audio: np.ndarray,
+    dt: float,
+    method: str = "rk4",
+    detrend: bool = True,
+    verbose: bool = True,
+) -> np.ndarray:
+    """
+    fully autonomous (closed-loop) integration of an `ArneodoOuroboros` model.
+
+    Unlike `integrate_model_d2`, which replays the model's predicted second derivative
+    evaluated at the *data* points, this integrates the biomechanical syrinx ODE while
+    feeding the last generated state (x, x') back into the right-hand side. The state is
+    therefore generated entirely by the integrator -- only the control time series
+    alpha(t), beta(t) (produced once by the encoder from `audio`, as in the paper's
+    neurally-driven synthesis), the scalar gamma, and the initial condition come from
+    outside the integrator.
+
+    We integrate in the model's rescaled time s = t / tau, where the state is z = [x, x']
+    with x' = dx/ds, gamma is the learned (rescaled) scalar `model.gamma`, and
+
+        dx/ds  = x'
+        dx'/ds = g^2 a + g^2 b x + g^2 x^2 - g^2 x^3 - g (d + x + x^2) x'
+
+    with g = gamma, a = alpha(s), b = beta(s), d = delta(s) (the linear-damping series).
+
+    inputs
+    -----
+        - model: a trained ArneodoOuroboros
+        - audio: 1-D audio segment used to produce alpha(t), beta(t) and the IC
+        - dt: audio sampling spacing (seconds)
+        - method: integration method (passed to torchdiffeq)
+        - detrend: whether to low-pass detrend the generated waveform (as in `correct`)
+        - verbose: print integration progress
+
+    returns
+    -----
+        - the autonomously generated waveform x, sampled at the same points as `audio`
+    """
+
+    L = len(audio)
+    t_steps = np.arange(0, L * dt + dt / 2, dt)[:L]
+    s_steps = t_steps / model.tau  # rescaled time s = t / tau
+
+    audio_3d = audio[None, :, None]
+    dy = deriv_approx_dy(audio_3d)  # per-sample first derivative dx/dn
+
+    audio_t = torch.from_numpy(audio_3d).to(torch.float32).to("cuda")
+    dy_t = torch.from_numpy(dy).to(torch.float32).to("cuda")
+
+    with torch.no_grad():
+        alpha, beta, delta, gamma = model.get_funcs(audio_t, dy_t, dt)
+
+    alpha = alpha.detach().cpu().numpy().squeeze()
+    beta = beta.detach().cpu().numpy().squeeze()
+    delta = delta.detach().cpu().numpy().squeeze()
+    gamma = float(gamma.detach().cpu().numpy())
+    g2 = gamma**2
+
+    # control parameters as smooth functions of rescaled time
+    alpha_interp = make_interp_spline(s_steps, alpha)
+    beta_interp = make_interp_spline(s_steps, beta)
+    delta_interp = make_interp_spline(s_steps, delta)
+
+    # initial condition in rescaled time: x(0) and x'(0) = dx/ds = (tau/dt) * dx/dn
+    x0 = float(audio[0])
+    xp0 = (model.tau / dt) * float(dy[0, 0, 0])
+    ic = torch.tensor([x0, xp0], dtype=torch.float32, device="cuda")
+
+    def dz_hat(s, z):
+        if verbose:
+            print(
+                f"{(s - s_steps[0]) / (s_steps[-1] - s_steps[0]) * 100:0.3f}%,",
+                end="\r",
+            )
+
+        s_np = s.detach().cpu().numpy()
+        a = float(alpha_interp(s_np))
+        b = float(beta_interp(s_np))
+        d = float(delta_interp(s_np))
+
+        x = z[0]
+        xp = z[1]
+
+        dx = xp
+        dxp = (
+            g2 * a
+            + g2 * b * x
+            + g2 * x**2
+            - g2 * x**3
+            - gamma * d * xp
+            - gamma * x * xp
+            - gamma * x**2 * xp
+        )
+
+        return torch.hstack([dx.reshape(1), dxp.reshape(1)])
+
+    eval_times = torch.from_numpy(s_steps).to(ic.device)
+
+    with torch.no_grad():
+        sol = odeint_adjoint(
+            dz_hat, ic, eval_times, adjoint_params=(), method=method, options=dict()
+        ).transpose(0, 1)
+
+    x_gen = sol[0].detach().cpu().numpy().squeeze()
+    if detrend:
+        x_gen = correct(x_gen)
+    return x_gen
+
+
 def eval_model_error(
     dls: dict, model: torch.nn.Module, dt: float, comparison: str = "val"
 ) -> tuple[tuple[float, float], tuple[float, float], tuple[np.ndarray, np.ndarray]]:

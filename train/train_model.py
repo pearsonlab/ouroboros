@@ -1,7 +1,7 @@
 from data.load_data import get_segmented_audio
 from data.data_utils import get_loaders
 
-from train.model_cv import model_cv_lambdas
+from train.model_cv import model_cv_lambdas, train_arneodo
 
 from typing import Union
 import os
@@ -22,6 +22,7 @@ def train_model(
     batch_size: int = 32,
     n_epochs: int = 100,
     save_freq: int = 5,
+    parameterization: str = "poly",
 ) -> torch.nn.Module:
     """
     function for training a model. takes audio from
@@ -41,6 +42,9 @@ def train_model(
             batch_size: batch size during training
             n_epochs: max number of passes through the data during training
             save_freq: how often (in epochs) we want to checkpoint model
+            parameterization: "poly" for the full-polynomial Ouroboros (with lambda
+                cross-validation), or "arneodo" for the Arneodo 2021 syrinx ODE
+                parameterization (single fit, no regularization CV)
     returns
     --------
             best model after hyperparameter cross-validation
@@ -86,20 +90,35 @@ def train_model(
         dt=dt,
     )
 
-    best_model = model_cv_lambdas(
-        dls=dataloaders,
-        dt=dt,
-        n_epochs=n_epochs,
-        lr=1e-3,
-        n_kernels=15,
-        expand_factor=10,
-        n_layers=3,
-        d_state=1,
-        d_conv=4,
-        tau=dt,
-        model_path=model_dir,
-        save_freq=save_freq,
-    )
+    if parameterization == "arneodo":
+        best_model = train_arneodo(
+            dls=dataloaders,
+            dt=dt,
+            n_epochs=n_epochs,
+            lr=1e-3,
+            expand_factor=10,
+            n_layers=3,
+            d_state=1,
+            d_conv=4,
+            tau=dt,
+            model_path=model_dir,
+            save_freq=save_freq,
+        )
+    else:
+        best_model = model_cv_lambdas(
+            dls=dataloaders,
+            dt=dt,
+            n_epochs=n_epochs,
+            lr=1e-3,
+            n_kernels=15,
+            expand_factor=10,
+            n_layers=3,
+            d_state=1,
+            d_conv=4,
+            tau=dt,
+            model_path=model_dir,
+            save_freq=save_freq,
+        )
 
     return best_model
 
