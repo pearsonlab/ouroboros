@@ -63,11 +63,13 @@ def main():
     parser.add_argument("--pad-ms", type=float, default=20.0, help="window padding each side (ms)")
     parser.add_argument("--cutoff-hz", type=float, default=50.0,
                         help="low-pass cutoff for the learned drives' slow component")
+    parser.add_argument("--model-dir", default=None, help="checkpoint dir (default <out-dir>/model/arneodo)")
+    parser.add_argument("--data-dir", default=None, help="gabo data dir (default <out-dir>/gabo_data)")
     args = parser.parse_args()
 
     out_dir = os.path.abspath(args.out_dir)
-    data_dir = os.path.join(out_dir, "gabo_data")
-    model_dir = os.path.join(out_dir, "model", "arneodo")
+    data_dir = os.path.abspath(args.data_dir) if args.data_dir else os.path.join(out_dir, "gabo_data")
+    model_dir = os.path.abspath(args.model_dir) if args.model_dir else os.path.join(out_dir, "model", "arneodo")
     tag = f"gabo_artificial_{args.voc}"
 
     model, _, _, epoch = load_model(model_dir)
