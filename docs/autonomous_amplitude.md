@@ -94,6 +94,36 @@ python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' --out-dir .
     --n-epochs 50 --n-seeds 5 --lam 1.068 --drive-lowpass-ms 1.0 --d-state 4
 ```
 
+## Validation at scale, and seed culling
+
+**Full grid run** (`examples/run_lambda_pipeline.py`, 7 λ × {3, 8} seeds × 50 ep, the 500-voc `data500`
+set, 1 ms low-pass, `keep_const`) re-confirms the diagnosis on the full dataset with the production
+*rescaled* metric. Rescaled validation autonomy is **flat across λ** (per-λ mean +0.548 ± 0.0008) and
+**seed-structured** (seed spread 0.51 → 0.59); the across-seed std (≈ 0.04) is ~20× the across-λ
+variation (≈ 0.002), and `amp_pen = 0.00` everywhere (rescaling working). The pipeline selects the best
+seed and the deployed (rescaled) reconstruction reaches **test autonomy +0.63–0.65** on the held-out
+shard (best-of-3 +0.626, best-of-8 +0.653), spectral corr ≈ 0.68, pitch within ~5%, fully bounded —
+i.e. more seeds → a better best, as expected when the seed is the lever.
+
+**Seed culling — can we pick the winner early?** Since training all seeds fully is the cost, we asked
+whether an *early* checkpoint's rescaled validation autonomy predicts the final seed ranking
+(`examples/seed_cull_test.py`, 8 seeds at λ = 1.068). Spearman vs the final (epoch-50) ranking:
+
+| early epoch | Spearman ρ | top-1 hit | top-2 overlap |
+|---|---|---|---|
+| 10 (20% budget) | 0.48 | ✗ | 1/2 |
+| 20 (40% budget) | 0.86 | ✓ | 2/2 |
+| 30 | 0.76 | ✓ | 2/2 |
+| 40 | 0.98 | ✓ | 2/2 |
+
+**Epoch 10 is too early** — the epoch-10 leader finished 6th of 8, and the eventual winner was only 2nd
+at epoch 10. **By epoch 20 the top-1 and top-2 seeds are already correct** (the mid-pack keeps
+reshuffling, so the *full* ranking only settles by ~epoch 40). Practical schedule: **train all seeds to
+~40% of the budget, keep the top 1–2 by rescaled validation autonomy, and finish only those** — roughly
+halving the seed-search cost. (Caveat: one dataset, one λ, 8 seeds; the 40%-budget threshold is
+config-specific. Note teacher-forced R² is useless for this — it is seed-invariant; only the autonomous
+rollout discriminates, and there is no cheaper on-orbit surrogate, since amplitude/shape live off-orbit.)
+
 ## Open direction
 
 A genuine fix would place an **attracting limit cycle at the data amplitude** — i.e. make the data
