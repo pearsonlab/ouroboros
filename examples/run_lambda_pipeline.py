@@ -12,11 +12,16 @@ help other datasets). A FILE-LEVEL holdout is used for the autonomy vocalization
   - validation autonomy vocs from a held-out shard (seed selection),
   - test autonomy vocs from another held-out shard (final report + a rescaled reconstruction wav).
 
-Pass --lam <=0 to instead sweep the standard 7-point lambda grid.
+Pass --lam <=0 to instead sweep the standard 7-point lambda grid. Pass --cull-frac (e.g. 0.4) to
+enable SEED CULLING: train all seeds to that fraction of the budget, then finish only the top
+--cull-keep by rescaled validation autonomy (~halves the seed-search cost; see docs).
 
 Run from the repo root:
     python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' --out-dir ./poly_pipeline \
         --n-epochs 50 --n-seeds 5 --lam 1.068 --drive-lowpass-ms 1.0 --d-state 4
+    # with seed culling (train 8 seeds, finish the best 2 after 40% of epochs):
+    python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' --n-seeds 8 \
+        --cull-frac 0.4 --cull-keep 2
 """
 
 import argparse
@@ -25,7 +30,6 @@ import json
 import os
 
 import numpy as np
-import pandas as pd
 from scipy.io import wavfile
 
 from data.load_data import get_segmented_audio
@@ -54,6 +58,12 @@ def main():
     p.add_argument("--out-dir", default="poly_pipeline")
     p.add_argument("--n-epochs", type=int, default=50)
     p.add_argument("--n-seeds", type=int, default=5)
+    p.add_argument("--cull-frac", type=float, default=0.0,
+                   help="seed culling: train all runs to this fraction of n-epochs, then finish only "
+                        "the top --cull-keep by rescaled validation autonomy (0 = train all fully). "
+                        "~0.4 is a good default; the autonomy ranking settles by ~40%% of the budget.")
+    p.add_argument("--cull-keep", type=int, default=2,
+                   help="number of top runs to finish when culling")
     p.add_argument("--lam", type=float, default=1.068,
                    help="fixed kernel-weight lambda (lambda is irrelevant for autonomy; the SEED "
                         "is what matters, so we fix lambda and select over seeds). Pass <=0 to "
@@ -106,18 +116,14 @@ def main():
         selection="autonomy", val_vocs=val_vocs, test_vocs=test_vocs,
         keep_const=args.keep_const, rescale_autonomy=True,
         lambdas=None if args.lam <= 0 else [args.lam],
+        cull_frac=args.cull_frac, cull_keep=args.cull_keep,
     )
 
     # DEPLOYED generation: rescaled autonomous reconstruction of the held-out test vocs.
     # (Amplitude is a free gauge fixed at generation; selection above already used rescaled autonomy.)
     if test_vocs:
-        # actual selected lambda: argmax of mean validation autonomy (= args.lam when fixed; the
-        # auto-selected grid value when swept, rather than the <=0 sweep sentinel)
-        sel_lambda = float(args.lam)
-        csv_path = os.path.join(out_dir, "lambda_seed_cv.csv")
-        if args.lam <= 0 and os.path.isfile(csv_path):
-            dfc = pd.read_csv(csv_path)
-            sel_lambda = float(dfc.groupby("lambda")["val_autonomy"].mean().idxmax())
+        # authoritative selected lambda from the selector (handles fixed-lambda, swept-grid, and culled)
+        sel_lambda = float(getattr(best_model, "_selected_lambda", args.lam))
         score, _, bd = autonomy_score(best_model, test_vocs, dt, rescale=True)
         recon = generate_autonomous(best_model, test_vocs[0], dt, rescale=True)
         wav = (recon / (np.abs(recon).max() + 1e-12) * 0.95 * 32767).astype(np.int16)

@@ -88,10 +88,15 @@ Both are folded into the pipeline:
   keep_const=True, lambdas=[λ])` — multi-seed selection by rescaled validation autonomy.
 - `examples/run_lambda_pipeline.py` — end-to-end: file-level holdout, seed selection, and a rescaled
   autonomous reconstruction (`selected_autonomous_recon.wav` + `selected_model.json`).
+- **Seed culling** (`model_cv_lambdas(cull_frac=…, cull_keep=…)`, exposed as `--cull-frac/--cull-keep`):
+  train all seeds to `cull_frac` of the budget, finish only the top `cull_keep` by rescaled validation
+  autonomy — see below.
 
 ```
 python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' --out-dir ./poly_pipeline \
     --n-epochs 50 --n-seeds 5 --lam 1.068 --drive-lowpass-ms 1.0 --d-state 4
+# with seed culling — train 8 seeds, finish the best 2 after 40% of the budget:
+python -m examples.run_lambda_pipeline --n-seeds 8 --cull-frac 0.4 --cull-keep 2
 ```
 
 ## Validation at scale, and seed culling
@@ -120,8 +125,9 @@ whether an *early* checkpoint's rescaled validation autonomy predicts the final 
 at epoch 10. **By epoch 20 the top-1 and top-2 seeds are already correct** (the mid-pack keeps
 reshuffling, so the *full* ranking only settles by ~epoch 40). Practical schedule: **train all seeds to
 ~40% of the budget, keep the top 1–2 by rescaled validation autonomy, and finish only those** — roughly
-halving the seed-search cost. (Caveat: one dataset, one λ, 8 seeds; the 40%-budget threshold is
-config-specific. Note teacher-forced R² is useless for this — it is seed-invariant; only the autonomous
+halving the seed-search cost. This is built into the pipeline (`--cull-frac 0.4 --cull-keep 2`, i.e.
+`model_cv_lambdas(cull_frac=, cull_keep=)`). (Caveat: one dataset, one λ, 8 seeds; the 40%-budget
+threshold is config-specific. Note teacher-forced R² is useless for this — it is seed-invariant; only the autonomous
 rollout discriminates, and there is no cheaper on-orbit surrogate, since amplitude/shape live off-orbit.)
 
 ## Open direction
