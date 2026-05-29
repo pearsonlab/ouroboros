@@ -25,6 +25,7 @@ import json
 import os
 
 import numpy as np
+import pandas as pd
 from scipy.io import wavfile
 
 from data.load_data import get_segmented_audio
@@ -110,11 +111,18 @@ def main():
     # DEPLOYED generation: rescaled autonomous reconstruction of the held-out test vocs.
     # (Amplitude is a free gauge fixed at generation; selection above already used rescaled autonomy.)
     if test_vocs:
+        # actual selected lambda: argmax of mean validation autonomy (= args.lam when fixed; the
+        # auto-selected grid value when swept, rather than the <=0 sweep sentinel)
+        sel_lambda = float(args.lam)
+        csv_path = os.path.join(out_dir, "lambda_seed_cv.csv")
+        if args.lam <= 0 and os.path.isfile(csv_path):
+            dfc = pd.read_csv(csv_path)
+            sel_lambda = float(dfc.groupby("lambda")["val_autonomy"].mean().idxmax())
         score, _, bd = autonomy_score(best_model, test_vocs, dt, rescale=True)
         recon = generate_autonomous(best_model, test_vocs[0], dt, rescale=True)
         wav = (recon / (np.abs(recon).max() + 1e-12) * 0.95 * 32767).astype(np.int16)
         wavfile.write(os.path.join(out_dir, "selected_autonomous_recon.wav"), int(round(1 / dt)), wav)
-        manifest = {"selected_lambda": float(args.lam), "n_seeds": int(args.n_seeds),
+        manifest = {"selected_lambda": sel_lambda, "n_seeds": int(args.n_seeds),
                     "keep_const": bool(args.keep_const), "drive_lowpass_ms": float(args.drive_lowpass_ms),
                     "rescaled_test_autonomy": score, "spec_corr": bd["spec_corr"],
                     "pitch_pen": bd["pitch_pen"], "bounded_frac": bd["bounded_frac"]}
