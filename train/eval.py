@@ -10,6 +10,7 @@ from utils import (
 from torchdiffeq import odeint_adjoint
 
 from scipy.interpolate import make_interp_spline
+from scipy.signal import welch
 
 """
 tools for evaluating model performance. covers both regular evaluation and model integration
@@ -435,6 +436,126 @@ def integrate_poly_autonomous(
     if detrend:
         x_gen = correct(x_gen)
     return x_gen
+
+
+def autonomy_score(
+    model: torch.nn.Module,
+    segments: list,
+    dt: float,
+    fmax: float = 8000.0,
+    w_amp: float = 1.0,
+    w_pitch: float = 1.0,
+    diverge_score: float = -5.0,
+    method: str = "rk4",
+    rescale: bool = False,
+) -> tuple:
+    """
+    validation metric for AUTONOMOUS reconstruction quality (model-selection criterion).
+
+    For each pre-windowed (sustained) vocalization segment, run the model's DETERMINISTIC
+    autonomous integration and score it against the target by phase-robust spectral (log-PSD)
+    correlation, minus log-ratio penalties on amplitude and pitch:
+
+        score = spectral_corr(autonomous, target)
+                - w_amp   * |log(std_auto   / std_target)|
+                - w_pitch * |log(pitch_auto / pitch_target)|
+
+    A divergent / collapsed rollout (non-finite or ~zero) gets `diverge_score`. Works for both
+    the polynomial (`integrate_poly_autonomous`) and Arneodo (`integrate_model_autonomous`) models.
+
+    If `rescale=True`, the autonomous output's RMS is matched to the target's before scoring (the
+    deployed recipe -- amplitude is an arbitrary overall-scale gauge fixed at generation by
+    `generate_autonomous`). This zeroes `amp_pen` for bounded rollouts, so selection then turns on
+    the genuinely-constrained quantities (spectral shape + pitch + boundedness). A divergent rollout
+    is still detected on the RAW output and gets `diverge_score` (collapse is not rescaled away).
+
+    returns
+    -----
+        - mean score over segments
+        - per-segment scores (list)
+        - breakdown dict (mean spectral corr, amp penalty, pitch penalty, bounded fraction)
+    """
+    fs = 1.0 / dt
+
+    def _logpsd(x):
+        f, P = welch(x - np.mean(x), fs=fs, nperseg=min(1024, len(x)))
+        m = f <= fmax
+        return np.log(P[m] + 1e-20)
+
+    def _peak(x):
+        f, P = welch(x - np.mean(x), fs=fs, nperseg=min(1024, len(x)))
+        P[0] = 0
+        return float(f[np.argmax(P)])
+
+    is_poly = hasattr(model, "kernel")
+    scores, specs, amps, pits, bounded = [], [], [], [], []
+    for seg in segments:
+        seg = np.asarray(seg, dtype=np.float64)
+        tgt = correct(seg)
+        if is_poly:
+            auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
+                                             detrend=True, verbose=False)
+        else:
+            auto = integrate_model_autonomous(model, seg, dt, method=method, detrend=True,
+                                              verbose=False)
+        n = min(len(tgt), len(auto))
+        tgt_n, auto_n = tgt[:n], auto[:n]
+        if (not np.isfinite(auto_n).all()) or np.nanstd(auto_n) < 1e-9:
+            scores.append(diverge_score)
+            bounded.append(0.0)
+            specs.append(np.nan); amps.append(np.nan); pits.append(np.nan)
+            continue
+        bounded.append(1.0)
+        if rescale:  # gauge-fix amplitude to the target RMS (the deployed recipe)
+            auto_n = auto_n * (np.nanstd(tgt_n) / (np.nanstd(auto_n) + 1e-12))
+        sc = float(np.corrcoef(_logpsd(tgt_n), _logpsd(auto_n))[0, 1])
+        amp = abs(np.log((np.nanstd(auto_n) + 1e-12) / (np.nanstd(tgt_n) + 1e-12)))
+        pit = abs(np.log((_peak(auto_n) + 1e-9) / (_peak(tgt_n) + 1e-9)))
+        scores.append(sc - w_amp * amp - w_pitch * pit)
+        specs.append(sc); amps.append(amp); pits.append(pit)
+
+    breakdown = {
+        "spec_corr": float(np.nanmean(specs)) if len(specs) else float("nan"),
+        "amp_pen": float(np.nanmean(amps)) if len(amps) else float("nan"),
+        "pitch_pen": float(np.nanmean(pits)) if len(pits) else float("nan"),
+        "bounded_frac": float(np.mean(bounded)) if len(bounded) else 0.0,
+    }
+    return float(np.mean(scores)), scores, breakdown
+
+
+def generate_autonomous(
+    model: torch.nn.Module,
+    audio: np.ndarray,
+    dt: float,
+    rescale: bool = True,
+    ref_rms: float = None,
+    method: str = "rk4",
+    detrend: bool = True,
+    verbose: bool = False,
+) -> np.ndarray:
+    """
+    DEPLOYED autonomous generation: closed-loop integration + amplitude rescaling.
+
+    Autonomous amplitude is a poorly-constrained, marginal direction (the transverse Floquet
+    exponent is left free by on-orbit teacher-forced fitting), so the raw free-running amplitude
+    decays/grows/varies by seed. The overall scale is an arbitrary audio-unit gauge, so we fix it
+    at generation: run the deterministic closed-loop rollout, then (if `rescale`) match its RMS to
+    a reference -- `ref_rms` if given, else the input window's own (detrended) RMS for reconstruction.
+
+    Works for poly (`integrate_poly_autonomous`) and Arneodo (`integrate_model_autonomous`) models.
+    Returns the (rescaled) generated waveform; a divergent/collapsed rollout is returned unscaled.
+    """
+    is_poly = hasattr(model, "kernel")
+    if is_poly:
+        auto = integrate_poly_autonomous(model, audio, dt, method=method, detrend=detrend,
+                                         noise_sd=0.0, verbose=verbose)
+    else:
+        auto = integrate_model_autonomous(model, audio, dt, method=method, detrend=detrend,
+                                          verbose=verbose)
+    if rescale and np.isfinite(auto).all() and np.nanstd(auto) > 1e-9:
+        target = ref_rms if ref_rms is not None else float(np.nanstd(correct(np.asarray(audio, dtype=np.float64))))
+        auto = auto * (target / (np.nanstd(auto) + 1e-12))
+    return auto
 
 
 def eval_model_error(

@@ -3,12 +3,13 @@ from model.kernels import fullPolyModule
 from model.model import Ouroboros, ArneodoOuroboros
 from utils import sse
 from visualization.model_vis import loss_plot
-from train.eval import eval_model_error
+from train.eval import eval_model_error, autonomy_score
 
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
 import glob
+import gc
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -31,6 +32,14 @@ def model_cv_lambdas(
     smooth_len: float = 0.001,
     model_path: str = "",
     save_freq: int = 5,
+    drive_lowpass_ms: float = 0.0,
+    n_seeds: int = 1,
+    selection: str = "r2",
+    val_vocs: list = None,
+    test_vocs: list = None,
+    keep_const: bool = False,
+    rescale_autonomy: bool = False,
+    lambdas: list = None,
 ) -> torch.nn.Module:
     """
     This function trains models and cross-validates across regularization strengths.
@@ -67,151 +76,109 @@ def model_cv_lambdas(
         "expand factor": expand_factor,
     }
 
-    min_lambda = 1.01
-    max_lambda = 10 ** (4 / (2 * n_kernels))
+    # default: the standard 7-point lambda grid. Pass `lambdas=[x]` for a single fixed lambda
+    # (e.g. the seed-selection production recipe, where lambda is known to be irrelevant for
+    # autonomy and only the seed matters).
+    if lambdas is None:
+        min_lambda = 1.01
+        max_lambda = 10 ** (4 / (2 * n_kernels))
+        lambdas = np.linspace(min_lambda, max_lambda, 7)
+    else:
+        lambdas = np.asarray(lambdas, dtype=float)
 
-    lambdas = np.linspace(min_lambda, max_lambda, 7)
-    #
-    lam_train_cv_err = []
-    lam_test_cv_err = []
-
-    lam_train_cv_sd = []
-    lam_test_cv_sd = []
-
-    lam_train_cv_r2 = []
-    lam_test_cv_r2 = []
-
-    for ii, lam in enumerate(lambdas):
-        print(f"Regularizing with lambda={lam}")
-
-        kernel = fullPolyModule(
-            nTerms=n_kernels,
-            device="cuda",
-            x_dim=1,
-            z_dim=2,
-            activation=lambda x: x,
-            lam=lam,
-        )
-        reg_weights = True
-        full_model_poly = Ouroboros(
-            d_data=1,
-            n_layers=n_layers,
-            d_state=d_state,
-            d_conv=d_conv,
-            expand_factor=expand_factor,
-            tau=tau,
-            smooth_len=smooth_len,
-            kernel=kernel,
+    if selection == "autonomy" and not val_vocs:
+        raise ValueError(
+            "selection='autonomy' requires val_vocs (held-out vocalization segments)"
         )
 
-        full_opt_poly = Adam(full_model_poly.parameters(), lr=lr)
-        full_scheduler_poly = ReduceLROnPlateau(
-            full_opt_poly, factor=0.5, patience=max(n_epochs // 25, 2), min_lr=1e-10
-        )
-        model_path_full_poly = (
-            model_path + f"/kernelborous_poly_end_to_end_lambda_{lam}"
-        )
-        save_loc_poly = model_path_full_poly + f"/checkpoint_{n_epochs}.tar"
-        save_files = glob.glob(os.path.join(model_path_full_poly, "*.tar"))
-
-        start_epoch = 0
-        if len(save_files) > 0:
-            full_model_poly, full_opt_poly, full_scheduler_poly, start_epoch = (
-                load_model(model_path_full_poly)
+    # train n_seeds models per lambda; record the validation metric(s) for each. Resumable:
+    # a (lambda, seed) with a complete checkpoint is loaded instead of retrained.
+    records = []
+    for lam in lambdas:
+        for seed in range(n_seeds):
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            kernel = fullPolyModule(
+                nTerms=n_kernels, device="cuda", x_dim=1, z_dim=2,
+                activation=lambda x: x, lam=lam,
             )
-
-        if start_epoch < n_epochs:
-            tl, vl, full_model_poly, full_opt_poly = train(
-                full_model_poly,
-                full_opt_poly,
-                loss_fn=lambda y, yhat: sse(yhat, y, reduction="mean"),
-                loaders=dls,
-                scheduler=full_scheduler_poly,
-                nEpochs=n_epochs,
-                val_freq=1,
-                runDir=model_path_full_poly,
-                dt=dt,
-                vis_freq=max(n_epochs // 10, 1),
-                smoothing=False,
-                reg_weights=reg_weights,
-                start_epoch=start_epoch,
-                save_freq=save_freq,
-                model_info=model_info,
+            model = Ouroboros(
+                d_data=1, n_layers=n_layers, d_state=d_state, d_conv=d_conv,
+                expand_factor=expand_factor, tau=tau, smooth_len=smooth_len,
+                kernel=kernel, drive_lowpass_ms=drive_lowpass_ms, keep_const=keep_const,
             )
-
-            loss_plot(tl, vl, save_loc=model_path_full_poly, show=False)
-
-            save_model(
-                full_model_poly,
-                full_opt_poly,
-                save_loc_poly,
-                n_layers=n_layers,
-                d_state=d_state,
-                expand_factor=expand_factor,
-                d_conv=d_conv,
+            opt = Adam(model.parameters(), lr=lr)
+            sched = ReduceLROnPlateau(
+                opt, factor=0.5, patience=max(n_epochs // 25, 2), min_lr=1e-10
             )
+            run_dir = os.path.join(model_path, f"poly_lam{lam:.3f}_seed{seed}")
+            save_loc = os.path.join(run_dir, f"checkpoint_{n_epochs}.tar")
 
-        full_model_poly.eval()
-        with torch.no_grad():
-            (train_mu, test_mu), (train_sd, test_sd), (train_r2, test_r2) = (
-                eval_model_error(dls, full_model_poly, dt=dt)
-            )
-        lam_train_cv_err.append(train_mu)
-        lam_test_cv_err.append(test_mu)
+            start_epoch = 0
+            if glob.glob(os.path.join(run_dir, "*.tar")):
+                model, opt, sched, start_epoch = load_model(run_dir)  # resume
+                model.kernel.lam = float(lam)  # load_model hardcodes lam=1; restore it
+            if start_epoch < n_epochs:
+                train(
+                    model, opt,
+                    loss_fn=lambda y, yhat: sse(yhat, y, reduction="mean"),
+                    loaders=dls, scheduler=sched, nEpochs=n_epochs, val_freq=1,
+                    runDir=run_dir, dt=dt, vis_freq=0, smoothing=False,
+                    reg_weights=True, start_epoch=start_epoch, save_freq=save_freq,
+                    model_info=model_info,
+                )
+                save_model(model, opt, save_loc, n_layers=n_layers, d_state=d_state,
+                           expand_factor=expand_factor, d_conv=d_conv)
 
-        lam_train_cv_sd.append(train_sd)
-        lam_test_cv_sd.append(test_sd)
+            model.eval()
+            with torch.no_grad():
+                (_, val_r2), _, _ = eval_model_error(dls, model, dt=dt, comparison="val")
+            val_auto = np.nan
+            if selection == "autonomy":
+                val_auto, _, bd = autonomy_score(model, val_vocs, dt, rescale=rescale_autonomy)
+                print(f"lam={lam:.3f} seed={seed}: val R2={val_r2:.4f}  val autonomy={val_auto:+.4f} "
+                      f"(spec={bd['spec_corr']:.2f} amp_pen={bd['amp_pen']:.2f} "
+                      f"pitch_pen={bd['pitch_pen']:.2f} bounded={bd['bounded_frac']:.2f})", flush=True)
+            else:
+                print(f"lam={lam:.3f} seed={seed}: val R2={val_r2:.4f}", flush=True)
+            records.append({"lambda": lam, "seed": seed, "val_r2": val_r2,
+                            "val_autonomy": val_auto, "ckpt": run_dir})
+            del model, opt, kernel
+            gc.collect()
+            torch.cuda.empty_cache()
 
-        lam_train_cv_r2.append(train_r2)
-        lam_test_cv_r2.append(test_r2)
+    df = pd.DataFrame(records)
+    metric = "val_autonomy" if selection == "autonomy" else "val_r2"
+    per_lam = df.groupby("lambda")[metric].agg(["mean", "std"])
+    best_lambda = float(per_lam["mean"].idxmax())
+    print(f"\n=== lambda selection by {selection} (mean over {n_seeds} seed(s)) ===", flush=True)
+    for lam, row in per_lam.iterrows():
+        mark = "  <-- selected" if abs(lam - best_lambda) < 1e-9 else ""
+        sd = 0.0 if np.isnan(row["std"]) else row["std"]
+        print(f"  lambda={lam:.3f}: {metric}={row['mean']:+.4f} +- {sd:.4f}{mark}", flush=True)
+    df.to_csv(os.path.join(model_path, "lambda_seed_cv.csv"), index=False)
 
-    splits = ["train"] * len(lam_train_cv_err) + ["val"] * len(lam_test_cv_err)
-    lambdas_stacked = np.round(np.hstack([lambdas, lambdas]), 3)
-    errs = np.hstack([lam_train_cv_err, lam_test_cv_err])
-    df = pd.DataFrame({"lam": lambdas_stacked, "split": splits, "R2": errs})
-
-    min_err_ind = np.argmax(lam_test_cv_err)  # argmax, since 'err' is actually r2
-    print(f"best R2 alpha for {n_kernels} kernels: {lambdas[min_err_ind]}")
-    ax = plt.gca()
-
-    sns.boxplot(
-        data=df,
-        x="lam",
-        y="R2",
-        hue="split",
-        hue_order=["train", "test"],
-        ax=ax,
-        gap=0.1,
-    )
-
-    ax.set_xlabel("Polynomial degree penalty")
-    ax.set_ylabel(r"$R^2$")
-    ylim = ax.get_ylim()
-    ylim = (min(ylim[0], 0), max(ylim[-1], 1.01))
-    ax.set_ylim(ylim)
-    ax.legend()
-    plt.savefig(
-        os.path.join(model_path, "train_test_error_kernel_poly_nkernels_30.svg")
-    )
+    plt.figure()
+    plt.errorbar(per_lam.index, per_lam["mean"], per_lam["std"].fillna(0.0), marker="o")
+    plt.axvline(best_lambda, ls="--", color="0.6")
+    plt.xlabel(r"kernel-weight $\lambda$")
+    plt.ylabel(f"validation {metric}")
+    plt.title(f"lambda selection by {selection} ({n_seeds} seeds)")
+    plt.savefig(os.path.join(model_path, f"lambda_selection_{selection}.svg"))
     plt.close()
 
-    model_path_best = (
-        model_path + f"/kernelborous_poly_end_to_end_lambda_{lambdas[min_err_ind]}"
-    )
-
-    full_model_poly, full_opt_poly, full_scheduler_poly, _ = load_model(model_path_best)
-    full_model_poly.eval()
+    # best model = best seed at the selected lambda (by the same validation metric)
+    cand = df[np.isclose(df["lambda"], best_lambda)].sort_values(metric)
+    best_model, _, _, _ = load_model(cand.iloc[-1]["ckpt"])
+    best_model.eval()
     with torch.no_grad():
-        (train_mu, test_mu), (train_sd, test_sd), (train_r2, test_r2) = (
-            eval_model_error(dls, full_model_poly, dt=dt, comparison="test")
-        )
-
-    data_df = pd.DataFrame(
-        {"lambdas": lambdas, "train MSE": lam_train_cv_err, "test MSE": lam_test_cv_err}
-    )
-    data_df.to_csv(os.path.join(model_path, "cv_errs.csv"))
-
-    return full_model_poly
+        (_, test_r2), _, _ = eval_model_error(dls, best_model, dt=dt, comparison="test")
+    test_auto = np.nan
+    if selection == "autonomy" and test_vocs:
+        test_auto, _, _ = autonomy_score(best_model, test_vocs, dt, rescale=rescale_autonomy)
+    print(f"BEST lambda={best_lambda:.3f}: test R2={test_r2:.4f}  test autonomy={test_auto:+.4f}",
+          flush=True)
+    return best_model
 
 
 def train_arneodo(

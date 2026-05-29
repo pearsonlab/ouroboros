@@ -60,9 +60,13 @@ def main():
     p.add_argument("--n-kernels", type=int, default=15)
     p.add_argument("--lam", type=float, default=1.2, help="kernel-weight regularization base")
     p.add_argument("--drive-lowpass-ms", type=float, default=2.0)
+    p.add_argument("--keep-const", action="store_true",
+                   help="add the constant (0,0) 'alpha' forcing term (low-passed with the other drives)")
     p.add_argument("--seed", type=int, default=1234)
     p.add_argument("--n-jobs", type=int, default=8)
     args = p.parse_args()
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
 
     run_dir = os.path.join(os.path.abspath(args.out_dir), "poly")
     os.makedirs(run_dir, exist_ok=True)
@@ -76,7 +80,7 @@ def main():
                             activation=lambda x: x, lam=args.lam)
     model = Ouroboros(d_data=1, kernel=kernel, n_layers=args.n_layers, d_state=args.d_state,
                       d_conv=args.d_conv, expand_factor=args.expand_factor, tau=dt,
-                      drive_lowpass_ms=args.drive_lowpass_ms)
+                      drive_lowpass_ms=args.drive_lowpass_ms, keep_const=args.keep_const)
     n_params = sum(q.numel() for q in model.parameters())
     print(f"poly Ouroboros: n_kernels={args.n_kernels} d_state={args.d_state} expand={args.expand_factor} "
           f"lowpass={args.drive_lowpass_ms}ms lam={args.lam} -> {n_params} params; tau={dt:.2e}", flush=True)

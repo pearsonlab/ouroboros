@@ -62,6 +62,9 @@ class fullPolyModule(kernelModule):
         self.weights = nn.Linear(self.n, (self.poly_dim + 1) ** 2).to(self.device)
         self.powers = torch.arange(0, self.poly_dim + 1, device=self.device)
         self.lam = lam
+        # if True, keep the constant (0,0) term (the "alpha"-like forcing y^0*ydot^0).
+        # The linear (1,0)/(0,1) terms are always zeroed (omega/gamma handle those).
+        self.keep_const = False
 
     def forward(
         self, x: torch.FloatTensor, z: torch.FloatTensor
@@ -85,7 +88,8 @@ class fullPolyModule(kernelModule):
 
         weights = weights.view(B, L, self.poly_dim + 1, self.poly_dim + 1)
         ### constant term
-        weights[:, :, 0, 0] = weights[:, :, 0, 0] * 0
+        if not self.keep_const:
+            weights[:, :, 0, 0] = weights[:, :, 0, 0] * 0
         ### y, ydot terms
         weights[:, :, 1, 0] = weights[:, :, 1, 0] * 0
         weights[:, :, 0, 1] = weights[:, :, 0, 1] * 0
@@ -124,7 +128,8 @@ class fullPolyModule(kernelModule):
         B, L, d = x.shape
         weights = weights.view(B, L, self.poly_dim + 1, self.poly_dim + 1)
         ### constant term
-        weights[:, :, 0, 0] = weights[:, :, 0, 0] * 0
+        if not self.keep_const:
+            weights[:, :, 0, 0] = weights[:, :, 0, 0] * 0
         ### y, ydot terms
         weights[:, :, 1, 0] = weights[:, :, 1, 0] * 0
         weights[:, :, 0, 1] = weights[:, :, 0, 1] * 0
@@ -163,7 +168,8 @@ class fullPolyModule(kernelModule):
         weights = np.reshape(weights, (B, L, self.poly_dim + 1, self.poly_dim + 1))
 
         # constant term
-        weights[:, :, 0, 0] = weights[:, :, 0, 0] * 0
+        if not self.keep_const:
+            weights[:, :, 0, 0] = weights[:, :, 0, 0] * 0
         ### y, ydot terms
         weights[:, :, 1, 0] = weights[:, :, 1, 0] * 0
         weights[:, :, 0, 1] = weights[:, :, 0, 1] * 0

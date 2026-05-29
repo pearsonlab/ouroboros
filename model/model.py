@@ -39,6 +39,7 @@ class Ouroboros(nn.Module):
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
         drive_lowpass_ms: float = 0.0,
+        keep_const: bool = False,
     ):
 
         super().__init__()
@@ -89,14 +90,29 @@ class Ouroboros(nn.Module):
         self.drive_lowpass_ms = drive_lowpass_ms
         self.kernel = kernel
         self.kernel.tau = self.tau
+        # if True, ADD the constant (0,0) "alpha"-like forcing term (y^0*ydot^0) to the kernel
+        # instead of zeroing it; it is low-passed at drive_lowpass_ms like the other drives.
+        self.keep_const = keep_const
+        if keep_const:
+            self.kernel.keep_const = True
+            # zero-init the (0,0) output of the kernel weight head so the alpha forcing starts at
+            # 0 and is learned gently (otherwise the random constant disrupts early training).
+            with torch.no_grad():
+                self.kernel.weights.weight[0].zero_()
+                self.kernel.weights.bias[0].zero_()
         self.names = [r"$\omega$", r"$\gamma$", "weighted kernels", "states"]
 
-    def _lowpass(self, x: torch.FloatTensor, dt: float) -> torch.FloatTensor:
-        """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series."""
-        sigma = (self.drive_lowpass_ms / 1e3) / dt  # samples
+    def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
+        """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.
+        lp_ms overrides the timescale (defaults to self.drive_lowpass_ms). The kernel radius is
+        capped at L-1 so very slow (large-sigma) low-passes work on short segments (reduce to
+        ~a segment-wide average)."""
+        ms = self.drive_lowpass_ms if lp_ms is None else lp_ms
+        sigma = (ms / 1e3) / dt  # samples
         if sigma <= 0:
             return x
-        radius = max(1, int(round(3 * sigma)))
+        L = x.shape[1]
+        radius = max(1, min(int(round(3 * sigma)), L - 1))
         t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
         kern = torch.exp(-0.5 * (t / sigma) ** 2)
         kern = kern / kern.sum()
