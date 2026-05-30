@@ -42,6 +42,10 @@ def model_cv_lambdas(
     lambdas: list = None,
     cull_frac: float = 0.0,
     cull_keep: int = 2,
+    k_rollout: int = 0,
+    lambda_k: float = 0.3,
+    k_rollout_units: str = "rescaled",
+    cold_start_autonomy: bool = False,
 ) -> torch.nn.Module:
     """
     This function trains models and cross-validates across regularization strengths.
@@ -52,9 +56,21 @@ def model_cv_lambdas(
 
     Seed culling (cull_frac>0, selection='autonomy'): the autonomous-reconstruction quality is set by
     the random seed and its ranking settles well before R^2 plateaus, so instead of training every
-    run fully, train all runs to `cull_frac` of n_epochs, rank by rescaled validation autonomy, and
-    finish only the top `cull_keep`. The best finished run is selected. Roughly halves the seed search
-    (see docs/autonomous_amplitude.md). With cull_frac=0 (default) every run is trained fully.
+    run fully, train all runs to `cull_frac` of n_epochs, rank by the configured validation
+    autonomy metric (rescale_autonomy/cold_start_autonomy), and finish only the top `cull_keep`.
+    The best finished run is selected. Roughly halves the seed search (see
+    docs/autonomous_amplitude.md). With cull_frac=0 (default) every run is trained fully.
+
+    Small-k rollout consistency (k_rollout>=2): add a short-horizon Euler-step (y, dy/dt)
+    consistency term to the train objective, weight lambda_k (see docs/small_k_rollout_plan.md
+    and train.train.train). Default 0 disables it and preserves the legacy single-step
+    objective. k must be << one carrier cycle so phase drift doesn't pathologize the MSE.
+
+    Cold-start selection (cold_start_autonomy=True): pass cold_start=True through to
+    autonomy_score, asserting that val_vocs/test_vocs already include the silence lead-in
+    (see docs/small_k_rollout_plan.md §3.2). The caller (e.g. run_lambda_pipeline) is
+    responsible for windowing -- this is purely a pass-through. Typically paired with
+    rescale_autonomy=False (amplitude variability is what we are trying to fix).
 
     inputs
     -----
@@ -120,7 +136,9 @@ def model_cv_lambdas(
             train(model, opt, loss_fn=lambda y, yhat: sse(yhat, y, reduction="mean"),
                   loaders=dls, scheduler=sched, nEpochs=target, val_freq=1, runDir=run_dir,
                   dt=dt, vis_freq=0, smoothing=False, reg_weights=True, start_epoch=start_epoch,
-                  save_freq=save_freq, model_info=model_info)
+                  save_freq=save_freq, model_info=model_info,
+                  k_rollout=k_rollout, lambda_k=lambda_k,
+                  k_rollout_units=k_rollout_units)
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor, d_conv=d_conv)
         return model, run_dir
@@ -130,7 +148,8 @@ def model_cv_lambdas(
         with torch.no_grad():
             (_, vr2), _, _ = eval_model_error(dls, model, dt=dt, comparison="val")
         if selection == "autonomy":
-            va, _, bd = autonomy_score(model, val_vocs, dt, rescale=rescale_autonomy)
+            va, _, bd = autonomy_score(model, val_vocs, dt, rescale=rescale_autonomy,
+                                       cold_start=cold_start_autonomy)
         else:
             va, bd = np.nan, None
         return vr2, va, bd
@@ -139,12 +158,16 @@ def model_cv_lambdas(
     do_cull = (0.0 < cull_frac < 1.0) and selection == "autonomy" and cull_keep < n_jobs
     records = []
     if do_cull:
-        # SEED CULLING: train every run to a cull epoch, rank by rescaled val autonomy, then finish
-        # only the top `cull_keep`. The autonomy ranking is ~settled well before R^2 plateaus
+        # SEED CULLING: train every run to a cull epoch, rank by the configured val autonomy
+        # metric (see rescale_autonomy / cold_start_autonomy), then finish only the top
+        # `cull_keep`. The autonomy ranking is ~settled well before R^2 plateaus
         # (see docs/autonomous_amplitude.md), so this finds the best seed at a fraction of the cost.
         cull_epoch = max(1, int(round(cull_frac * n_epochs)))
+        metric_tag = ("cold-start-raw" if cold_start_autonomy
+                      else ("rescaled" if rescale_autonomy else "raw"))
         print(f"\n=== seed culling: train all {n_jobs} run(s) to epoch {cull_epoch} "
-              f"({cull_frac:.0%} of {n_epochs}), then finish top {cull_keep} by rescaled val autonomy ===",
+              f"({cull_frac:.0%} of {n_epochs}), then finish top {cull_keep} by "
+              f"{metric_tag} val autonomy ===",
               flush=True)
         ranked = []
         for lam in lambdas:
@@ -215,7 +238,8 @@ def model_cv_lambdas(
         (_, test_r2), _, _ = eval_model_error(dls, best_model, dt=dt, comparison="test")
     test_auto = np.nan
     if selection == "autonomy" and test_vocs:
-        test_auto, _, _ = autonomy_score(best_model, test_vocs, dt, rescale=rescale_autonomy)
+        test_auto, _, _ = autonomy_score(best_model, test_vocs, dt, rescale=rescale_autonomy,
+                                         cold_start=cold_start_autonomy)
     print(f"BEST lambda={best_lambda:.3f}: test R2={test_r2:.4f}  test autonomy={test_auto:+.4f}",
           flush=True)
     best_model._selected_lambda = best_lambda  # authoritative selected lambda for callers/manifests

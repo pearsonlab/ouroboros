@@ -448,6 +448,7 @@ def autonomy_score(
     diverge_score: float = -5.0,
     method: str = "rk4",
     rescale: bool = False,
+    cold_start: bool = False,
 ) -> tuple:
     """
     validation metric for AUTONOMOUS reconstruction quality (model-selection criterion).
@@ -469,11 +470,23 @@ def autonomy_score(
     the genuinely-constrained quantities (spectral shape + pitch + boundedness). A divergent rollout
     is still detected on the RAW output and gets `diverge_score` (collapse is not rescaled away).
 
+    If `cold_start=True`, the caller is asserting that each `segments[i]` already includes a silence
+    lead-in (the SILENCE_PAD=2000-sample / 50-ms convention used by
+    `examples/scan_seed_amp_coldstart.py` and `make_paired_data_v2.py`). The integration IC is the
+    first sample of the segment (already the behavior of `integrate_{poly,model}_autonomous`),
+    which then equals near-silence and exercises the ignition path -- the situation finchsim's
+    real-time synthesis actually faces. Mechanically the metric is unchanged; this flag exists
+    so callers can request the cold-start scoring contract and so the chosen mode is recorded in
+    the breakdown. Typically paired with `rescale=False` (amplitude must contribute to the score,
+    because a single shipped rescale constant cannot fix voc-variable cold-start amplitude).
+    See docs/small_k_rollout_plan.md §3.2.
+
     returns
     -----
         - mean score over segments
         - per-segment scores (list)
-        - breakdown dict (mean spectral corr, amp penalty, pitch penalty, bounded fraction)
+        - breakdown dict (mean spectral corr, amp penalty, pitch penalty, bounded fraction,
+          plus the `cold_start` flag for downstream logging)
     """
     fs = 1.0 / dt
 
@@ -519,6 +532,8 @@ def autonomy_score(
         "amp_pen": float(np.nanmean(amps)) if len(amps) else float("nan"),
         "pitch_pen": float(np.nanmean(pits)) if len(pits) else float("nan"),
         "bounded_frac": float(np.mean(bounded)) if len(bounded) else 0.0,
+        "cold_start": bool(cold_start),
+        "rescale": bool(rescale),
     }
     return float(np.mean(scores)), scores, breakdown
 

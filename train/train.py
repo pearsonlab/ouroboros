@@ -2,7 +2,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch
 import numpy as np
 from tqdm import tqdm
-from utils import sst, sse
+from utils import sst, sse, euler_step_k
 import matplotlib.pyplot as plt
 import os
 import glob
@@ -182,6 +182,9 @@ def train(
     start_epoch=0,
     model_info={},
     save_freq=0,
+    k_rollout=0,
+    lambda_k=0.3,
+    k_rollout_units="rescaled",
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -207,6 +210,31 @@ def train(
             this might be higher
         - model_info: dictionary of model structure specification. used for saving models
         - save_freq: how often (in epochs) to save your model
+        - k_rollout: if >=2, add a small-k Euler-step consistency loss to the train
+            objective (see `utils.euler_step_k`). The model's predicted second
+            derivative is rolled forward `k_rollout` samples and required to
+            reproduce the ground-truth (y, dy/dt) trajectory at every intermediate
+            step. k must be << one carrier cycle (~16 samples at sr=40 kHz) so
+            pointwise MSE doesn't reward amplitude collapse via phase drift.
+            See docs/small_k_rollout_plan.md. Default 0 disables the term and
+            preserves the legacy single-step ẍ-MSE training objective.
+        - lambda_k: relative weight on the k-step rollout loss
+            (`total = single_step + lambda_k * k_rollout`). Ignored if
+            k_rollout<2.
+        - k_rollout_units: "rescaled" (default) or "physical". Selects the
+            time-unit system the k-step rollout is computed in:
+              * "rescaled": state = (y, dy/ds), step = ds = dt/τ. y and dy/ds
+                have comparable scales (dy/ds ~ τ·2π·f·y; with τ=1/40000 and
+                f≈2.5 kHz, ratio ~0.4), so MSE(y)+MSE(dy/ds) is
+                well-conditioned and commensurable with the single-step ẍ MSE
+                (also in rescaled units). No τ² division, no dxdt clone --
+                the model's post-mutation dxdt is already dy/ds and yhat is
+                already d²y/ds². This is the recommended choice.
+              * "physical": state = (y, dy/dt), step = dt. dy/dt is ~10⁴×
+                larger than y, so MSE(dy/dt) dominates MSE(y) by ~10⁸ and the
+                whole k-step term is on a different scale from the single-step
+                ẍ MSE. Useful only for reproducing the May-30 matrix runs in
+                docs/small_k_rollout_plan.md §5 (which used this mode).
 
     returns
     ----
@@ -235,6 +263,13 @@ def train(
             dx2 = (
                 dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
             )  # rescale dx2, rather than model output
+
+            # model.forward mutates dxdt in-place (dxdt *= tau; dxdt /= dt -> dy/ds).
+            # The physical-units k-rollout needs the ORIGINAL per-sample dxdt, so clone
+            # before the model call. The rescaled-units k-rollout uses the post-mutation
+            # dxdt (= dy/ds) directly, so no clone is needed.
+            need_persamp = (k_rollout >= 2) and (k_rollout_units == "physical")
+            dxdt_persamp = dxdt.clone() if need_persamp else None
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD
 
@@ -327,14 +362,44 @@ def train(
                 # we take mean over samples to match the loss fn we use (MSE, with mean over samples)
                 total_loss = train_loss + penalty
 
+            if k_rollout >= 2:
+                # Small-k Euler-step rollout consistency (see docs/small_k_rollout_plan.md).
+                # euler_step_k returns the ground-truth (y, dy) and the recurrently-stepped
+                # predictions at every intermediate step 1..k, stacked on the last dim;
+                # loss_fn is applied to both. Gradient flows through the model's d2y output.
+                if k_rollout_units == "rescaled":
+                    # rescaled time s = t/τ: dxdt (post-mutation) = dy/ds, yhat = d²y/ds².
+                    # Step size = ds = dt/τ. Two MSE terms are commensurable with y.
+                    ds = dt / model.tau
+                    (y_gt, y_pred), (dy_gt, dy_pred) = euler_step_k(
+                        x, dxdt, yhat, ds, k=k_rollout
+                    )
+                elif k_rollout_units == "physical":
+                    # physical time t: dy/dt = dxdt_persamp/dt, d²y/dt² = yhat/τ².
+                    # MSE(dy/dt) dominates MSE(y) by ~10⁸; lambda_k absorbs this.
+                    d2y_phys = yhat / (model.tau ** 2)
+                    dy_phys = dxdt_persamp / dt
+                    (y_gt, y_pred), (dy_gt, dy_pred) = euler_step_k(
+                        x, dy_phys, d2y_phys, dt, k=k_rollout
+                    )
+                else:
+                    raise ValueError(
+                        f"k_rollout_units must be 'rescaled' or 'physical', got "
+                        f"{k_rollout_units!r}"
+                    )
+                k_loss = loss_fn(y_gt, y_pred) + loss_fn(dy_gt, dy_pred)
+                total_loss = total_loss + lambda_k * k_loss
+
             total_loss.backward()
             optimizer.step()
-            
+
             train_losses.append(train_loss.item())
             # we should probably be adding val loss here too...ugh
             writer.add_scalar("Loss/train", train_loss.item(), idx)
             if reg_weights:
                 writer.add_scalar("Penalty/train", penalty.item(), idx)
+            if k_rollout >= 2:
+                writer.add_scalar("Loss/k_rollout", k_loss.item(), idx)
 
         if epoch % val_freq == 0:
             model.eval()
