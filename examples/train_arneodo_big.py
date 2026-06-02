@@ -70,6 +70,9 @@ def main():
     p.add_argument("--n-jobs", type=int, default=4)
     args = p.parse_args()
 
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
     out_dir = os.path.abspath(args.out_dir)
     run_dir = os.path.join(out_dir, "arneodo")
     os.makedirs(run_dir, exist_ok=True)

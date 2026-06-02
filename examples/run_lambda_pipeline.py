@@ -61,6 +61,8 @@ def load_voc_windows(data_dir, n_vocs, start_offset_ms, n):
     segs = []
     for wav in sorted(glob.glob(os.path.join(data_dir, "*.wav")))[:n_vocs]:
         sr, af = wavfile.read(wav)
+        if af.dtype == np.int16:
+            af = af / -np.iinfo(af.dtype).min
         af = af.astype(np.float64)
         onoffs = np.atleast_2d(np.loadtxt(wav.replace(".wav", ".txt")))
         s = int(onoffs[0][0] * sr) + int(start_offset_ms / 1e3 * sr)
@@ -81,6 +83,8 @@ def load_voc_windows_coldstart(data_dir, n_vocs, silence_pad_samples):
     sr = None
     for wav in sorted(glob.glob(os.path.join(data_dir, "*.wav")))[:n_vocs]:
         sr, af = wavfile.read(wav)
+        if af.dtype == np.int16:
+            af = af / -np.iinfo(af.dtype).min
         af = af.astype(np.float64)
         onoffs = np.atleast_2d(np.loadtxt(wav.replace(".wav", ".txt")))
         on_i = int(round(onoffs[0][0] * sr))
@@ -118,6 +122,10 @@ def main():
     p.add_argument("--n-kernels", type=int, default=15)
     p.add_argument("--context-len", type=float, default=0.1)
     p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--max-vocs-per-shard", type=int, default=0,
+                   help="cap training chunks per shard; 0 = legacy 100000 / n_train_dirs.")
+    p.add_argument("--save-freq", type=int, default=0,
+                   help="checkpoint every N epochs; 0 = legacy max(n_epochs//5, 1).")
     p.add_argument("--n-val-vocs", type=int, default=3)
     p.add_argument("--n-test-vocs", type=int, default=3)
     p.add_argument("--auto-n", type=int, default=3000, help="autonomy window length (samples); "
@@ -155,7 +163,7 @@ def main():
 
     # training chunks from the train shards
     chunks, sr = [], None
-    per = 100000 // max(1, len(train_dirs))
+    per = args.max_vocs_per_shard if args.max_vocs_per_shard > 0 else 100000 // max(1, len(train_dirs))
     for d in train_dirs:
         audio, sr = get_segmented_audio(d, d, max_vocs=per, context_len=args.context_len,
                                         seed=args.seed, training=True, extend=True, shuffle_order=True)
@@ -193,7 +201,7 @@ def main():
     best_model = model_cv_lambdas(
         dls=dls, dt=dt, n_epochs=args.n_epochs, lr=1e-3, n_kernels=args.n_kernels,
         expand_factor=10, n_layers=3, d_state=args.d_state, d_conv=4, tau=dt,
-        model_path=out_dir, save_freq=max(args.n_epochs // 5, 1),
+        model_path=out_dir, save_freq=args.save_freq if args.save_freq > 0 else max(args.n_epochs // 5, 1),
         drive_lowpass_ms=args.drive_lowpass_ms, n_seeds=args.n_seeds,
         selection="autonomy", val_vocs=val_vocs, test_vocs=test_vocs,
         keep_const=args.keep_const, rescale_autonomy=rescale_for_selection,
