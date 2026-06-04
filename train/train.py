@@ -168,6 +168,18 @@ def train(
     start_epoch=0,
     model_info={},
     save_freq=0,
+    loss_mode: str = "mse_accel",
+    # spectral-rollout knobs (only consulted when loss_mode == "spectral_rollout")
+    H_min: int = 512,
+    H_max: int = 2000,
+    H_schedule: str = "geom",
+    lam_spec: float = 1.0,
+    lam_tf: float = 1.0,
+    lam_env: float = 0.0,
+    env_ms: float = 2.0,
+    spec_configs=None,
+    ic_noise_rms: float = 1e-3,
+    grad_clip: float = 5.0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -206,6 +218,21 @@ def train(
 
     train_losses, val_losses = [], []
 
+    if loss_mode == "spectral_rollout":
+        from train.spectral_rollout import (
+            spectral_rollout_step,
+            horizon_for_epoch,
+            DEFAULT_CONFIGS,
+            ONSET,
+        )
+        if spec_configs is None:
+            spec_configs = DEFAULT_CONFIGS
+        print(
+            f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
+            f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms}",
+            flush=True,
+        )
+
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
         model.train()
 
@@ -213,7 +240,11 @@ def train(
             loaders["train"], start=epoch * len(loaders["train"])
         ):
             optimizer.zero_grad()
-            x, dxdt, dx2dt2 = batch  # each is bsz x seq len x 1
+            if len(batch) == 4:
+                x, dxdt, dx2dt2, cats = batch  # categories from edge-biased sampler
+            else:
+                x, dxdt, dx2dt2 = batch
+                cats = None
             bsz, _, n = x.shape
 
             x = x.to("cuda").to(torch.float32)
@@ -221,6 +252,36 @@ def train(
             dx2 = (
                 dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
             )  # rescale dx2, rather than model output
+
+            if loss_mode == "spectral_rollout":
+                # Skip model.forward entirely; spectral_rollout_step calls get_funcs
+                # internally with a cloned dxdt (forward and get_funcs mutate dxdt in place).
+                ic_mask = None
+                if cats is not None:
+                    ic_mask = (cats == ONSET).to("cuda")
+                H = horizon_for_epoch(epoch, nEpochs, H_min, H_max, H_schedule)
+                out = spectral_rollout_step(
+                    model, x, dxdt, dx2, dt,
+                    H=H, configs=spec_configs,
+                    lam_spec=lam_spec, lam_tf=lam_tf,
+                    lam_env=lam_env, env_ms=env_ms,
+                    ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
+                )
+                total_loss = out["total"]
+                if not torch.isfinite(total_loss):
+                    writer.add_scalar("Loss/nan_skip", 1.0, idx)
+                    continue
+                total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                train_losses.append(float(out["spec"].item()))
+                writer.add_scalar("Loss/spec", float(out["spec"].item()), idx)
+                writer.add_scalar("Loss/tf", float(out["tf"].item()), idx)
+                if lam_env > 0:
+                    writer.add_scalar("Loss/env", float(out["env"].item()), idx)
+                writer.add_scalar("Loss/total", float(total_loss.item()), idx)
+                writer.add_scalar("Train/H", float(H), idx)
+                continue
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD
 
@@ -295,7 +356,10 @@ def train(
 
             train_loss = loss_fn(y, yhat[:, :L, :])
 
-            #l = loss
+            # Default objective is the data loss; the polynomial parameterization adds a
+            # weight-complexity penalty when reg_weights=True. Previously total_loss was
+            # only defined inside the if-reg_weights block, which crashed unregularized runs.
+            total_loss = train_loss
             if reg_weights:
                 B, L, P, P = weights.shape
                 lam_mat = torch.arange(
@@ -324,11 +388,21 @@ def train(
             vl = 0.0
             vp = 0.0
 
+            # In spectral_rollout mode the autonomy-based selection in train.model_cv
+            # handles validation; the MSE-accel val loop below is informative only for
+            # the legacy mode, so skip it (and skip scheduler stepping; the scheduler
+            # is also unused here -- model_cv does its own LR control).
+            if loss_mode == "spectral_rollout" or "val" not in loaders:
+                continue
+
             for idx, batch in enumerate(
                 loaders["val"], start=epoch * len(loaders["train"])
             ):
                 with torch.no_grad():
-                    x, dxdt, dx2dt2 = batch  # each is bsz x seq len x 1
+                    if len(batch) == 4:
+                        x, dxdt, dx2dt2, _ = batch
+                    else:
+                        x, dxdt, dx2dt2 = batch
                     bsz, _, n = x.shape
 
                     x = x.to("cuda").to(torch.float32)
