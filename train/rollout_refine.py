@@ -1,0 +1,173 @@
+"""
+Rollout refinement objective for the polynomial Ouroboros -- a reusable training-pipeline component.
+
+Phase-invariant objective on the soft-saturated differentiable RK4 AUTONOMOUS rollout, so a
+phase-drifted-but-correct-content free run is scored well and the optimizer fixes frequency content
++ loudness instead of collapsing amplitude (the failure mode of pointwise rollout MSE on a drifting
+oscillator):
+
+    L = lam_spec * L_mrstft  +  lam_env * L_env  +  lam_tf * L_tf
+
+  - L_mrstft : multi-resolution STFT MAGNITUDE loss (spectral convergence + log-magnitude L1).
+               Magnitude discards phase -> tolerant of carrier drift; penalizes a wrong pitch/harmonic
+               stack that persists across frames.
+  - L_env    : Gaussian-low-passed |x| envelope L1 (per-voc normalized). The envelope IS the
+               instantaneous amplitude, so REQUIRING IT TO MATCH pins the autonomous loudness/scale --
+               but it must be weighted up (lam_env >> lam_spec) or the spectral term swamps it and the
+               global amplitude drifts free. lam_env~10 fixes amplitude across seeds without regressing
+               already-good models (validated 2026-05-28).
+  - L_tf     : original one-step teacher-forced anchor (preserve the well-fit dynamics / R^2).
+
+Backprops through the rollout with a curriculum on the horizon; because the loss is phase-invariant
+the horizon can be long. See examples/finetune_rollout_spectral_poly.py (single-model entry) and
+examples/train_poly_rollout.py (integrated TF + refine trainer).
+"""
+
+import glob
+import os
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from scipy.io import wavfile
+
+from utils import deriv_approx_dy, deriv_approx_d2y
+
+BX, BXP = 0.5, 1.0  # soft-saturation bounds (>> data/limit-cycle scale; only tame divergence)
+DEFAULT_CONFIGS = ((256, 64), (512, 128), (1024, 256))
+
+
+def gather_windows(dirs, n, L, start_off_ms):
+    """held-out sustained vocalization windows of length L, starting start_off_ms after onset."""
+    segs, sr = [], None
+    for d in dirs:
+        for wav in sorted(glob.glob(os.path.join(d, "*.wav"))):
+            sr, af = wavfile.read(wav)
+            af = af.astype(np.float64)
+            on = np.atleast_2d(np.loadtxt(wav.replace(".wav", ".txt")))[0][0]
+            s = int(on * sr) + int(start_off_ms / 1e3 * sr)
+            seg = af[s:s + L]
+            if len(seg) == L:
+                segs.append(seg)
+            if len(segs) >= n:
+                return np.stack(segs)[:, :, None], sr
+    return np.stack(segs)[:, :, None], sr
+
+
+def stft_mag(x, n_fft, hop):
+    win = torch.hann_window(n_fft, device=x.device, dtype=x.dtype)
+    S = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=n_fft, window=win,
+                   center=True, return_complex=True)
+    return S.abs()  # (B, F, T)
+
+
+def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-5):
+    """multi-resolution STFT magnitude loss: spectral convergence + log-magnitude L1."""
+    total = 0.0
+    for n_fft, hop in configs:
+        A = stft_mag(xg, n_fft, hop)
+        G = stft_mag(tgt, n_fft, hop)
+        sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + 1e-8)
+        logm = (torch.log(G + eps) - torch.log(A + eps)).abs().mean(dim=(-2, -1))
+        total = total + (sc + logm).mean()
+    return total / len(configs)
+
+
+def gaussian_envelope(x, dt, env_ms):
+    """Gaussian low-pass of |x| (removes the carrier, keeps the loudness modulation). x: (B,H)."""
+    sigma = (env_ms / 1e3) / dt
+    radius = max(1, int(round(3 * sigma)))
+    t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
+    k = torch.exp(-0.5 * (t / sigma) ** 2)
+    k = k / k.sum()
+    xr = F.pad(x.abs().unsqueeze(1), (radius, radius), mode="reflect")
+    return F.conv1d(xr, k.view(1, 1, -1)).squeeze(1)  # (B,H)
+
+
+def env_loss(xg, tgt, dt, env_ms, eps=1e-6):
+    ea = gaussian_envelope(xg, dt, env_ms)
+    eg = gaussian_envelope(tgt, dt, env_ms)
+    return ((ea - eg).abs().mean(dim=1) / (eg.mean(dim=1) + eps)).mean()
+
+
+def rollout_refine(model, X, dt, *, epochs=8, hmin=768, hmax=1500, batch_size=6, lr=1e-4,
+                   lam_spec=1.0, lam_env=10.0, lam_tf=1.0, clip=5.0, env_ms=2.0,
+                   configs=DEFAULT_CONFIGS, device="cuda", verbose=True):
+    """
+    In-place rollout refinement of a trained polynomial Ouroboros.
+
+    X: numpy (N, L, 1) sustained vocalization windows (L >= hmax). Modifies `model` in place.
+    Returns (history, opt): per-epoch loss history (list of dicts) and the Adam optimizer (so the
+    caller can persist it via train.train.save_model).
+    """
+    assert hmax <= X.shape[1], "hmax must be <= window length L"
+    model.train()
+    D1 = deriv_approx_dy(X)
+    D2 = deriv_approx_d2y(X)
+    Xt = torch.tensor(X, dtype=torch.float32, device=device)
+    Dt = torch.tensor(D1, dtype=torch.float32, device=device)
+    D2t = torch.tensor(D2, dtype=torch.float32, device=device)
+    var_d2 = float(D2t.var())
+    P = model.kernel.poly_dim + 1
+    powers = torch.arange(P, device=device)
+    opt = torch.optim.Adam(model.parameters(), lr=lr)
+    N = Xt.shape[0]
+    H_sched = np.unique(np.round(np.geomspace(hmin, hmax, epochs)).astype(int))
+    if verbose:
+        print(f"rollout refine: {N} windows L={X.shape[1]} H {hmin}->{hmax} | "
+              f"lam tf={lam_tf} spec={lam_spec} env={lam_env} env_ms={env_ms} epochs={epochs}", flush=True)
+
+    history = []
+    for epoch in range(epochs):
+        H = int(H_sched[min(epoch, len(H_sched) - 1)])
+        perm = torch.randperm(N)
+        tot = {"spec": 0.0, "env": 0.0, "tf": 0.0}
+        nb = 0
+        for i in range(0, N, batch_size):
+            idx = perm[i:i + batch_size]
+            x, dxd, d2b = Xt[idx], Dt[idx], D2t[idx]
+            z2 = (model.tau / dt) * dxd
+            omega, gamma, wk, weights, _ = model.get_funcs(x, dxd.clone(), dt)  # differentiable
+            tf = -(omega ** 2) * x - gamma * z2 - wk
+            L_tf = ((tf - d2b) ** 2).mean() / var_d2
+
+            om, ga, w = omega[:, :, 0], gamma[:, :, 0], weights  # w: (B,L,P,P)
+
+            def f(xx, vv, k):
+                xpw = xx.unsqueeze(1) ** powers
+                xvw = vv.unsqueeze(1) ** powers
+                kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w[:, k])
+                return vv, -(om[:, k] ** 2) * xx - ga[:, k] * vv - kern
+
+            xc = x[:, 0, 0].detach()
+            xp = z2[:, 0, 0].detach()
+            xs = [xc]
+            for k in range(H - 1):
+                k1x, k1v = f(xc, xp, k)
+                k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v, k)
+                k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v, k)
+                k4x, k4v = f(xc + k3x, xp + k3v, k)
+                xc = xc + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
+                xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
+                xc = BX * torch.tanh(xc / BX)
+                xp = BXP * torch.tanh(xp / BXP)
+                xs.append(xc)
+            xg = torch.stack(xs, dim=1)   # (B,H) autonomous
+            tgt = x[:, :H, 0]              # (B,H) target, same time span
+
+            L_spec = mrstft_loss(xg, tgt, configs)
+            L_env = env_loss(xg, tgt, dt, env_ms)
+            loss = lam_spec * L_spec + lam_env * L_env + lam_tf * L_tf
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+            opt.step()
+            tot["spec"] += float(L_spec); tot["env"] += float(L_env); tot["tf"] += float(L_tf)
+            nb += 1
+        rec = {"epoch": epoch + 1, "H": H, "spec": tot["spec"] / nb,
+               "env": tot["env"] / nb, "tf": tot["tf"] / nb}
+        history.append(rec)
+        if verbose:
+            print(f"[refine ep {epoch + 1}/{epochs} H={H}] spec={rec['spec']:.4f} "
+                  f"env={rec['env']:.4f} tf={rec['tf']:.4f}", flush=True)
+    return history, opt
