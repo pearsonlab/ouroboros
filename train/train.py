@@ -516,15 +516,17 @@ def train(
             writer.add_scalar("Loss/validation", vl / len(loaders["val"]), idx)
             writer.add_scalar("Penalty/validation", vp / len(loaders["val"]), idx)
 
-            if epoch % save_freq == 0:
-                save_model(
-                    model,
-                    optimizer,
-                    location=os.path.join(runDir, f"checkpoint_{epoch}.tar"),
-                    n_layers=model_info["n layers"],
-                    d_state=model_info["d state"],
-                    d_conv=model_info["d conv"],
-                    expand_factor=model_info["expand factor"],
-                )
+        # Periodic checkpoint -- OUTSIDE the val block so spectral_rollout mode (which
+        # skips the val loop) still saves. Triggered by save_freq>0 only.
+        if save_freq > 0 and (epoch % save_freq) == 0:
+            save_model(
+                model,
+                optimizer,
+                location=os.path.join(runDir, f"checkpoint_{epoch}.tar"),
+                n_layers=model_info["n layers"],
+                d_state=model_info["d state"],
+                d_conv=model_info["d conv"],
+                expand_factor=model_info["expand factor"],
+            )
     writer.close()
     return train_losses, val_losses, model, optimizer
