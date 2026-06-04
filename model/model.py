@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 from mambapy.mamba import Mamba, MambaConfig
 from model.model_utils import smooth
 from typing import Tuple, Union
@@ -35,6 +36,8 @@ class Ouroboros(nn.Module):
         device: str = "cuda",
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
+        drive_lowpass_ms: float = 0.0,
+        keep_const: bool = False,
     ):
 
         super().__init__()
@@ -79,9 +82,48 @@ class Ouroboros(nn.Module):
 
         self.tau = tau
         self.smooth_len = smooth_len
+        # if > 0, low-pass the drives omega(t), gamma(t), and the kernel weights w(t) with a
+        # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Keeps the
+        # drives from re-encoding the audio carrier and improves autonomous behavior.
+        self.drive_lowpass_ms = drive_lowpass_ms
         self.kernel = kernel
         self.kernel.tau = self.tau
+        # if True, ADD the constant (0,0) "alpha"-like forcing term (y^0*ydot^0) to the kernel
+        # instead of zeroing it; it is low-passed at drive_lowpass_ms like the other drives.
+        self.keep_const = keep_const
+        if keep_const:
+            self.kernel.keep_const = True
+            # zero-init the (0,0) output of the kernel weight head so the alpha forcing starts at
+            # 0 and is learned gently (otherwise the random constant disrupts early training).
+            with torch.no_grad():
+                self.kernel.weights.weight[0].zero_()
+                self.kernel.weights.bias[0].zero_()
         self.names = [r"$\omega$", r"$\gamma$", "weighted kernels", "states"]
+
+    def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
+        """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.
+        lp_ms overrides the timescale (defaults to self.drive_lowpass_ms). The kernel radius is
+        capped at L-1 so very slow (large-sigma) low-passes work on short segments (reduce to
+        ~a segment-wide average)."""
+        ms = self.drive_lowpass_ms if lp_ms is None else lp_ms
+        sigma = (ms / 1e3) / dt  # samples
+        if sigma <= 0:
+            return x
+        L = x.shape[1]
+        radius = max(1, min(int(round(3 * sigma)), L - 1))
+        t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
+        kern = torch.exp(-0.5 * (t / sigma) ** 2)
+        kern = kern / kern.sum()
+        C = x.shape[-1]
+        k = kern.view(1, 1, -1).expand(C, 1, -1)
+        xc = F.pad(x.transpose(1, 2), (radius, radius), mode="reflect")
+        return F.conv1d(xc, k, groups=C).transpose(1, 2)
+
+    def _lowpass_weights(self, weights: torch.FloatTensor, dt: float) -> torch.FloatTensor:
+        """low-pass the polynomial kernel weights (B, L, P, P) along time."""
+        B, L, P, P2 = weights.shape
+        w = self._lowpass(weights.reshape(B, L, P * P2), dt)
+        return w.reshape(B, L, P, P2)
 
     def forward(
         self,
@@ -131,11 +173,18 @@ class Ouroboros(nn.Module):
             omegaControl
         ).abs()  # Since we take omega^2 anyway, we take the absolute value to prevent things from switching around too much
         gamma = self.gamma_net(gammaControl)
-        if smoothing:
+        weighted_kernels, weights = self.kernel(z, kernelControl)
+        if self.drive_lowpass_ms > 0:
+            # low-pass the drives in the loop, then recompute the nonlinearity from the
+            # low-passed weights so yhat is consistent with the (slow) drives
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             # smooth our model functions, if we choose to do so. I do not.
             omega = smooth(omega, smooth_len)
             gamma = smooth(gamma, smooth_len)
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         z1 = z[:, :, :1]
         z2 = z[:, :, 1:]
@@ -208,12 +257,16 @@ class Ouroboros(nn.Module):
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
+        weighted_kernels, weights = self.kernel(z, kernelControl)
 
-        if smoothing:
+        if self.drive_lowpass_ms > 0:
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             omega = smooth(omega.abs(), smooth_len)
             gamma = smooth(gamma, smooth_len)
-
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         return (
             omega,

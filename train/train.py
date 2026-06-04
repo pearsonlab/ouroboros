@@ -64,10 +64,14 @@ def save_model(
         "d_state": d_state,
         "d_conv": d_conv,
         "expand_factor": expand_factor,
+        # parameterization tag for forward-compat (always "poly" on this branch)
+        "parameterization": getattr(model, "parameterization", "poly"),
+        "drive_lowpass_ms": getattr(model, "drive_lowpass_ms", 0.0),
+        "keep_const": getattr(model, "keep_const", False),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
-    except KeyError:
+    except (KeyError, AttributeError):
         pass
 
     torch.save(sd, location)
@@ -132,6 +136,8 @@ def load_model(
             tau=sd["tau"],
             smooth_len=sd["smooth_len"],
             kernel=kernel,
+            drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
+            keep_const=sd.get("keep_const", False),
         )
     except:
         print("no kernel in savefile!")
