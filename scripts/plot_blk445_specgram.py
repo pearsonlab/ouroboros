@@ -144,13 +144,17 @@ def main():
     axes[0, 1].set_ylabel("Hz")
     fig.colorbar(im0, ax=axes[0, 1], pad=0.01)
 
-    # Row 1: autonomous
+    # Row 1: autonomous. Share the waveform y-axis with the target so the
+    # reconstruction is judged on the target's amplitude scale (rescaled mode);
+    # in raw mode this will visually clip a saturated rollout / hide a collapsed
+    # one, which is itself informative.
     color_a = "tab:blue" if not args.rescale else "tab:green"
     label_a = "autonomous (raw)" if not args.rescale else "autonomous (rescaled)"
     axes[1, 0].plot(times, auto_clean, lw=0.5, color=color_a)
     axes[1, 0].set_ylabel(label_a)
     axes[1, 0].set_xlabel("ms")
     axes[1, 0].set_xlim(times[0], times[-1])
+    axes[1, 0].set_ylim(axes[0, 0].get_ylim())
     im1 = axes[1, 1].pcolormesh(t_a * 1000, f_a, S_a, vmin=vmin, vmax=vmax,
                                 shading="auto", cmap="viridis")
     axes[1, 1].set_xlabel("ms")
