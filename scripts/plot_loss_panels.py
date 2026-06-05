@@ -136,6 +136,23 @@ def main():
     fig, axes = plt.subplots(n, 1, figsize=(11, 2.0 * n), sharex=True)
 
     colors = {"live": "tab:blue", "env": "tab:orange"}
+
+    # Detect the spec_warmup boundary per run -- the first epoch where lam_spec_t hits
+    # its max (i.e., the warmup ramp ends). Drawn as a faint vertical line per run so
+    # readers know that pre-boundary total-loss values are weighted-mix artifacts of
+    # the ramp, not signal.
+    warmup_boundaries = []
+    for r in runs:
+        lam = r["per_epoch"].get("Train/lam_spec_t")
+        if lam is None or len(lam) == 0:
+            continue
+        lam_max = float(np.max(lam))
+        if lam_max <= 0:
+            continue
+        # epoch index where the ramp first reaches (within 1%) its max
+        idx = int(np.argmax(lam >= lam_max * 0.99))
+        warmup_boundaries.append((r["label"], idx))
+
     for ax, (tag, title, logy) in zip(axes, panels):
         for r in runs:
             v = r["per_epoch"].get(tag)
@@ -150,6 +167,10 @@ def main():
                 xs = np.arange(len(vs))
             c = colors.get(r["label"], None)
             ax.plot(xs, vs, label=r["label"], color=c, lw=1.4)
+        # warmup boundary marker per run
+        for label, b in warmup_boundaries:
+            c = colors.get(label, None)
+            ax.axvline(b, color=c, alpha=0.25, lw=1.0, ls="--", zorder=0)
         ax.set_ylabel(title)
         if logy:
             ax.set_yscale("log")
