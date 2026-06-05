@@ -383,17 +383,19 @@ def train(
             if reg_weights:
                 writer.add_scalar("Penalty/train", penalty.item(), idx)
 
-        if epoch % val_freq == 0:
+        # The MSE-accel val loop runs only for the legacy mode (and only if a val loader
+        # was provided). In spectral_rollout mode the autonomy-based selection in
+        # train.model_cv handles validation, so we skip the body here -- but we MUST
+        # fall through to the save_model block below, so do NOT use `continue` (it
+        # would skip the rest of this epoch iteration including save_model).
+        if (
+            epoch % val_freq == 0
+            and loss_mode != "spectral_rollout"
+            and "val" in loaders
+        ):
             model.eval()
             vl = 0.0
             vp = 0.0
-
-            # In spectral_rollout mode the autonomy-based selection in train.model_cv
-            # handles validation; the MSE-accel val loop below is informative only for
-            # the legacy mode, so skip it (and skip scheduler stepping; the scheduler
-            # is also unused here -- model_cv does its own LR control).
-            if loss_mode == "spectral_rollout" or "val" not in loaders:
-                continue
 
             for idx, batch in enumerate(
                 loaders["val"], start=epoch * len(loaders["train"])
