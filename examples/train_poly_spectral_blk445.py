@@ -136,6 +136,10 @@ def main():
     p.add_argument("--H-min", type=int, default=512)
     p.add_argument("--H-max", type=int, default=2000)
     p.add_argument("--H-schedule", choices=["geom", "linear", "const"], default="geom")
+    p.add_argument("--spec-warmup-epochs", type=int, default=5,
+                   help="linearly ramp lam_spec from 0 to its target over this many epochs. "
+                        "0 disables the warmup. Needed at random init because the spectral "
+                        "term against quiet/onset targets is enormous and would swamp the TF anchor.")
     p.add_argument("--ic-noise-rms", type=float, default=1e-3,
                    help="cold-start initial-condition noise RMS (training only).")
     p.add_argument("--grad-clip", type=float, default=5.0)
@@ -214,6 +218,7 @@ def main():
         save_freq=args.save_freq, model_path=out_dir,
         H_min=args.H_min, H_max=args.H_max, H_schedule=args.H_schedule,
         lam_spec=args.lam_spec, lam_tf=args.lam_tf, lam_env=args.lam_env, env_ms=args.env_ms,
+        spec_warmup_epochs=args.spec_warmup_epochs,
         spec_configs=spec_configs, ic_noise_rms=args.ic_noise_rms, grad_clip=args.grad_clip,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
@@ -244,6 +249,7 @@ def main():
         "H_min": args.H_min,
         "H_max": args.H_max,
         "H_schedule": args.H_schedule,
+        "spec_warmup_epochs": args.spec_warmup_epochs,
         "ic_noise_rms": args.ic_noise_rms,
         "sr": int(sr),
     }

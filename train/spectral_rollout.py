@@ -131,6 +131,7 @@ def spectral_rollout_step(
     lam_tf: float = 1.0,
     lam_env: float = 0.0,
     env_ms: float = 2.0,
+    tf_var: Optional[float] = None,   # precomputed Var(d2x) over the dataset; matches rollout_refine.py:110
     ic_mask: Optional[torch.Tensor] = None,
     ic_noise_rms: float = 1e-3,
     rng: Optional[torch.Generator] = None,
@@ -151,9 +152,16 @@ def spectral_rollout_step(
     omega, gamma, wk, weights, _ = model.get_funcs(x, dxdt.clone(), dt)
     z2 = (model.tau / dt) * dxdt  # rescaled velocity
     tf_d2 = -(omega ** 2) * x - gamma * z2 - wk
-    # variance-normalized so the anchor scale is commensurable across vocs / runs
-    var_d2 = d2x.var().clamp_min(1e-12)
-    L_tf = ((tf_d2 - d2x) ** 2).mean() / var_d2
+    # Variance-normalized so the anchor scale is commensurable across vocs / runs.
+    # tf_var should be the variance computed ONCE over the whole training set (see
+    # rollout_refine.py:110) -- per-batch variance is unstable when the batch is mostly
+    # silence (ONSET segments) and can drive the loss to explode. We clamp at a floor
+    # to be extra safe.
+    if tf_var is None:
+        v = float(d2x.detach().var().clamp_min(1e-3).item())
+    else:
+        v = max(float(tf_var), 1e-6)
+    L_tf = ((tf_d2 - d2x) ** 2).mean() / v
 
     # Rollout + spectral loss. The rollout calls model.get_funcs again with a fresh
     # clone (drives recomputed for the rollout-state forward). Could be unified with

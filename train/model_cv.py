@@ -250,6 +250,7 @@ def model_seed_cv_spectral(
     lam_tf: float = 1.0,
     lam_env: float = 0.0,
     env_ms: float = 2.0,
+    spec_warmup_epochs: int = 5,
     spec_configs=None,
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
@@ -316,6 +317,7 @@ def model_seed_cv_spectral(
                 loss_mode="spectral_rollout",
                 H_min=H_min, H_max=H_max, H_schedule=H_schedule,
                 lam_spec=lam_spec, lam_tf=lam_tf, lam_env=lam_env, env_ms=env_ms,
+                spec_warmup_epochs=spec_warmup_epochs,
                 spec_configs=spec_configs, ic_noise_rms=ic_noise_rms,
                 grad_clip=grad_clip,
             )

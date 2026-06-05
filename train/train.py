@@ -177,6 +177,7 @@ def train(
     lam_tf: float = 1.0,
     lam_env: float = 0.0,
     env_ms: float = 2.0,
+    spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
     spec_configs=None,
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
@@ -227,9 +228,22 @@ def train(
         )
         if spec_configs is None:
             spec_configs = DEFAULT_CONFIGS
+        # Precompute Var(d2x) over the whole training set once, in the same
+        # rescaled-time units used in the inner loop. Matches rollout_refine.py:110
+        # and prevents the per-batch variance from blowing up the TF anchor on
+        # batches dominated by silence (ONSET segments).
+        tf_var_running = 0.0
+        n_seen = 0
+        with torch.no_grad():
+            for batch in loaders["train"]:
+                d2 = batch[2]   # (B, L, 1)
+                d2 = d2.to("cuda").to(torch.float32) / (dt ** 2) * model.tau ** 2
+                tf_var_running += float(d2.var().item()) * d2.shape[0]
+                n_seen += d2.shape[0]
+        tf_var = max(tf_var_running / max(1, n_seen), 1e-6)
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
-            f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms}",
+            f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g}",
             flush=True,
         )
 
@@ -260,11 +274,20 @@ def train(
                 if cats is not None:
                     ic_mask = (cats == ONSET).to("cuda")
                 H = horizon_for_epoch(epoch, nEpochs, H_min, H_max, H_schedule)
+                # Linearly ramp the spectral term so the random-init Mamba can first move
+                # into the TF basin (where drives become meaningful) before the spectral
+                # loss -- which is enormous when the rollout is saturated against quiet
+                # targets -- starts pulling on params.
+                if spec_warmup_epochs > 0 and epoch < spec_warmup_epochs:
+                    lam_spec_t = lam_spec * (epoch / float(spec_warmup_epochs))
+                else:
+                    lam_spec_t = lam_spec
                 out = spectral_rollout_step(
                     model, x, dxdt, dx2, dt,
                     H=H, configs=spec_configs,
-                    lam_spec=lam_spec, lam_tf=lam_tf,
+                    lam_spec=lam_spec_t, lam_tf=lam_tf,
                     lam_env=lam_env, env_ms=env_ms,
+                    tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                 )
                 total_loss = out["total"]
@@ -281,6 +304,7 @@ def train(
                     writer.add_scalar("Loss/env", float(out["env"].item()), idx)
                 writer.add_scalar("Loss/total", float(total_loss.item()), idx)
                 writer.add_scalar("Train/H", float(H), idx)
+                writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 continue
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD

@@ -157,3 +157,12 @@ recognizable onset (no DC click, no immediate collapse to silence).
   inference gap for real-time synthesis).
 - Per-bird or per-syllable autosegmenter so the recipe can run on bird names /
   syllable names other than blk445 / syllable_C without code edits.
+
+## spec_warmup_epochs
+
+`--spec-warmup-epochs N` linearly ramps `lam_spec` from 0 → its target over the
+first N epochs (default 5). Needed at random init because the rollout against a
+quiet or onset target produces enormous MRSTFT values; without warmup the
+spectral term swamps the TF anchor and the model fails to enter a learnable
+basin. Set to 0 to disable when resuming a partly-trained checkpoint that is
+already past the warmup.
