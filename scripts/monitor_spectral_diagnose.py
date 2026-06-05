@@ -23,6 +23,7 @@ integrator, finish, and release).
 
 import glob
 import json
+import argparse
 import os
 import subprocess
 import sys
@@ -30,8 +31,15 @@ import sys
 import numpy as np
 
 
-STATE_PATH = "/home/pearson/.claude/jobs/712703d8/tmp/spectral_monitor/state.json"
-SEED_DIR = "/home/pearson/code/ouroboros-spectral/poly_spectral_day85/seed0"
+_DEFAULT_STATE = "/home/pearson/.claude/jobs/712703d8/tmp/spectral_monitor/state.json"
+_DEFAULT_SEED = "/home/pearson/code/ouroboros-spectral/poly_spectral_day85/seed0"
+_DEFAULT_TRAIN_PATTERN = "train_poly_spectral_blk445"
+
+# These three module-level names are populated at __main__ time from CLI args so the
+# rest of the script can keep referring to them as constants.
+STATE_PATH = _DEFAULT_STATE
+SEED_DIR = _DEFAULT_SEED
+TRAIN_PATTERN = _DEFAULT_TRAIN_PATTERN
 HEARTBEAT_EVERY = 4              # heartbeat every 4 polls = 1 hour
 PLATEAU_NO_IMPROVE_POLLS = 8     # 8 polls = 2 hours with no new spec best
 PLATEAU_IMPROVE_MARGIN = 0.02    # "new best" requires beating prior best by 2%
@@ -55,8 +63,12 @@ def save_state(s):
 
 
 def process_alive():
+    # The CLI lets the user disambiguate two concurrent runs by --train-pattern --
+    # the live run matches on its --out-dir basename, the env run matches on a
+    # different basename. Falls back to the legacy "train_poly_spectral_blk445"
+    # pattern if the user didn't override (single-run case).
     out = subprocess.run(
-        ["pgrep", "-f", "train_poly_spectral_blk445"],
+        ["pgrep", "-f", TRAIN_PATTERN],
         capture_output=True, text=True,
     ).stdout.strip()
     return bool(out)
@@ -297,4 +309,17 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--seed-dir", default=_DEFAULT_SEED,
+                        help="run/seed directory to watch (default: live run).")
+    parser.add_argument("--state-path", default=_DEFAULT_STATE,
+                        help="JSON file to persist monitor state across polls.")
+    parser.add_argument("--train-pattern", default=_DEFAULT_TRAIN_PATTERN,
+                        help="pgrep -f pattern that identifies the training process. "
+                             "Distinguish concurrent runs by their out-dir basename.")
+    args = parser.parse_args()
+    SEED_DIR = args.seed_dir
+    STATE_PATH = args.state_path
+    TRAIN_PATTERN = args.train_pattern
+    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
     main()
