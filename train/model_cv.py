@@ -241,6 +241,7 @@ def model_seed_cv_spectral(
     cull_frac: float = 0.0,
     cull_keep: int = 2,
     save_freq: int = 5,
+    max_saved: int = 5,
     model_path: str = "",
     # spectral loss
     H_min: int = 512,
@@ -313,7 +314,8 @@ def model_seed_cv_spectral(
                 loaders=dls, scheduler=sched,
                 nEpochs=target, val_freq=max(1, target // 10), runDir=run_dir,
                 dt=dt, vis_freq=0, smoothing=False, reg_weights=False,
-                start_epoch=start_epoch, save_freq=save_freq, model_info=model_info,
+                start_epoch=start_epoch, save_freq=save_freq, max_saved=max_saved,
+                model_info=model_info,
                 loss_mode="spectral_rollout",
                 H_min=H_min, H_max=H_max, H_schedule=H_schedule,
                 lam_spec=lam_spec, lam_tf=lam_tf, lam_env=lam_env, env_ms=env_ms,
@@ -323,7 +325,7 @@ def model_seed_cv_spectral(
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,
-                       d_conv=d_conv)
+                       d_conv=d_conv, max_saved=max_saved)
         return model, run_dir
 
     def _autonomy(model, vocs):

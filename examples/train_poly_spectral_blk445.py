@@ -150,6 +150,9 @@ def main():
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
     p.add_argument("--save-freq", type=int, default=5)
+    p.add_argument("--max-saved", type=int, default=60,
+                   help="how many per-epoch checkpoints to retain on disk before evicting the "
+                        "oldest. Default 60 keeps every checkpoint of a 50-epoch run at save-freq=1.")
     p.add_argument("--seed", type=int, default=1234)
     args = p.parse_args()
 
@@ -215,7 +218,7 @@ def main():
         lam=args.lam,
         n_epochs=args.n_epochs, lr=args.lr, n_seeds=args.n_seeds,
         cull_frac=args.cull_frac, cull_keep=args.cull_keep,
-        save_freq=args.save_freq, model_path=out_dir,
+        save_freq=args.save_freq, max_saved=args.max_saved, model_path=out_dir,
         H_min=args.H_min, H_max=args.H_max, H_schedule=args.H_schedule,
         lam_spec=args.lam_spec, lam_tf=args.lam_tf, lam_env=args.lam_env, env_ms=args.env_ms,
         spec_warmup_epochs=args.spec_warmup_epochs,

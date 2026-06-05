@@ -168,6 +168,7 @@ def train(
     start_epoch=0,
     model_info={},
     save_freq=0,
+    max_saved: int = 5,
     loss_mode: str = "mse_accel",
     # spectral-rollout knobs (only consulted when loss_mode == "spectral_rollout")
     H_min: int = 512,
@@ -553,6 +554,7 @@ def train(
                 d_state=model_info["d state"],
                 d_conv=model_info["d conv"],
                 expand_factor=model_info["expand factor"],
+                max_saved=max_saved,
             )
     writer.close()
     return train_losses, val_losses, model, optimizer
