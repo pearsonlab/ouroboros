@@ -177,9 +177,11 @@ def train(
     lam_spec: float = 1.0,
     lam_tf: float = 1.0,
     lam_env: float = 0.0,
+    lam_env_log: float = 0.0,       # weight on the log-ratio envelope loss (env_loss_log)
+    env_log_eps: float = 1e-4,      # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
-    env_warmup_epochs: int = 0,     # linearly ramp lam_env 0 -> lam_env over these epochs
+    env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
     spec_configs=None,
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
@@ -246,6 +248,7 @@ def train(
         tf_var = max(tf_var_running / max(1, n_seen), 1e-6)
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
+            f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} "
             f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
             f"rollout_backend={rollout_backend}",
             flush=True,
@@ -294,14 +297,19 @@ def train(
                 else:
                     lam_spec_t = lam_spec
                 if env_warmup_epochs > 0 and epoch < env_warmup_epochs:
-                    lam_env_t = lam_env * (epoch / float(env_warmup_epochs))
+                    ramp = epoch / float(env_warmup_epochs)
+                    lam_env_t = lam_env * ramp
+                    lam_env_log_t = lam_env_log * ramp
                 else:
                     lam_env_t = lam_env
+                    lam_env_log_t = lam_env_log
                 out = spectral_rollout_step(
                     model, x, dxdt, dx2, dt,
                     H=H, configs=spec_configs,
                     lam_spec=lam_spec_t, lam_tf=lam_tf,
-                    lam_env=lam_env_t, env_ms=env_ms,
+                    lam_env=lam_env_t,
+                    lam_env_log=lam_env_log_t, env_log_eps=env_log_eps,
+                    env_ms=env_ms,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
@@ -315,20 +323,24 @@ def train(
                 optimizer.step()
                 # One device->host sync for all scalar logging instead of 5 separate
                 # .item() calls (one of which was a duplicate of out["spec"]): stack the
-                # loss tensors and transfer once. out["env"] is always a tensor (zeros
-                # when lam_env==0), so the stack is well-formed.
-                spec_v, tf_v, env_v, total_v = torch.stack(
-                    [out["spec"], out["tf"], out["env"], total_loss]
+                # loss tensors and transfer once. out["env"] / out["env_log"] are always
+                # tensors (zeros when their lam is 0), so the stack is well-formed.
+                spec_v, tf_v, env_v, env_log_v, total_v = torch.stack(
+                    [out["spec"], out["tf"], out["env"], out["env_log"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
                 writer.add_scalar("Loss/spec", spec_v, idx)
                 writer.add_scalar("Loss/tf", tf_v, idx)
                 if lam_env > 0:
                     writer.add_scalar("Loss/env", env_v, idx)
+                if lam_env_log > 0:
+                    writer.add_scalar("Loss/env_log", env_log_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)
+                if lam_env_log > 0:
+                    writer.add_scalar("Train/lam_env_log_t", float(lam_env_log_t), idx)
                 continue
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD

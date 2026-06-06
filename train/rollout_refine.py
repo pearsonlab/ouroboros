@@ -99,6 +99,22 @@ def env_loss(xg, tgt, dt, env_ms, eps=1e-6):
     return ((ea - eg).abs().mean(dim=1) / (eg.mean(dim=1) + eps)).mean()
 
 
+def env_loss_log(xg, tgt, dt, env_ms, eps=1e-4):
+    """Log-ratio envelope loss: |log( (env(a) + eps) / (env(g) + eps) )| averaged over time
+    and batch. Symmetric in (auto, target) scale — penalizes "rollout K× too quiet" the same as
+    "K× too loud", so there's no trivial-zero floor like in env_loss (where a silent rollout
+    gives L=1 against a non-silent target). dB-natural: a log_e ratio is dB/8.686, so the loss
+    grows linearly in dB-distance from the target envelope.
+
+    eps acts as a soft noise floor that prevents log(0) divergence on the silence portions of
+    a target. ~1e-4 matches the per-sample noise floor of the normalized blk445 audio (peak
+    amplitude ~1.0 / int16 quantization 1/32768). Larger eps -> less sensitivity near silence.
+    """
+    ea = gaussian_envelope(xg, dt, env_ms)
+    eg = gaussian_envelope(tgt, dt, env_ms)
+    return (torch.log(ea + eps) - torch.log(eg + eps)).abs().mean(dim=1).mean()
+
+
 def rollout_refine(model, X, dt, *, epochs=8, hmin=768, hmax=1500, batch_size=6, lr=1e-4,
                    lam_spec=1.0, lam_env=10.0, lam_tf=1.0, clip=5.0, env_ms=2.0,
                    configs=DEFAULT_CONFIGS, device="cuda", verbose=True):

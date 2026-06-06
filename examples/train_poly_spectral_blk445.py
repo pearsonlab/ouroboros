@@ -132,6 +132,15 @@ def main():
     p.add_argument("--lam-tf", type=float, default=1.0,
                    help="variance-normalized acceleration MSE anchor. Default-on so early "
                         "epochs have a smooth gradient signal before the spectral basin is informative.")
+    p.add_argument("--lam-env-log", type=float, default=0.0,
+                   help="weight on the LOG-RATIO envelope loss (|log((env(a)+eps)/(env(g)+eps))|). "
+                        "Symmetric in (auto, target) -- penalizes shrinking past target the same as "
+                        "growing past it (unlike --lam-env, which has a trivial floor of 1 at silence "
+                        "and lets the model overshoot into decay). Same env_warmup ramp applies. "
+                        "Default 0 disables.")
+    p.add_argument("--env-log-eps", type=float, default=1e-4,
+                   help="soft noise floor inside the log() of the log-ratio envelope loss; ~1e-4 "
+                        "is the per-sample noise floor of normalized blk445 audio.")
     p.add_argument("--lam-env", type=float, default=0.0,
                    help="Gaussian-envelope L1 amplitude pin. 0 disables.")
     p.add_argument("--env-ms", type=float, default=2.0)
@@ -235,7 +244,9 @@ def main():
         cull_frac=args.cull_frac, cull_keep=args.cull_keep,
         save_freq=args.save_freq, max_saved=args.max_saved, model_path=out_dir,
         H_min=args.H_min, H_max=args.H_max, H_schedule=args.H_schedule,
-        lam_spec=args.lam_spec, lam_tf=args.lam_tf, lam_env=args.lam_env, env_ms=args.env_ms,
+        lam_spec=args.lam_spec, lam_tf=args.lam_tf,
+        lam_env=args.lam_env, lam_env_log=args.lam_env_log, env_log_eps=args.env_log_eps,
+        env_ms=args.env_ms,
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
         spec_configs=spec_configs, ic_noise_rms=args.ic_noise_rms, grad_clip=args.grad_clip,
@@ -265,6 +276,8 @@ def main():
         "lam_spec": args.lam_spec,
         "lam_tf": args.lam_tf,
         "lam_env": args.lam_env,
+        "lam_env_log": args.lam_env_log,
+        "env_log_eps": args.env_log_eps,
         "env_ms": args.env_ms,
         "spec_configs": [list(c) for c in spec_configs],
         "H_min": args.H_min,

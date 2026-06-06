@@ -32,6 +32,7 @@ from train.rollout_refine import (
     BXP,
     mrstft_loss,
     env_loss,
+    env_loss_log,
 )
 
 # ONSET category from data.load_data (kept local to avoid the import cycle the data
@@ -307,6 +308,8 @@ def spectral_rollout_step(
     lam_spec: float = 1.0,
     lam_tf: float = 1.0,
     lam_env: float = 0.0,
+    lam_env_log: float = 0.0,         # weight on the log-ratio envelope loss (env_loss_log)
+    env_log_eps: float = 1e-4,        # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     tf_var: Optional[float] = None,   # precomputed Var(d2x) over the dataset; matches rollout_refine.py:110
     ic_mask: Optional[torch.Tensor] = None,
@@ -359,9 +362,15 @@ def spectral_rollout_step(
         L_env = env_loss(xg, tgt, dt, env_ms)
     else:
         L_env = torch.zeros((), device=x.device, dtype=x.dtype)
+    # Log-ratio envelope loss: symmetric in (auto, target) scale so the model can't satisfy it
+    # by shrinking past optimum. dB-natural; see train/rollout_refine.py::env_loss_log.
+    if lam_env_log > 0:
+        L_env_log = env_loss_log(xg, tgt, dt, env_ms, eps=env_log_eps)
+    else:
+        L_env_log = torch.zeros((), device=x.device, dtype=x.dtype)
 
-    total = lam_spec * L_spec + lam_tf * L_tf + lam_env * L_env
-    return {"spec": L_spec, "tf": L_tf, "env": L_env, "total": total}
+    total = lam_spec * L_spec + lam_tf * L_tf + lam_env * L_env + lam_env_log * L_env_log
+    return {"spec": L_spec, "tf": L_tf, "env": L_env, "env_log": L_env_log, "total": total}
 
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:
