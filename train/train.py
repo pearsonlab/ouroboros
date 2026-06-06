@@ -183,6 +183,7 @@ def train(
     spec_configs=None,
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
+    rollout_backend: str = "eager",  # RK4 backend: 'eager' | 'cudagraph' | 'compile'
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -245,9 +246,17 @@ def train(
         tf_var = max(tf_var_running / max(1, n_seen), 1e-6)
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
-            f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g}",
+            f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
+            f"rollout_backend={rollout_backend}",
             flush=True,
         )
+        if rollout_backend != "eager" and H_schedule not in ("pow2", "const"):
+            print(
+                f"  WARNING: rollout_backend={rollout_backend!r} captures one CUDA graph "
+                f"per distinct H; schedule {H_schedule!r} yields many. Use H_schedule='pow2' "
+                f"to bucket horizons in factor-of-2 steps.",
+                flush=True,
+            )
 
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
         model.train()
@@ -295,6 +304,7 @@ def train(
                     lam_env=lam_env_t, env_ms=env_ms,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
+                    rollout_backend=rollout_backend,
                 )
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):

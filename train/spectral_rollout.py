@@ -21,6 +21,7 @@ it as the PRIMARY objective from scratch, with per-example cold-start IC selecti
 driven by the edge-biased sampler's category labels.
 """
 
+import warnings
 from typing import Optional
 
 import torch
@@ -49,6 +50,112 @@ def _filter_configs_for_horizon(configs, H):
     return tuple(keep)
 
 
+# --- RK4 rollout backends ------------------------------------------------------------
+# The autonomous RK4 integration is a sequential Python loop over the horizon H on tiny
+# (B,)/(B,P) tensors, so it is launch-overhead-bound, not FLOP-bound. CUDA graphs capture
+# the launch sequence once and replay it, cutting that overhead (~3x measured at H=400 on
+# a GTX 1080 Ti). torch.compile(reduce-overhead) does the same plus operator fusion, but
+# its Triton backend needs CUDA capability >= 7.0, so on Pascal it falls back to cudagraph.
+#
+# Backends ('rollout_backend'):
+#   'eager'     -- plain Python loop (default; always correct, no capture).
+#   'cudagraph' -- torch.cuda.make_graphed_callables (fwd+bwd graph); works on Pascal+.
+#   'compile'   -- torch.compile(mode='reduce-overhead'); needs sm>=70, else -> cudagraph.
+#
+# Graphs require static shapes, so one graph is captured per (H, batch, dtype). Use the
+# 'pow2' horizon schedule (horizon_for_epoch) to keep the number of distinct H small.
+_ROLLOUT_CACHE = {}
+_ROLLOUT_WARNED = set()
+
+
+def _warn_once(key, msg):
+    if key not in _ROLLOUT_WARNED:
+        _ROLLOUT_WARNED.add(key)
+        warnings.warn(msg)
+
+
+def _rk4_core_factory(H, powers):
+    """Build the pure RK4 integrator for a fixed horizon H, closing over H and the
+    (constant) `powers` vector so the returned callable takes only the per-step tensors
+    (om2, ga, w, xc, xp) -- the form torch.compile / make_graphed_callables require."""
+    def core(om2, ga, w, xc, xp):
+        xs = [xc]
+        for k in range(H - 1):
+            om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
+
+            def f(xx, vv):
+                xpw = xx.unsqueeze(1) ** powers  # (B, P)
+                xvw = vv.unsqueeze(1) ** powers  # (B, P)
+                kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
+                return vv, -om2k * xx - gak * vv - kern
+
+            k1x, k1v = f(xc, xp)
+            k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v)
+            k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v)
+            k4x, k4v = f(xc + k3x, xp + k3v)
+            xc = xc + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
+            xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
+            # soft-tanh saturation (>> data scale; only tames blow-up during training)
+            xc = BX * torch.tanh(xc / BX)
+            xp = BXP * torch.tanh(xp / BXP)
+            xs.append(xc)
+        return torch.stack(xs, dim=1)  # (B, H)
+    return core
+
+
+def _make_graphed(H, powers, om2, ga, w, xc, xp):
+    """Capture a fwd+bwd CUDA graph of the RK4 core for these shapes, or fall back to the
+    eager core if capture fails (e.g. OOM under a busy GPU). The eager fallback is cached
+    so we don't re-attempt capture every step."""
+    core = _rk4_core_factory(H, powers)
+    try:
+        sample = (
+            om2.detach().clone().requires_grad_(om2.requires_grad),
+            ga.detach().clone().requires_grad_(ga.requires_grad),
+            w.detach().clone().requires_grad_(w.requires_grad),
+            xc.detach().clone(),
+            xp.detach().clone(),
+        )
+        return torch.cuda.make_graphed_callables(core, sample)
+    except Exception as e:  # OOM during capture, unsupported op, etc.
+        _warn_once(("graph_fail", H),
+                   f"CUDA-graph capture failed for H={H} "
+                   f"({type(e).__name__}: {e}); using eager rollout for this horizon.")
+        return core
+
+
+def _run_rk4(backend, om2, ga, w, xc, xp, powers, H):
+    """Execute the RK4 rollout under the requested backend. om2/ga/w are (B, >=H[, P, P]);
+    xc/xp are (B,). Returns (B, H)."""
+    if backend == "eager" or not om2.is_cuda:
+        return _rk4_core_factory(H, powers)(om2, ga, w, xc, xp)
+
+    if backend == "compile":
+        cap = torch.cuda.get_device_capability(om2.device)
+        if cap[0] < 7:
+            _warn_once("compile_cap",
+                       f"rollout_backend='compile' needs CUDA capability >= 7.0 for the "
+                       f"Triton backend; this GPU is sm_{cap[0]}{cap[1]} -> using "
+                       f"'cudagraph' instead.")
+            return _run_rk4("cudagraph", om2, ga, w, xc, xp, powers, H)
+        key = ("compile", H, int(powers.numel()))
+        fn = _ROLLOUT_CACHE.get(key)
+        if fn is None:
+            fn = torch.compile(_rk4_core_factory(H, powers), mode="reduce-overhead")
+            _ROLLOUT_CACHE[key] = fn
+        return fn(om2, ga, w, xc, xp)
+
+    if backend == "cudagraph":
+        key = ("graph", H, int(xc.shape[0]), om2.dtype, int(powers.numel()))
+        fn = _ROLLOUT_CACHE.get(key)
+        if fn is None:
+            fn = _make_graphed(H, powers, om2, ga, w, xc, xp)
+            _ROLLOUT_CACHE[key] = fn
+        return fn(om2, ga, w, xc, xp)
+
+    raise ValueError(f"unknown rollout_backend {backend!r}")
+
+
 def teacher_forced_rollout(
     model,
     x: torch.Tensor,        # (B, L, 1) target audio
@@ -60,6 +167,7 @@ def teacher_forced_rollout(
     ic_noise_rms: float = 1e-3,
     rng: Optional[torch.Generator] = None,
     drives: Optional[tuple] = None,  # precomputed (omega, gamma, weights, z2); skips get_funcs
+    rollout_backend: str = "eager",  # 'eager' | 'cudagraph' | 'compile' (see _run_rk4)
 ) -> torch.Tensor:           # (B, H)
     """RK4 H-step rollout of the poly Ouroboros, drives encoded from target audio.
 
@@ -86,15 +194,14 @@ def teacher_forced_rollout(
     else:
         omega, gamma, weights, z2 = drives
 
-    om = omega[:, :, 0]
-    ga = gamma[:, :, 0]
-    w = weights
-    P = w.shape[-1]
+    P = weights.shape[-1]
     # reuse the kernel's cached powers vector instead of allocating a fresh arange each
-    # rollout, and square omega once over the whole horizon (it was re-squared on every
-    # RK4 substep below).
+    # rollout, and square omega once over the horizon (it was re-squared every RK4 substep).
+    # Slice the drives to the horizon so the graphed/compiled shapes depend only on H.
     powers = model.kernel.powers[:P]
-    om2 = om ** 2
+    om2 = omega[:, :H, 0] ** 2     # (B, H)
+    ga_h = gamma[:, :H, 0]         # (B, H)
+    w_h = weights[:, :H]           # (B, H, P, P)
 
     # IC -- (B,) tensors of x and x' at s=0.
     xc = x[:, 0, 0].detach().clone()
@@ -108,28 +215,7 @@ def teacher_forced_rollout(
         xc = xc * (1 - m) + noise_x * m
         xp = xp * (1 - m) + noise_xp * m
 
-    def f(xx, vv, om2k, gak, w_k):
-        xpw = xx.unsqueeze(1) ** powers  # (B, P)
-        xvw = vv.unsqueeze(1) ** powers  # (B, P)
-        kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
-        return vv, -om2k * xx - gak * vv - kern
-
-    xs = [xc]
-    for k in range(H - 1):
-        # slice the step-k drives once; the 4 RK4 substeps below all reuse them
-        # (previously om[:,k]**2, ga[:,k], w[:,k] were recomputed/re-sliced 4× per step).
-        om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
-        k1x, k1v = f(xc, xp, om2k, gak, w_k)
-        k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v, om2k, gak, w_k)
-        k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v, om2k, gak, w_k)
-        k4x, k4v = f(xc + k3x, xp + k3v, om2k, gak, w_k)
-        xc = xc + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
-        xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
-        # soft-tanh saturation (>> data scale; only tames blow-up during training)
-        xc = BX * torch.tanh(xc / BX)
-        xp = BXP * torch.tanh(xp / BXP)
-        xs.append(xc)
-    return torch.stack(xs, dim=1)   # (B, H)
+    return _run_rk4(rollout_backend, om2, ga_h, w_h, xc, xp, powers, H)
 
 
 def spectral_rollout_step(
@@ -149,6 +235,7 @@ def spectral_rollout_step(
     ic_mask: Optional[torch.Tensor] = None,
     ic_noise_rms: float = 1e-3,
     rng: Optional[torch.Generator] = None,
+    rollout_backend: str = "eager",
 ) -> dict:
     """One forward + loss for the spectral-rollout objective.
 
@@ -185,6 +272,7 @@ def spectral_rollout_step(
         model, x, dxdt, dt, H=H,
         ic_mask=ic_mask, ic_noise_rms=ic_noise_rms, rng=rng,
         drives=(omega, gamma, weights, z2),
+        rollout_backend=rollout_backend,
     )
     tgt = x[:, :H, 0]
 
@@ -199,18 +287,39 @@ def spectral_rollout_step(
     return {"spec": L_spec, "tf": L_tf, "env": L_env, "total": total}
 
 
+def pow2_horizon_buckets(H_min: int, H_max: int) -> list:
+    """Horizon buckets in factor-of-2 jumps from H_min, with the final bucket capped at
+    exactly H_max: e.g. H_min=512, H_max=2000 -> [512, 1024, 2000]. Keeping the set of
+    distinct horizons small bounds the number of CUDA graphs the graphed/compiled rollout
+    backends capture (one per H)."""
+    hs = []
+    h = int(H_min)
+    while h < int(H_max):
+        hs.append(h)
+        h *= 2
+    if not hs or hs[-1] != int(H_max):
+        hs.append(int(H_max))
+    return hs
+
+
 def horizon_for_epoch(epoch: int, n_epochs: int, H_min: int, H_max: int,
                       schedule: str = "geom") -> int:
     """Curriculum on the rollout horizon: small H early (cheap, easy gradient), full H
-    by the end. 'geom' = geometric spacing; 'linear' = linear; 'const' = H_max throughout.
+    by the end. 'geom' = geometric spacing; 'linear' = linear; 'const' = H_max throughout;
+    'pow2' = factor-of-2 buckets (pow2_horizon_buckets) spread evenly across the same
+    n_epochs ramp -- coarse steps so the graphed backends capture only a few graphs.
     """
     if n_epochs <= 1 or schedule == "const":
         return int(H_max)
+    if schedule == "pow2":
+        buckets = pow2_horizon_buckets(H_min, H_max)
+        # even division of the ramp across buckets; reaches the last bucket by the final epoch
+        idx = min(int(epoch * len(buckets) / n_epochs), len(buckets) - 1)
+        return int(buckets[idx])
     t = epoch / max(1, n_epochs - 1)
     if schedule == "linear":
         H = H_min + t * (H_max - H_min)
     elif schedule == "geom":
-        import math
         H = H_min * (H_max / H_min) ** t
     else:
         raise ValueError(f"unknown schedule {schedule!r}")
