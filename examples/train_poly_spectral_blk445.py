@@ -121,6 +121,10 @@ def main():
     p.add_argument("--expand-factor", type=int, default=10)
     p.add_argument("--drive-lowpass-ms", type=float, default=1.0)
     p.add_argument("--keep-const", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument("--osc-init", action=argparse.BooleanOptionalAction, default=False,
+                   help="Strategy 1: initialize each seed as a marginal van der Pol limit cycle "
+                        "(small negative damping + seeded y^2*ydot re-damping + y^3 hardening) so "
+                        "oscillation can ignite from silence instead of the dissipative default init.")
     p.add_argument("--lam", type=float, default=1.068,
                    help="fixed kernel-weight lambda (no CV in this PR).")
     # loss
@@ -225,6 +229,7 @@ def main():
         n_kernels=args.n_kernels, n_layers=args.n_layers,
         d_state=args.d_state, d_conv=args.d_conv, expand_factor=args.expand_factor,
         tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, keep_const=args.keep_const,
+        osc_init=args.osc_init,
         lam=args.lam,
         n_epochs=args.n_epochs, lr=args.lr, n_seeds=args.n_seeds,
         cull_frac=args.cull_frac, cull_keep=args.cull_keep,
@@ -256,6 +261,7 @@ def main():
         "max_segs": args.max_segs,
         "drive_lowpass_ms": args.drive_lowpass_ms,
         "keep_const": bool(args.keep_const),
+        "osc_init": bool(args.osc_init),
         "lam_spec": args.lam_spec,
         "lam_tf": args.lam_tf,
         "lam_env": args.lam_env,

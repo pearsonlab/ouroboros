@@ -233,6 +233,7 @@ def model_seed_cv_spectral(
     smooth_len: float = 0.001,
     drive_lowpass_ms: float = 1.0,
     keep_const: bool = False,
+    osc_init: bool = False,        # Strategy 1: van der Pol limit-cycle init (see Ouroboros.__init__)
     lam: float = 1.068,            # fixed kernel-weight lambda (no CV in this PR)
     # training
     n_epochs: int = 50,
@@ -294,7 +295,7 @@ def model_seed_cv_spectral(
         model = Ouroboros(d_data=1, n_layers=n_layers, d_state=d_state, d_conv=d_conv,
                           expand_factor=expand_factor, tau=tau, smooth_len=smooth_len,
                           kernel=kernel, drive_lowpass_ms=drive_lowpass_ms,
-                          keep_const=keep_const)
+                          keep_const=keep_const, osc_init=osc_init)
         opt = Adam(model.parameters(), lr=lr)
         sched = ReduceLROnPlateau(opt, factor=0.5, patience=max(n_epochs // 25, 2),
                                   min_lr=1e-10)

@@ -38,6 +38,11 @@ class Ouroboros(nn.Module):
         smooth_len: float = 0.001,
         drive_lowpass_ms: float = 0.0,
         keep_const: bool = False,
+        osc_init: bool = False,
+        gamma_init: float = -0.01,
+        vdp_init: float = 0.02,
+        cubic_init: float = 0.01,
+        const_init: float = 1e-3,
     ):
 
         super().__init__()
@@ -98,6 +103,36 @@ class Ouroboros(nn.Module):
             with torch.no_grad():
                 self.kernel.weights.weight[0].zero_()
                 self.kernel.weights.bias[0].zero_()
+        # Strategy 1 "oscillator init": start every seed as a marginal van der Pol limit cycle
+        # instead of the default coin-flip-sign, ~40x-too-stiff linear damping. At the default
+        # init |gamma| ~ 0.4 (envelope tau ~ 0.1 ms) with random per-seed sign, so ~half of seeds
+        # are purely dissipative (oscillation dies instantly -> the model can only AM-modulate
+        # input/IC noise). osc_init makes the damping a small NEGATIVE constant (slow energy
+        # injection, envelope tau ~ ms) and seeds an amplitude-dependent re-damping (+y^2*ydot)
+        # plus a hardening cubic (+y^3) so the growth saturates into a bounded cycle. The
+        # corresponding control-head WEIGHTS are zeroed so these start as clean constants the
+        # encoders can later modulate; only the structural prior is injected.
+        #
+        # Net damping in ydot-dot is -(gamma_init + vdp_init*y^2)*ydot, zero at amplitude
+        # A* = sqrt(-gamma_init/vdp_init) (~0.7 with the defaults), i.e. a limit cycle near |y|~0.7.
+        if osc_init:
+            with torch.no_grad():
+                # gamma: pure small negative constant (anti-damping) -> energy injection
+                self.gamma_net.weight.zero_()
+                self.gamma_net.bias.fill_(float(gamma_init))
+                # kernel polynomial weights: index (i,j) -> row i*W + j in the flattened
+                # (poly_dim+1)x(poly_dim+1) output of kernel.weights. yhat subtracts
+                # weighted_kernels, so a +w[i,j] adds -w[i,j]*y^i*ydot^j to ydot-dot.
+                W = self.kernel.poly_dim + 1
+                def _seed(i, j, val):
+                    idx = i * W + j
+                    self.kernel.weights.weight[idx].zero_()
+                    self.kernel.weights.bias[idx].fill_(float(val))
+                _seed(2, 1, vdp_init)    # +y^2*ydot -> amplitude-dependent re-damping (saturation)
+                _seed(3, 0, cubic_init)  # +y^3      -> hardening spring (bounds amplitude)
+                if keep_const:
+                    # tiny constant drive to break the y=0 fixed-point symmetry so the cycle ignites
+                    _seed(0, 0, const_init)
         self.names = [r"$\omega$", r"$\gamma$", "weighted kernels", "states"]
 
     def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
