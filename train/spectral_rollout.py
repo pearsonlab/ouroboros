@@ -90,7 +90,11 @@ def teacher_forced_rollout(
     ga = gamma[:, :, 0]
     w = weights
     P = w.shape[-1]
-    powers = torch.arange(P, device=x.device)
+    # reuse the kernel's cached powers vector instead of allocating a fresh arange each
+    # rollout, and square omega once over the whole horizon (it was re-squared on every
+    # RK4 substep below).
+    powers = model.kernel.powers[:P]
+    om2 = om ** 2
 
     # IC -- (B,) tensors of x and x' at s=0.
     xc = x[:, 0, 0].detach().clone()
@@ -104,18 +108,21 @@ def teacher_forced_rollout(
         xc = xc * (1 - m) + noise_x * m
         xp = xp * (1 - m) + noise_xp * m
 
-    def f(xx, vv, k):
+    def f(xx, vv, om2k, gak, w_k):
         xpw = xx.unsqueeze(1) ** powers  # (B, P)
         xvw = vv.unsqueeze(1) ** powers  # (B, P)
-        kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w[:, k])
-        return vv, -(om[:, k] ** 2) * xx - ga[:, k] * vv - kern
+        kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
+        return vv, -om2k * xx - gak * vv - kern
 
     xs = [xc]
     for k in range(H - 1):
-        k1x, k1v = f(xc, xp, k)
-        k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v, k)
-        k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v, k)
-        k4x, k4v = f(xc + k3x, xp + k3v, k)
+        # slice the step-k drives once; the 4 RK4 substeps below all reuse them
+        # (previously om[:,k]**2, ga[:,k], w[:,k] were recomputed/re-sliced 4× per step).
+        om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
+        k1x, k1v = f(xc, xp, om2k, gak, w_k)
+        k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v, om2k, gak, w_k)
+        k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v, om2k, gak, w_k)
+        k4x, k4v = f(xc + k3x, xp + k3v, om2k, gak, w_k)
         xc = xc + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
         xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
         # soft-tanh saturation (>> data scale; only tames blow-up during training)

@@ -25,6 +25,7 @@ examples/train_poly_rollout.py (integrated TF + refine trainer).
 
 import glob
 import os
+from functools import lru_cache
 
 import numpy as np
 import torch
@@ -54,8 +55,16 @@ def gather_windows(dirs, n, L, start_off_ms):
     return np.stack(segs)[:, :, None], sr
 
 
+@lru_cache(maxsize=None)
+def _hann_window(n_fft, device, dtype):
+    """Cache STFT analysis windows -- they depend only on n_fft (constant across all
+    steps/epochs), so the per-call torch.hann_window alloc (~6×/step in mrstft_loss) is
+    pure overhead."""
+    return torch.hann_window(n_fft, device=device, dtype=dtype)
+
+
 def stft_mag(x, n_fft, hop):
-    win = torch.hann_window(n_fft, device=x.device, dtype=x.dtype)
+    win = _hann_window(n_fft, x.device, x.dtype)
     S = torch.stft(x, n_fft=n_fft, hop_length=hop, win_length=n_fft, window=win,
                    center=True, return_complex=True)
     return S.abs()  # (B, F, T)
@@ -132,21 +141,24 @@ def rollout_refine(model, X, dt, *, epochs=8, hmin=768, hmax=1500, batch_size=6,
             L_tf = ((tf - d2b) ** 2).mean() / var_d2
 
             om, ga, w = omega[:, :, 0], gamma[:, :, 0], weights  # w: (B,L,P,P)
+            om2 = om ** 2  # square omega once over the horizon (was re-squared every substep)
 
-            def f(xx, vv, k):
+            def f(xx, vv, om2k, gak, w_k):
                 xpw = xx.unsqueeze(1) ** powers
                 xvw = vv.unsqueeze(1) ** powers
-                kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w[:, k])
-                return vv, -(om[:, k] ** 2) * xx - ga[:, k] * vv - kern
+                kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
+                return vv, -om2k * xx - gak * vv - kern
 
             xc = x[:, 0, 0].detach()
             xp = z2[:, 0, 0].detach()
             xs = [xc]
             for k in range(H - 1):
-                k1x, k1v = f(xc, xp, k)
-                k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v, k)
-                k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v, k)
-                k4x, k4v = f(xc + k3x, xp + k3v, k)
+                # slice step-k drives once; the 4 RK4 substeps reuse them (was 4× re-sliced)
+                om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
+                k1x, k1v = f(xc, xp, om2k, gak, w_k)
+                k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v, om2k, gak, w_k)
+                k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v, om2k, gak, w_k)
+                k4x, k4v = f(xc + k3x, xp + k3v, om2k, gak, w_k)
                 xc = xc + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
                 xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
                 xc = BX * torch.tanh(xc / BX)

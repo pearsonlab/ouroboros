@@ -64,10 +64,13 @@ class aud_neur_ds(Dataset):
         dxdt = self.dxdt[idx]
         dx2dt2 = self.dx2dt2[idx]
 
+        # Store batches as float32 -- the model runs in float32, so float64 here just
+        # doubled the host->device transfer bytes and forced a post-copy GPU cast. The
+        # derivative numpy arrays remain float64; only the per-item tensor is downcast.
         x, dxdt, dx2dt2 = (
-            torch.from_numpy(x).type(torch.DoubleTensor),
-            torch.from_numpy(dxdt).type(torch.DoubleTensor),
-            torch.from_numpy(dx2dt2).type(torch.DoubleTensor),
+            torch.from_numpy(x).type(torch.FloatTensor),
+            torch.from_numpy(dxdt).type(torch.FloatTensor),
+            torch.from_numpy(dx2dt2).type(torch.FloatTensor),
         )
 
         if self.categories is not None:
@@ -139,17 +142,20 @@ def get_loaders(
         if oversample_prop > 1:
             dsVal.interpolate_oversample(oversample_prop=oversample_prop, dt=dt)
         dls["val"] = DataLoader(
-            dsVal, num_workers=num_workers, batch_size=batch_size, shuffle=False
+            dsVal, num_workers=num_workers, batch_size=batch_size, shuffle=False,
+            pin_memory=True,
         )
     dsTrain, dsTest = aud_neur_ds(X_train), aud_neur_ds(X_test)
     if oversample_prop > 1:
         dsTrain.interpolate_oversample(oversample_prop=oversample_prop, dt=dt)
         dsTest.interpolate_oversample(oversample_prop=oversample_prop, dt=dt)
     dls["train"] = DataLoader(
-        dsTrain, num_workers=num_workers, batch_size=batch_size, shuffle=True
+        dsTrain, num_workers=num_workers, batch_size=batch_size, shuffle=True,
+        pin_memory=True,
     )
     dls["test"] = DataLoader(
-        dsTest, num_workers=num_workers, batch_size=batch_size, shuffle=False
+        dsTest, num_workers=num_workers, batch_size=batch_size, shuffle=False,
+        pin_memory=True,
     )
 
     return dls
@@ -214,7 +220,8 @@ def get_loaders_interp(
         if oversample_prop > 1:
             dsVal.interpolate_oversample(oversample_prop=oversample_prop, dt=dt)
         dls["val"] = DataLoader(
-            dsVal, num_workers=num_workers, batch_size=batch_size, shuffle=False
+            dsVal, num_workers=num_workers, batch_size=batch_size, shuffle=False,
+            pin_memory=True,
         )
     t_test = np.tile(t[None, :], (X_test.shape[0], 1))
 
@@ -224,10 +231,12 @@ def get_loaders_interp(
         dsTrain.interpolate_oversample(oversample_prop=oversample_prop, dt=dt)
         dsTest.interpolate_oversample(oversample_prop=oversample_prop, dt=dt)
     dls["train"] = DataLoader(
-        dsTrain, num_workers=num_workers, batch_size=batch_size, shuffle=True
+        dsTrain, num_workers=num_workers, batch_size=batch_size, shuffle=True,
+        pin_memory=True,
     )
     dls["test"] = DataLoader(
-        dsTest, num_workers=num_workers, batch_size=batch_size, shuffle=False
+        dsTest, num_workers=num_workers, batch_size=batch_size, shuffle=False,
+        pin_memory=True,
     )
 
     return dls
@@ -282,7 +291,8 @@ def get_loaders_edge(
         test_idx = holdout[test_local]
         dsVal = aud_neur_ds(data[val_idx], categories=categories[val_idx])
         dls["val"] = DataLoader(
-            dsVal, num_workers=num_workers, batch_size=batch_size, shuffle=False
+            dsVal, num_workers=num_workers, batch_size=batch_size, shuffle=False,
+            pin_memory=True,
         )
     else:
         test_idx = holdout
@@ -290,9 +300,11 @@ def get_loaders_edge(
     dsTrain = aud_neur_ds(data[train_i], categories=categories[train_i])
     dsTest = aud_neur_ds(data[test_idx], categories=categories[test_idx])
     dls["train"] = DataLoader(
-        dsTrain, num_workers=num_workers, batch_size=batch_size, shuffle=True
+        dsTrain, num_workers=num_workers, batch_size=batch_size, shuffle=True,
+        pin_memory=True,
     )
     dls["test"] = DataLoader(
-        dsTest, num_workers=num_workers, batch_size=batch_size, shuffle=False
+        dsTest, num_workers=num_workers, batch_size=batch_size, shuffle=False,
+        pin_memory=True,
     )
     return dls

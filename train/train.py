@@ -238,7 +238,7 @@ def train(
         with torch.no_grad():
             for batch in loaders["train"]:
                 d2 = batch[2]   # (B, L, 1)
-                d2 = d2.to("cuda").to(torch.float32) / (dt ** 2) * model.tau ** 2
+                d2 = d2.to("cuda", non_blocking=True).to(torch.float32) / (dt ** 2) * model.tau ** 2
                 tf_var_running += float(d2.var().item()) * d2.shape[0]
                 n_seen += d2.shape[0]
         tf_var = max(tf_var_running / max(1, n_seen), 1e-6)
@@ -262,10 +262,10 @@ def train(
                 cats = None
             bsz, _, n = x.shape
 
-            x = x.to("cuda").to(torch.float32)
-            dxdt = dxdt.to("cuda").to(torch.float32)
+            x = x.to("cuda", non_blocking=True).to(torch.float32)
+            dxdt = dxdt.to("cuda", non_blocking=True).to(torch.float32)
             dx2 = (
-                dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
+                dx2dt2.to("cuda", non_blocking=True).to(torch.float32) / (dt**2) * model.tau**2
             )  # rescale dx2, rather than model output
 
             if loss_mode == "spectral_rollout":
@@ -298,12 +298,19 @@ def train(
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
-                train_losses.append(float(out["spec"].item()))
-                writer.add_scalar("Loss/spec", float(out["spec"].item()), idx)
-                writer.add_scalar("Loss/tf", float(out["tf"].item()), idx)
+                # One device->host sync for all scalar logging instead of 5 separate
+                # .item() calls (one of which was a duplicate of out["spec"]): stack the
+                # loss tensors and transfer once. out["env"] is always a tensor (zeros
+                # when lam_env==0), so the stack is well-formed.
+                spec_v, tf_v, env_v, total_v = torch.stack(
+                    [out["spec"], out["tf"], out["env"], total_loss]
+                ).tolist()
+                train_losses.append(spec_v)
+                writer.add_scalar("Loss/spec", spec_v, idx)
+                writer.add_scalar("Loss/tf", tf_v, idx)
                 if lam_env > 0:
-                    writer.add_scalar("Loss/env", float(out["env"].item()), idx)
-                writer.add_scalar("Loss/total", float(total_loss.item()), idx)
+                    writer.add_scalar("Loss/env", env_v, idx)
+                writer.add_scalar("Loss/total", total_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 continue
@@ -432,9 +439,9 @@ def train(
                         x, dxdt, dx2dt2 = batch
                     bsz, _, n = x.shape
 
-                    x = x.to("cuda").to(torch.float32)
-                    dxdt = dxdt.to("cuda").to(torch.float32)
-                    dx2 = dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
+                    x = x.to("cuda", non_blocking=True).to(torch.float32)
+                    dxdt = dxdt.to("cuda", non_blocking=True).to(torch.float32)
+                    dx2 = dx2dt2.to("cuda", non_blocking=True).to(torch.float32) / (dt**2) * model.tau**2
 
                     dx2hat, weights = model(x, dxdt, dt, smoothing)
 
