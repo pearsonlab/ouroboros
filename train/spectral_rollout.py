@@ -59,6 +59,7 @@ def teacher_forced_rollout(
     ic_mask: Optional[torch.Tensor] = None,  # (B,) bool; True => silence-noise IC
     ic_noise_rms: float = 1e-3,
     rng: Optional[torch.Generator] = None,
+    drives: Optional[tuple] = None,  # precomputed (omega, gamma, weights, z2); skips get_funcs
 ) -> torch.Tensor:           # (B, H)
     """RK4 H-step rollout of the poly Ouroboros, drives encoded from target audio.
 
@@ -75,9 +76,15 @@ def teacher_forced_rollout(
     B, L, _ = x.shape
     assert H <= L, f"rollout horizon H={H} must be <= segment length L={L}"
 
-    # Encode drives in a single forward of the Mamba encoders.
-    omega, gamma, _, weights, _ = model.get_funcs(x, dxdt.clone(), dt)  # ω,γ:(B,L,1); w:(B,L,P,P)
-    z2 = (model.tau / dt) * dxdt  # rescaled-time velocity (B, L, 1)
+    # Encode drives via the Mamba encoders. When the caller already ran get_funcs
+    # (e.g. spectral_rollout_step computes the TF anchor from the same drives), it
+    # passes them in so we don't run a redundant Mamba forward pass — the drives are
+    # deterministic in (x, dxdt, dt), so reusing them is gradient-equivalent.
+    if drives is None:
+        omega, gamma, _, weights, _ = model.get_funcs(x, dxdt.clone(), dt)  # ω,γ:(B,L,1); w:(B,L,P,P)
+        z2 = (model.tau / dt) * dxdt  # rescaled-time velocity (B, L, 1)
+    else:
+        omega, gamma, weights, z2 = drives
 
     om = omega[:, :, 0]
     ga = gamma[:, :, 0]
@@ -163,13 +170,14 @@ def spectral_rollout_step(
         v = max(float(tf_var), 1e-6)
     L_tf = ((tf_d2 - d2x) ** 2).mean() / v
 
-    # Rollout + spectral loss. The rollout calls model.get_funcs again with a fresh
-    # clone (drives recomputed for the rollout-state forward). Could be unified with
-    # the TF computation above, but keeping them separate makes the per-component
-    # losses easy to reason about and matches rollout_refine's structure.
+    # Rollout + spectral loss. Reuse the drives (ω, γ, w) and rescaled velocity z2
+    # already encoded above for the TF anchor instead of re-running the Mamba encoders
+    # inside the rollout — they are deterministic in (x, dxdt, dt), so backprop through
+    # the single shared forward sums the TF and spectral gradients exactly as before.
     xg = teacher_forced_rollout(
         model, x, dxdt, dt, H=H,
         ic_mask=ic_mask, ic_noise_rms=ic_noise_rms, rng=rng,
+        drives=(omega, gamma, weights, z2),
     )
     tgt = x[:, :H, 0]
 
