@@ -289,7 +289,7 @@ def spectral_rollout_step(
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:
     """Horizon buckets in factor-of-2 jumps from H_min, with the final bucket capped at
-    exactly H_max: e.g. H_min=512, H_max=2000 -> [512, 1024, 2000]. Keeping the set of
+    exactly H_max: e.g. H_min=512, H_max=2048 -> [512, 1024, 2048]. Keeping the set of
     distinct horizons small bounds the number of CUDA graphs the graphed/compiled rollout
     backends capture (one per H)."""
     hs = []

@@ -245,7 +245,7 @@ def model_seed_cv_spectral(
     model_path: str = "",
     # spectral loss
     H_min: int = 512,
-    H_max: int = 2000,
+    H_max: int = 2048,
     H_schedule: str = "geom",
     lam_spec: float = 1.0,
     lam_tf: float = 1.0,
@@ -256,6 +256,7 @@ def model_seed_cv_spectral(
     spec_configs=None,
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
+    rollout_backend: str = "eager",
     # selection
     rescale_autonomy: bool = False,
     cold_start_autonomy: bool = True,
@@ -323,7 +324,7 @@ def model_seed_cv_spectral(
                 spec_warmup_epochs=spec_warmup_epochs,
                 env_warmup_epochs=env_warmup_epochs,
                 spec_configs=spec_configs, ic_noise_rms=ic_noise_rms,
-                grad_clip=grad_clip,
+                grad_clip=grad_clip, rollout_backend=rollout_backend,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

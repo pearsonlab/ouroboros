@@ -172,7 +172,7 @@ def train(
     loss_mode: str = "mse_accel",
     # spectral-rollout knobs (only consulted when loss_mode == "spectral_rollout")
     H_min: int = 512,
-    H_max: int = 2000,
+    H_max: int = 2048,
     H_schedule: str = "geom",
     lam_spec: float = 1.0,
     lam_tf: float = 1.0,

@@ -20,7 +20,7 @@ Example:
     --data-dir ~/ouroboros_data/blk445_syllC/day85 --out-dir poly_spectral_day85 \\
     --n-seeds 4 --n-epochs 50 --cull-frac 0.4 --cull-keep 2 \\
     --context-len 0.05 --silence-prefix-ms 25 --silence-suffix-ms 25 \\
-    --H-min 512 --H-max 2000 --lam-spec 1.0 --lam-tf 1.0 --ic-noise-rms 1e-3
+    --H-min 512 --H-max 2048 --lam-spec 1.0 --lam-tf 1.0 --ic-noise-rms 1e-3
 """
 
 import argparse
@@ -134,8 +134,12 @@ def main():
     p.add_argument("--spec-configs", default="256,64;512,128;1024,256",
                    help="MRSTFT (n_fft,hop) configs, semicolon-separated.")
     p.add_argument("--H-min", type=int, default=512)
-    p.add_argument("--H-max", type=int, default=2000)
-    p.add_argument("--H-schedule", choices=["geom", "linear", "const"], default="geom")
+    p.add_argument("--H-max", type=int, default=2048)
+    p.add_argument("--H-schedule", choices=["geom", "linear", "const", "pow2"],
+                   default="geom")
+    p.add_argument("--rollout-backend", choices=["eager", "cudagraph", "compile"],
+                   default="eager",
+                   help="RK4 rollout backend; 'cudagraph'/'compile' want --H-schedule pow2.")
     p.add_argument("--spec-warmup-epochs", type=int, default=5,
                    help="linearly ramp lam_spec from 0 to its target over this many epochs. "
                         "0 disables the warmup. Needed at random init because the spectral "
@@ -228,6 +232,7 @@ def main():
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
         spec_configs=spec_configs, ic_noise_rms=args.ic_noise_rms, grad_clip=args.grad_clip,
+        rollout_backend=args.rollout_backend,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
 
@@ -257,6 +262,7 @@ def main():
         "H_min": args.H_min,
         "H_max": args.H_max,
         "H_schedule": args.H_schedule,
+        "rollout_backend": args.rollout_backend,
         "spec_warmup_epochs": args.spec_warmup_epochs,
         "env_warmup_epochs": args.env_warmup_epochs,
         "ic_noise_rms": args.ic_noise_rms,
