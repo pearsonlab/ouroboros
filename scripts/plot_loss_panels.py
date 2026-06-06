@@ -135,7 +135,14 @@ def main():
     n = len(panels)
     fig, axes = plt.subplots(n, 1, figsize=(11, 2.0 * n), sharex=True)
 
-    colors = {"live": "tab:blue", "env": "tab:orange"}
+    # Stable, explicit color per known run label so the three concurrent runs are
+    # distinguishable. Unknown labels fall back to matplotlib's default cycle, which
+    # starts at tab:blue and would collide with `live`.
+    colors = {
+        "live": "tab:blue",
+        "env": "tab:orange",
+        "env1e4": "tab:green",
+    }
 
     # Detect the spec_warmup boundary per run -- the first epoch where lam_spec_t hits
     # its max (i.e., the warmup ramp ends). Drawn as a faint vertical line per run so
