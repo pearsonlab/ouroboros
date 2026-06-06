@@ -144,6 +144,8 @@ def main():
         "env1e4": "tab:green",
         "env1e5": "tab:red",
         "osc1e5": "tab:purple",
+        "osc_none": "tab:cyan",
+        "osc_log1e4": "tab:brown",
     }
 
     # Detect the spec_warmup boundary per run -- the first epoch where lam_spec_t hits
