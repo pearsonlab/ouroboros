@@ -137,9 +137,11 @@ def main():
     p.add_argument("--H-max", type=int, default=2048)
     p.add_argument("--H-schedule", choices=["geom", "linear", "const", "pow2"],
                    default="geom")
-    p.add_argument("--rollout-backend", choices=["eager", "cudagraph", "compile"],
+    p.add_argument("--rollout-backend",
+                   choices=["eager", "cudagraph", "compile", "scan"],
                    default="eager",
-                   help="RK4 rollout backend; 'cudagraph'/'compile' want --H-schedule pow2.")
+                   help="RK4 rollout backend; 'cudagraph'/'compile' want --H-schedule pow2. "
+                        "'scan' lowers the step once via torch.compile (sm>=70), else eager fold.")
     p.add_argument("--spec-warmup-epochs", type=int, default=5,
                    help="linearly ramp lam_spec from 0 to its target over this many epochs. "
                         "0 disables the warmup. Needed at random init because the spectral "

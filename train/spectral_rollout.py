@@ -103,6 +103,62 @@ def _rk4_core_factory(H, powers):
     return core
 
 
+def _rk4_step(carry, x, powers):
+    """One RK4 step as a scan combine_fn: carry=(xc, xp) each (B,); x=(om2k, gak, w_k)
+    are the step's drives (om2k,gak: (B,); w_k: (B,P,P)). Returns ((xc', xp'), xc').
+    This is the single loop body a `torch.compile`d scan lowers once (instead of unrolling
+    the whole H-step Python loop), and is identical math to f() in _rk4_core_factory."""
+    xc, xp = carry
+    om2k, gak, w_k = x
+
+    def f(xx, vv):
+        xpw = xx.unsqueeze(1) ** powers
+        xvw = vv.unsqueeze(1) ** powers
+        kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
+        return vv, -om2k * xx - gak * vv - kern
+
+    k1x, k1v = f(xc, xp)
+    k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v)
+    k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v)
+    k4x, k4v = f(xc + k3x, xp + k3v)
+    xc = xc + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
+    xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
+    xc = BX * torch.tanh(xc / BX)
+    xp = BXP * torch.tanh(xp / BXP)
+    return (xc, xp), xc
+
+
+def _scan_rollout(om2, ga, w, xc, xp, powers, H, use_hop):
+    """Express the rollout as a scan over the H-1 steps: carry=(xc, xp), per-step inputs
+    are the time-leading drives. Output is (B, H) = initial xc then the H-1 step outputs.
+
+    use_hop=True uses torch._higher_order_ops.scan (the jax.lax.scan analog), which lowers
+    the step body once under torch.compile -- avoiding Dynamo's 2048x loop unroll. Requires
+    being inside torch.compile (and thus sm>=70). use_hop=False runs the identical fold as
+    an eager Python loop (same semantics, no compile) -- the correctness-equivalent fallback
+    that also runs on hardware where torch.compile is unavailable (e.g. Pascal)."""
+    n = H - 1
+    # drives for steps 0..H-2, arranged time-leading (scan iterates the leading dim).
+    om2_t = om2[:, :n].transpose(0, 1)         # (n, B)
+    ga_t = ga[:, :n].transpose(0, 1)           # (n, B)
+    w_t = w[:, :n].permute(1, 0, 2, 3)         # (n, B, P, P)
+
+    def step(carry, x):
+        return _rk4_step(carry, x, powers)
+
+    if use_hop:
+        from torch._higher_order_ops.scan import scan as _scan_hop
+        _, ys = _scan_hop(step, (xc, xp), (om2_t, ga_t, w_t))  # ys: (n, B)
+    else:
+        carry, ys_list = (xc, xp), []
+        for k in range(n):
+            carry, y = step(carry, (om2_t[k], ga_t[k], w_t[k]))
+            ys_list.append(y)
+        ys = (torch.stack(ys_list, dim=0) if ys_list
+              else om2_t.new_zeros((0, xc.shape[0])))
+    return torch.cat([xc.unsqueeze(1), ys.transpose(0, 1)], dim=1)  # (B, H)
+
+
 def _make_graphed(H, powers, om2, ga, w, xc, xp):
     """Capture a fwd+bwd CUDA graph of the RK4 core for these shapes, or fall back to the
     eager core if capture fails (e.g. OOM under a busy GPU). The eager fallback is cached
@@ -152,6 +208,27 @@ def _run_rk4(backend, om2, ga, w, xc, xp, powers, H):
             fn = _make_graphed(H, powers, om2, ga, w, xc, xp)
             _ROLLOUT_CACHE[key] = fn
         return fn(om2, ga, w, xc, xp)
+
+    if backend == "scan":
+        # Express the rollout as a scan. On sm>=70 compile the scan so the step body is
+        # lowered once (the torch._higher_order_ops.scan HOP must run under torch.compile);
+        # elsewhere run the identical eager fold (same result, no compile -- e.g. Pascal).
+        cap = torch.cuda.get_device_capability(om2.device)
+        if cap[0] >= 7:
+            key = ("scan", H, int(powers.numel()))
+            fn = _ROLLOUT_CACHE.get(key)
+            if fn is None:
+                fn = torch.compile(
+                    lambda *a: _scan_rollout(*a, powers, H, use_hop=True),
+                    mode="reduce-overhead",
+                )
+                _ROLLOUT_CACHE[key] = fn
+            return fn(om2, ga, w, xc, xp)
+        _warn_once("scan_cap",
+                   f"rollout_backend='scan' lowers the scan HOP via torch.compile, which "
+                   f"needs CUDA capability >= 7.0; this GPU is sm_{cap[0]}{cap[1]} -> running "
+                   f"the eager fold (correct, no speedup).")
+        return _scan_rollout(om2, ga, w, xc, xp, powers, H, use_hop=False)
 
     raise ValueError(f"unknown rollout_backend {backend!r}")
 
