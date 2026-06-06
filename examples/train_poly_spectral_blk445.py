@@ -140,6 +140,10 @@ def main():
                    help="linearly ramp lam_spec from 0 to its target over this many epochs. "
                         "0 disables the warmup. Needed at random init because the spectral "
                         "term against quiet/onset targets is enormous and would swamp the TF anchor.")
+    p.add_argument("--env-warmup-epochs", type=int, default=0,
+                   help="linearly ramp lam_env from 0 to its target over this many epochs. "
+                        "0 disables the warmup. Set to 5+ when using a large --lam-env (e.g. 1e4+) "
+                        "so the random-init env gradient doesn't blow up params before TF stabilizes.")
     p.add_argument("--ic-noise-rms", type=float, default=1e-3,
                    help="cold-start initial-condition noise RMS (training only).")
     p.add_argument("--grad-clip", type=float, default=5.0)
@@ -222,6 +226,7 @@ def main():
         H_min=args.H_min, H_max=args.H_max, H_schedule=args.H_schedule,
         lam_spec=args.lam_spec, lam_tf=args.lam_tf, lam_env=args.lam_env, env_ms=args.env_ms,
         spec_warmup_epochs=args.spec_warmup_epochs,
+        env_warmup_epochs=args.env_warmup_epochs,
         spec_configs=spec_configs, ic_noise_rms=args.ic_noise_rms, grad_clip=args.grad_clip,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
@@ -253,6 +258,7 @@ def main():
         "H_max": args.H_max,
         "H_schedule": args.H_schedule,
         "spec_warmup_epochs": args.spec_warmup_epochs,
+        "env_warmup_epochs": args.env_warmup_epochs,
         "ic_noise_rms": args.ic_noise_rms,
         "sr": int(sr),
     }

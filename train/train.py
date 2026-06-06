@@ -179,6 +179,7 @@ def train(
     lam_env: float = 0.0,
     env_ms: float = 2.0,
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
+    env_warmup_epochs: int = 0,     # linearly ramp lam_env 0 -> lam_env over these epochs
     spec_configs=None,
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
@@ -283,11 +284,15 @@ def train(
                     lam_spec_t = lam_spec * (epoch / float(spec_warmup_epochs))
                 else:
                     lam_spec_t = lam_spec
+                if env_warmup_epochs > 0 and epoch < env_warmup_epochs:
+                    lam_env_t = lam_env * (epoch / float(env_warmup_epochs))
+                else:
+                    lam_env_t = lam_env
                 out = spectral_rollout_step(
                     model, x, dxdt, dx2, dt,
                     H=H, configs=spec_configs,
                     lam_spec=lam_spec_t, lam_tf=lam_tf,
-                    lam_env=lam_env, env_ms=env_ms,
+                    lam_env=lam_env_t, env_ms=env_ms,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                 )
@@ -313,6 +318,7 @@ def train(
                 writer.add_scalar("Loss/total", total_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
+                writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)
                 continue
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD
