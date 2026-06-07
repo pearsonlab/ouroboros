@@ -159,6 +159,17 @@ def main():
                    help="linearly ramp lam_spec from 0 to its target over this many epochs. "
                         "0 disables the warmup. Needed at random init because the spectral "
                         "term against quiet/onset targets is enormous and would swamp the TF anchor.")
+    # Step-based curriculum overrides (None -> derive from _epochs * batches_per_epoch).
+    p.add_argument("--spec-warmup-steps", type=int, default=None,
+                   help="number of GLOBAL BATCHES over which to ramp lam_spec. Overrides "
+                        "--spec-warmup-epochs when set; lets the curriculum stay calibrated "
+                        "when the dataset size changes.")
+    p.add_argument("--env-warmup-steps", type=int, default=None,
+                   help="number of GLOBAL BATCHES over which to ramp lam_env / lam_env_log. "
+                        "Overrides --env-warmup-epochs when set.")
+    p.add_argument("--H-total-steps", type=int, default=None,
+                   help="total GLOBAL BATCHES across which the H curriculum runs. Overrides "
+                        "--n-epochs * batches_per_epoch when set.")
     p.add_argument("--env-warmup-epochs", type=int, default=0,
                    help="linearly ramp lam_env from 0 to its target over this many epochs. "
                         "0 disables the warmup. Set to 5+ when using a large --lam-env (e.g. 1e4+) "
@@ -249,6 +260,9 @@ def main():
         env_ms=args.env_ms,
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
+        spec_warmup_steps=args.spec_warmup_steps,
+        env_warmup_steps=args.env_warmup_steps,
+        H_total_steps=args.H_total_steps,
         spec_configs=spec_configs, ic_noise_rms=args.ic_noise_rms, grad_clip=args.grad_clip,
         rollout_backend=args.rollout_backend,
         cold_start_autonomy=True, rescale_autonomy=False,
@@ -286,6 +300,9 @@ def main():
         "rollout_backend": args.rollout_backend,
         "spec_warmup_epochs": args.spec_warmup_epochs,
         "env_warmup_epochs": args.env_warmup_epochs,
+        "spec_warmup_steps": args.spec_warmup_steps,
+        "env_warmup_steps": args.env_warmup_steps,
+        "H_total_steps": args.H_total_steps,
         "ic_noise_rms": args.ic_noise_rms,
         "sr": int(sr),
     }

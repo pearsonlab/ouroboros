@@ -182,6 +182,12 @@ def train(
     env_ms: float = 2.0,
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
     env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
+    # Step-based overrides (None = derived from _epochs * batches_per_epoch at startup).
+    # Set these to decouple the curriculum from dataset size: same number of gradient
+    # updates regardless of how many batches an epoch contains.
+    spec_warmup_steps: int = None,
+    env_warmup_steps: int = None,
+    H_total_steps: int = None,
     spec_configs=None,
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
@@ -227,7 +233,7 @@ def train(
     if loss_mode == "spectral_rollout":
         from train.spectral_rollout import (
             spectral_rollout_step,
-            horizon_for_epoch,
+            horizon_for_step,
             DEFAULT_CONFIGS,
             ONSET,
         )
@@ -246,11 +252,29 @@ def train(
                 tf_var_running += float(d2.var().item()) * d2.shape[0]
                 n_seen += d2.shape[0]
         tf_var = max(tf_var_running / max(1, n_seen), 1e-6)
+        # Decouple the curricula from dataset size: each ramp is measured in global
+        # gradient steps (batches). If the user didn't override, derive from epoch
+        # values × current epoch length so existing CLI invocations are unchanged.
+        batches_per_epoch = len(loaders["train"])
+        if spec_warmup_steps is None:
+            spec_warmup_steps_eff = spec_warmup_epochs * batches_per_epoch
+        else:
+            spec_warmup_steps_eff = int(spec_warmup_steps)
+        if env_warmup_steps is None:
+            env_warmup_steps_eff = env_warmup_epochs * batches_per_epoch
+        else:
+            env_warmup_steps_eff = int(env_warmup_steps)
+        if H_total_steps is None:
+            H_total_steps_eff = nEpochs * batches_per_epoch
+        else:
+            H_total_steps_eff = int(H_total_steps)
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
             f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} "
             f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
-            f"rollout_backend={rollout_backend}",
+            f"rollout_backend={rollout_backend} "
+            f"spec_warmup_steps={spec_warmup_steps_eff} env_warmup_steps={env_warmup_steps_eff} "
+            f"H_total_steps={H_total_steps_eff} (batches_per_epoch={batches_per_epoch})",
             flush=True,
         )
         if rollout_backend != "eager" and H_schedule not in ("pow2", "const"):
@@ -287,17 +311,21 @@ def train(
                 ic_mask = None
                 if cats is not None:
                     ic_mask = (cats == ONSET).to("cuda")
-                H = horizon_for_epoch(epoch, nEpochs, H_min, H_max, H_schedule)
+                # All curricula indexed by GLOBAL STEP (= `idx` thanks to
+                # enumerate(..., start=epoch * len(loader))) -- decouples them from
+                # dataset size. H is still updated per-batch but pow2 only yields a few
+                # distinct values so the graphed/compiled backends stay cache-friendly.
+                H = horizon_for_step(idx, H_total_steps_eff, H_min, H_max, H_schedule)
                 # Linearly ramp the spectral term so the random-init Mamba can first move
                 # into the TF basin (where drives become meaningful) before the spectral
                 # loss -- which is enormous when the rollout is saturated against quiet
                 # targets -- starts pulling on params.
-                if spec_warmup_epochs > 0 and epoch < spec_warmup_epochs:
-                    lam_spec_t = lam_spec * (epoch / float(spec_warmup_epochs))
+                if spec_warmup_steps_eff > 0 and idx < spec_warmup_steps_eff:
+                    lam_spec_t = lam_spec * (idx / float(spec_warmup_steps_eff))
                 else:
                     lam_spec_t = lam_spec
-                if env_warmup_epochs > 0 and epoch < env_warmup_epochs:
-                    ramp = epoch / float(env_warmup_epochs)
+                if env_warmup_steps_eff > 0 and idx < env_warmup_steps_eff:
+                    ramp = idx / float(env_warmup_steps_eff)
                     lam_env_t = lam_env * ramp
                     lam_env_log_t = lam_env_log * ramp
                 else:

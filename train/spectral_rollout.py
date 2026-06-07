@@ -388,21 +388,21 @@ def pow2_horizon_buckets(H_min: int, H_max: int) -> list:
     return hs
 
 
-def horizon_for_epoch(epoch: int, n_epochs: int, H_min: int, H_max: int,
-                      schedule: str = "geom") -> int:
-    """Curriculum on the rollout horizon: small H early (cheap, easy gradient), full H
-    by the end. 'geom' = geometric spacing; 'linear' = linear; 'const' = H_max throughout;
-    'pow2' = factor-of-2 buckets (pow2_horizon_buckets) spread evenly across the same
-    n_epochs ramp -- coarse steps so the graphed backends capture only a few graphs.
+def horizon_for_step(step: int, total_steps: int, H_min: int, H_max: int,
+                     schedule: str = "geom") -> int:
+    """Curriculum on the rollout horizon, indexed by global TRAINING STEP (batch index)
+    rather than epoch. Same formulas as horizon_for_epoch -- units differ. Lets the
+    schedule stay calibrated when the dataset size changes (longer epochs no longer
+    stretch the H ramp). 'geom' = geometric; 'linear' = linear; 'const' = H_max
+    throughout; 'pow2' = factor-of-2 buckets spread evenly across total_steps.
     """
-    if n_epochs <= 1 or schedule == "const":
+    if total_steps <= 1 or schedule == "const":
         return int(H_max)
     if schedule == "pow2":
         buckets = pow2_horizon_buckets(H_min, H_max)
-        # even division of the ramp across buckets; reaches the last bucket by the final epoch
-        idx = min(int(epoch * len(buckets) / n_epochs), len(buckets) - 1)
+        idx = min(int(step * len(buckets) / total_steps), len(buckets) - 1)
         return int(buckets[idx])
-    t = epoch / max(1, n_epochs - 1)
+    t = step / max(1, total_steps - 1)
     if schedule == "linear":
         H = H_min + t * (H_max - H_min)
     elif schedule == "geom":
@@ -410,3 +410,10 @@ def horizon_for_epoch(epoch: int, n_epochs: int, H_min: int, H_max: int,
     else:
         raise ValueError(f"unknown schedule {schedule!r}")
     return int(round(H))
+
+
+def horizon_for_epoch(epoch: int, n_epochs: int, H_min: int, H_max: int,
+                      schedule: str = "geom") -> int:
+    """Epoch-indexed thin wrapper around horizon_for_step. Kept for backward
+    compatibility with callers that don't track global step count."""
+    return horizon_for_step(epoch, n_epochs, H_min, H_max, schedule)
