@@ -160,12 +160,42 @@ for wav in val_wavs[:N_VAL]:
 L = min(len(s) for s in raw)
 val_vocs = [s[:L] for s in raw]
 
-ckpt_dir = os.path.dirname(sys.argv[1])
+ckpt_path = sys.argv[1]
+ckpt_dir = os.path.dirname(ckpt_path)
 model, _, _, _ = load_model(ckpt_dir)
 model.eval()
 with torch.no_grad():
     score, _, bd = autonomy_score(model, val_vocs, DT, rescale=False, cold_start=True)
-print(json.dumps({'autonomy': float(score), 'breakdown': {k: (float(v) if not isinstance(v, bool) else bool(v)) for k, v in bd.items()}}))
+
+# Persist signed amp_pen alongside the offline cache the loss panels reads.
+# autonomy_score now puts signed_amp_per_voc + signed_amp_mean in the breakdown so this
+# is essentially free -- the integration already happened above.
+cache_path = os.path.join(ckpt_dir, 'signed_amp_pen.json')
+cache = {}
+if os.path.exists(cache_path):
+    try:
+        with open(cache_path) as f:
+            cache = json.load(f)
+    except Exception:
+        cache = {}
+ep = int(os.path.basename(ckpt_path).split('_')[1].split('.')[0])
+cache[str(ep)] = {
+    'per_voc': [float(v) for v in bd.get('signed_amp_per_voc', [])],
+    'mean': float(bd.get('signed_amp_mean', float('nan'))),
+}
+with open(cache_path, 'w') as f:
+    json.dump(cache, f, indent=2)
+
+# JSON-safe breakdown: drop the list, keep the scalar mean alongside everything else.
+safe_bd = {}
+for k, v in bd.items():
+    if isinstance(v, bool):
+        safe_bd[k] = bool(v)
+    elif isinstance(v, list):
+        continue  # per-voc lists go to the cache, not the stdout summary
+    else:
+        safe_bd[k] = float(v)
+print(json.dumps({'autonomy': float(score), 'breakdown': safe_bd}))
 """
 
 

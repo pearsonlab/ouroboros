@@ -524,6 +524,12 @@ def autonomy_score(
         return float(f[np.argmax(P)])
 
     scores, specs, amps, pits, bounded = [], [], [], [], []
+    # Signed amp = log(auto_rms / target_rms). Positive = loud, negative = quiet.
+    # amp_pen is |signed_amp|, so this gives direction at no extra integration cost.
+    # The "raw" version uses the unrescaled auto_n, so the sign reflects what the
+    # autonomous integrator actually produced (not what the deployed rescale recipe
+    # would emit).
+    signed_amps_raw = []
     for seg in segments:
         seg = np.asarray(seg, dtype=np.float64)
         tgt = correct(seg)
@@ -535,8 +541,13 @@ def autonomy_score(
             scores.append(diverge_score)
             bounded.append(0.0)
             specs.append(np.nan); amps.append(np.nan); pits.append(np.nan)
+            signed_amps_raw.append(float("nan"))
             continue
         bounded.append(1.0)
+        # Capture the SIGNED amp BEFORE optional rescaling so we know which direction
+        # the raw autonomous rollout drifts.
+        signed_amp_raw = float(np.log((np.nanstd(auto_n) + 1e-12) / (np.nanstd(tgt_n) + 1e-12)))
+        signed_amps_raw.append(signed_amp_raw)
         if rescale:  # gauge-fix amplitude to the target RMS (the deployed recipe)
             auto_n = auto_n * (np.nanstd(tgt_n) / (np.nanstd(auto_n) + 1e-12))
         sc = float(np.corrcoef(_logpsd(tgt_n), _logpsd(auto_n))[0, 1])
@@ -552,6 +563,10 @@ def autonomy_score(
         "bounded_frac": float(np.mean(bounded)) if len(bounded) else 0.0,
         "cold_start": bool(cold_start),
         "rescale": bool(rescale),
+        # Signed amp_pen (loud/quiet direction) -- mean over vocs and per-voc list.
+        "signed_amp_mean": (float(np.nanmean(signed_amps_raw))
+                            if any(np.isfinite(signed_amps_raw)) else float("nan")),
+        "signed_amp_per_voc": [float(v) for v in signed_amps_raw],
     }
     return float(np.mean(scores)), scores, breakdown
 

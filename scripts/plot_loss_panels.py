@@ -106,6 +106,21 @@ def main():
             print(f"warn: no TB events in {r['run_dir']}/seed0", file=sys.stderr)
             continue
         per_epoch = {t: per_epoch_means(v, bpe) for t, v in scalars.items()}
+
+        # Load the signed amp_pen cache (built offline by scripts/build_signed_amp_cache.py)
+        # if present, and project it onto an "epoch -> mean signed amp_pen" array indexed
+        # by checkpoint epoch. Missing epochs are left as NaN so matplotlib breaks the line.
+        cache_path = os.path.join(r["run_dir"], "seed0", "signed_amp_pen.json")
+        if os.path.exists(cache_path):
+            with open(cache_path) as f:
+                amp_cache = json.load(f)
+            if amp_cache:
+                max_ep = max(int(k) for k in amp_cache.keys())
+                arr = np.full(max_ep + 1, np.nan, dtype=np.float64)
+                for k, v in amp_cache.items():
+                    arr[int(k)] = float(v.get("mean", np.nan))
+                per_epoch["signed_amp_pen"] = arr
+
         runs.append({"label": r["label"], "run_dir": r["run_dir"],
                      "scalars": scalars, "per_epoch": per_epoch})
 
@@ -130,7 +145,7 @@ def main():
         ("Loss/env",  "env L1",        False),
         ("Loss/total", "total",        True),
         ("Train/H",   "rollout H (samples)", False),
-        ("Train/lam_spec_t", "lam_spec_t (warmup)", False),
+        ("signed_amp_pen", "signed amp_pen = log(auto/tgt rms)", False),
     ]
     n = len(panels)
     fig, axes = plt.subplots(n, 1, figsize=(11, 2.0 * n), sharex=True)
@@ -169,7 +184,16 @@ def main():
             v = r["per_epoch"].get(tag)
             if v is None or len(v) == 0:
                 continue
-            if smooth > 1 and len(v) >= smooth:
+            # signed amp_pen is a per-CHECKPOINT array (one value per epoch the cache
+            # has scored), not a per-BATCH TB stream, so don't smooth it.
+            if tag == "signed_amp_pen":
+                vs = v
+                xs = np.arange(len(vs))
+                # only draw where the cache actually has data
+                mask = np.isfinite(vs)
+                xs = xs[mask]
+                vs = vs[mask]
+            elif smooth > 1 and len(v) >= smooth:
                 # simple moving average
                 vs = np.convolve(v, np.ones(smooth) / smooth, mode="valid")
                 xs = np.arange(len(vs)) + (smooth - 1)
@@ -177,11 +201,16 @@ def main():
                 vs = v
                 xs = np.arange(len(vs))
             c = colors.get(r["label"], None)
-            ax.plot(xs, vs, label=r["label"], color=c, lw=1.4)
+            ax.plot(xs, vs, label=r["label"], color=c, lw=1.4,
+                    marker="o" if tag == "signed_amp_pen" else None,
+                    markersize=3 if tag == "signed_amp_pen" else None)
         # warmup boundary marker per run
         for label, b in warmup_boundaries:
             c = colors.get(label, None)
             ax.axvline(b, color=c, alpha=0.25, lw=1.0, ls="--", zorder=0)
+        # Reference line at 0 (auto_rms == target_rms) on the signed amp_pen panel
+        if tag == "signed_amp_pen":
+            ax.axhline(0, color="black", alpha=0.5, lw=0.8, ls=":", zorder=0)
         ax.set_ylabel(title)
         if logy:
             ax.set_yscale("log")
