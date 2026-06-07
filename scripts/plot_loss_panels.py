@@ -83,13 +83,23 @@ def read_run(run_dir):
 
 
 def per_epoch_means(values, batches_per_epoch):
-    """Group batch-indexed scalars into per-epoch means."""
+    """Group batch-indexed scalars into per-epoch means. The currently-running
+    partial epoch is appended as a final point with the mean of however many
+    batches it has so far -- otherwise the plot misses the most recent gradient
+    updates (which can be 30-60% of an epoch for long runs)."""
     n = len(values)
     n_eps = n // batches_per_epoch
     if n_eps == 0:
-        return np.array([])
+        # Pre-first-epoch: show the partial as the single point at x=0 if non-trivial.
+        return np.array([values.mean()]) if len(values) >= batches_per_epoch // 4 else np.array([])
     truncated = values[:n_eps * batches_per_epoch]
-    return truncated.reshape(n_eps, batches_per_epoch).mean(axis=1)
+    means = truncated.reshape(n_eps, batches_per_epoch).mean(axis=1)
+    remainder = values[n_eps * batches_per_epoch:]
+    # Only include the partial epoch if it has at least ~10% of a full epoch's batches
+    # -- avoids noisy single-point spikes from a freshly-started epoch.
+    if len(remainder) >= max(1, batches_per_epoch // 10):
+        means = np.concatenate([means, [remainder.mean()]])
+    return means
 
 
 def read_ckpt_autonomy(state_path):
