@@ -43,6 +43,27 @@ def parse_run_arg(s):
     return {"label": label, "run_dir": run_dir, "state_path": state_path}
 
 
+def _detect_batches_per_epoch(run_dir, fallback=600):
+    """Look for 'batches_per_epoch=N' in the sibling train.log (added when step-based
+    warmups landed). Falls back to `fallback` for legacy runs without the line."""
+    try:
+        parent = os.path.dirname(run_dir.rstrip("/"))
+        log_path = os.path.join(parent, os.path.basename(run_dir.rstrip("/")) + "_train.log")
+        if not os.path.exists(log_path):
+            return fallback
+        import re
+        with open(log_path) as f:
+            for i, line in enumerate(f):
+                if i > 200:
+                    break
+                m = re.search(r"batches_per_epoch=(\d+)", line)
+                if m:
+                    return int(m.group(1))
+    except Exception:
+        pass
+    return fallback
+
+
 def read_run(run_dir):
     """Return per-batch scalars dict + an inferred batches-per-epoch."""
     seed_dir = os.path.join(run_dir, "seed0")
@@ -58,9 +79,7 @@ def read_run(run_dir):
         if t in tags:
             sc = ea.Scalars(t)
             out[t] = np.array([s.value for s in sc])
-    # Infer batches-per-epoch from the train pipeline config: 6000 segs * 0.8 (train split) / 8 batch = 600.
-    # If the run's tags reveal more we could overwrite; for now hard-code as the entry script does.
-    return out, 600
+    return out, _detect_batches_per_epoch(run_dir)
 
 
 def per_epoch_means(values, batches_per_epoch):
