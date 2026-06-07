@@ -79,6 +79,36 @@ def latest_event_file():
     return evs[-1] if evs else None
 
 
+_BPE_CACHE = {}
+
+def detect_batches_per_epoch(fallback: int = 750) -> int:
+    """Find 'batches_per_epoch=N' in <run_dir>_train.log (the sibling-named log the
+    entry script writes). Cached per SEED_DIR so we only parse the log once. Falls
+    back to `fallback` if anything goes wrong (legacy runs that predate the print)."""
+    if SEED_DIR in _BPE_CACHE:
+        return _BPE_CACHE[SEED_DIR]
+    bpe = fallback
+    try:
+        run_dir = os.path.dirname(SEED_DIR.rstrip("/"))
+        parent = os.path.dirname(run_dir)
+        log_path = os.path.join(parent, os.path.basename(run_dir) + "_train.log")
+        if os.path.exists(log_path):
+            import re
+            with open(log_path) as f:
+                # the line is small + near the top; scan up to first ~200 lines.
+                for i, line in enumerate(f):
+                    if i > 200:
+                        break
+                    m = re.search(r"batches_per_epoch=(\d+)", line)
+                    if m:
+                        bpe = int(m.group(1))
+                        break
+    except Exception:
+        pass
+    _BPE_CACHE[SEED_DIR] = bpe
+    return bpe
+
+
 def read_loss(ev_path):
     from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     ea = EventAccumulator(ev_path, size_guidance={"scalars": 0})
@@ -236,7 +266,7 @@ def main():
     H_arr = loss.get("Train/H", np.array([]))
     nan_skips = loss["nan_skips"]
     cur_H = int(H_arr[-1]) if len(H_arr) else -1
-    epoch_est = int(len(spec) // 750)
+    epoch_est = int(len(spec) // max(1, detect_batches_per_epoch()))
 
     spec_w = window_means(spec, w=100, n_windows=20)
     spec_recent5 = float(spec_w[-5:].mean()) if len(spec_w) >= 5 else float("nan")
