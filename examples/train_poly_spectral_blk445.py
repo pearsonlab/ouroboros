@@ -322,10 +322,15 @@ def main():
             best_model, test_vocs, dt, rescale=True, cold_start=True,
         )
         manifest["rescaled_test_autonomy"] = float(deployed_score)
-        manifest["rescaled_test_breakdown"] = {
-            k: (float(v) if not isinstance(v, bool) else bool(v))
-            for k, v in deployed_bd.items()
-        }
+        def _jsonable(v):
+            # breakdown values are scalars EXCEPT signed_amp_per_voc, which is a list of
+            # floats -- pass lists/bools through and coerce the rest to float for JSON.
+            if isinstance(v, bool):
+                return bool(v)
+            if isinstance(v, (list, tuple)):
+                return [float(x) for x in v]
+            return float(v)
+        manifest["rescaled_test_breakdown"] = {k: _jsonable(v) for k, v in deployed_bd.items()}
         recon = generate_autonomous(best_model, test_vocs[0], dt, rescale=True)
         if np.isfinite(recon).all() and np.abs(recon).max() > 0:
             wav = (recon / (np.abs(recon).max() + 1e-12) * 0.95 * 32767).astype(np.int16)
