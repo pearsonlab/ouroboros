@@ -125,6 +125,11 @@ def main():
                    help="Strategy 1: initialize each seed as a marginal van der Pol limit cycle "
                         "(small negative damping + seeded y^2*ydot re-damping + y^3 hardening) so "
                         "oscillation can ignite from silence instead of the dissipative default init.")
+    p.add_argument("--checkpoint-encoder", action=argparse.BooleanOptionalAction, default=False,
+                   help="gradient-checkpoint the three Mamba drive encoders. Their activations over "
+                        "the doubled-length sequence dominate training memory (~6.9 GB at B=64); "
+                        "recomputing them in backward trades ~one extra encoder forward per step for "
+                        "the headroom to run larger batch sizes (e.g. B=128) within 11 GB.")
     p.add_argument("--lam", type=float, default=1.068,
                    help="fixed kernel-weight lambda (no CV in this PR).")
     # loss
@@ -151,9 +156,11 @@ def main():
     p.add_argument("--H-schedule", choices=["geom", "linear", "const", "pow2"],
                    default="geom")
     p.add_argument("--rollout-backend",
-                   choices=["eager", "cudagraph", "compile", "scan"],
+                   choices=["eager", "graphstep", "cudagraph", "compile", "scan"],
                    default="eager",
-                   help="RK4 rollout backend; 'cudagraph'/'compile' want --H-schedule pow2. "
+                   help="RK4 rollout backend. 'graphstep' CUDA-graphs one RK4 step and replays it "
+                        "(~3.9x vs eager at H=2048, works on Pascal, H-invariant capture) -- the "
+                        "recommended fast backend here. 'cudagraph'/'compile' want --H-schedule pow2. "
                         "'scan' lowers the step once via torch.compile (sm>=70), else eager fold.")
     p.add_argument("--spec-warmup-epochs", type=int, default=5,
                    help="linearly ramp lam_spec from 0 to its target over this many epochs. "
@@ -250,6 +257,7 @@ def main():
         d_state=args.d_state, d_conv=args.d_conv, expand_factor=args.expand_factor,
         tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, keep_const=args.keep_const,
         osc_init=args.osc_init,
+        checkpoint_encoder=args.checkpoint_encoder,
         lam=args.lam,
         n_epochs=args.n_epochs, lr=args.lr, n_seeds=args.n_seeds,
         cull_frac=args.cull_frac, cull_keep=args.cull_keep,

@@ -277,7 +277,7 @@ def train(
             f"H_total_steps={H_total_steps_eff} (batches_per_epoch={batches_per_epoch})",
             flush=True,
         )
-        if rollout_backend != "eager" and H_schedule not in ("pow2", "const"):
+        if rollout_backend not in ("eager", "graphstep") and H_schedule not in ("pow2", "const"):
             print(
                 f"  WARNING: rollout_backend={rollout_backend!r} captures one CUDA graph "
                 f"per distinct H; schedule {H_schedule!r} yields many. Use H_schedule='pow2' "

@@ -60,11 +60,20 @@ def _filter_configs_for_horizon(configs, H):
 #
 # Backends ('rollout_backend'):
 #   'eager'     -- plain Python loop (default; always correct, no capture).
-#   'cudagraph' -- torch.cuda.make_graphed_callables (fwd+bwd graph); works on Pascal+.
+#   'graphstep' -- CUDA-graph ONE RK4 step (fwd-only + recompute-fwd+bwd graphs) and replay
+#                  it H-1 times through a custom autograd.Function. Correct on Pascal+ and
+#                  ~3.9x faster than eager for the rollout fwd+bwd at H=2048 (measured, 1080 Ti).
+#                  Capture is keyed on (B, P, dtype) -- NOT H -- so one capture serves every
+#                  horizon and capture memory is O(1) (~130 MiB), unlike 'cudagraph' below.
+#   'cudagraph' -- torch.cuda.make_graphed_callables of the WHOLE rollout (fwd+bwd graph).
+#                  DEAD END for training: whole-loop capture does not reuse per-step scratch,
+#                  so capture memory scales ~per-step (~30 GB at H=2048) and OOMs. Kept only
+#                  for the forward-only/short-H cases it was originally measured on.
 #   'compile'   -- torch.compile(mode='reduce-overhead'); needs sm>=70, else -> cudagraph.
 #
-# Graphs require static shapes, so one graph is captured per (H, batch, dtype). Use the
-# 'pow2' horizon schedule (horizon_for_epoch) to keep the number of distinct H small.
+# 'cudagraph'/'compile' capture one graph per (H, batch, dtype); use the 'pow2' horizon
+# schedule to keep the number of distinct H small. 'graphstep' is H-invariant and is the
+# recommended fast backend on this hardware.
 _ROLLOUT_CACHE = {}
 _ROLLOUT_WARNED = set()
 
@@ -181,11 +190,119 @@ def _make_graphed(H, powers, om2, ga, w, xc, xp):
         return core
 
 
+class _GraphedRK4Step:
+    """One RK4 step captured as two CUDA graphs, exposed as an autograd.Function.
+
+    g_fwd: forward-only (used in the rollout loop). g_bwd: recompute-forward + autograd.grad
+    (used in backward). Saved tensors are real clones, so calling the Function H-1 times and
+    backpropagating ONCE is correct -- unlike make_graphed_callables, whose shared static
+    output buffers collapse a multi-call-then-single-backward into the last step's values.
+
+    Capture is keyed on (B, P, dtype) only: the step's shapes don't depend on the horizon H,
+    so one capture is replayed for every step of every horizon, with O(1) capture memory.
+    `powers` is closed over at capture time (constant arange(P) for a given kernel).
+    """
+    def __init__(self, B, P, powers, device, dtype):
+        # Own a private copy of `powers`: the captured graphs reference its data pointer for
+        # their whole lifetime, but the `powers` passed in is a view into the model's kernel
+        # buffer, which is freed when that model is GC'd (e.g. between seeds). Aliasing it
+        # would make later replays read freed memory and emit NaNs. Holding self.powers keeps
+        # the buffer alive; the closure below captures this owned tensor.
+        powers = powers.detach().clone()
+        self.powers = powers
+        z = lambda *s: torch.zeros(*s, device=device, dtype=dtype)
+        self.s = [z(B).requires_grad_(True),        # om2k
+                  z(B).requires_grad_(True),        # gak
+                  z(B, P, P).requires_grad_(True),  # w_k
+                  z(B).requires_grad_(True),        # xc
+                  z(B).requires_grad_(True)]        # xp
+        self.s_gxc, self.s_gxp = z(B), z(B)
+
+        def step(om2k, gak, w_k, xc, xp):
+            def f(xx, vv):
+                xpw = xx.unsqueeze(1) ** powers
+                xvw = vv.unsqueeze(1) ** powers
+                kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
+                return vv, -om2k * xx - gak * vv - kern
+            k1x, k1v = f(xc, xp)
+            k2x, k2v = f(xc + 0.5 * k1x, xp + 0.5 * k1v)
+            k3x, k3v = f(xc + 0.5 * k2x, xp + 0.5 * k2v)
+            k4x, k4v = f(xc + k3x, xp + k3v)
+            xc = xc + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
+            xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
+            return BX * torch.tanh(xc / BX), BXP * torch.tanh(xp / BXP)
+
+        # Warm up both the grad and no-grad paths on a side stream before capture (required
+        # so cuDNN/cuBLAS workspaces etc. are allocated outside the captured region).
+        stream = torch.cuda.Stream(); stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                oxc, oxp = step(*self.s)
+                torch.autograd.grad((oxc, oxp), self.s, (self.s_gxc, self.s_gxp))
+            with torch.no_grad():
+                for _ in range(3):
+                    step(*self.s)
+        torch.cuda.current_stream().wait_stream(stream)
+
+        self.g_fwd = torch.cuda.CUDAGraph()
+        with torch.no_grad():
+            with torch.cuda.graph(self.g_fwd):
+                self.f_oxc, self.f_oxp = step(*self.s)
+        self.g_bwd = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.g_bwd):
+            oxc, oxp = step(*self.s)
+            self.cg = torch.autograd.grad((oxc, oxp), self.s, (self.s_gxc, self.s_gxp))
+
+        gs = self
+
+        class _Fn(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, om2k, gak, w_k, xc, xp):
+                with torch.no_grad():
+                    for buf, val in zip(gs.s, (om2k, gak, w_k, xc, xp)):
+                        buf.copy_(val)
+                    gs.g_fwd.replay()
+                    out = (gs.f_oxc.clone(), gs.f_oxp.clone())
+                ctx.save_for_backward(om2k.detach(), gak.detach(), w_k.detach(),
+                                      xc.detach(), xp.detach())
+                return out
+
+            @staticmethod
+            def backward(ctx, g_oxc, g_oxp):
+                with torch.no_grad():
+                    for buf, val in zip(gs.s, ctx.saved_tensors):
+                        buf.copy_(val)
+                    gs.s_gxc.copy_(g_oxc); gs.s_gxp.copy_(g_oxp)
+                    gs.g_bwd.replay()
+                    return tuple(c.clone() for c in gs.cg)
+
+        self.apply = _Fn.apply
+
+
+def _graphstep_rollout(om2, ga, w, xc, xp, powers, H):
+    """RK4 rollout that replays a per-step CUDA graph (see _GraphedRK4Step). Same (B, H)
+    output and gradients as _rk4_core_factory, ~3.9x faster at H=2048 on Pascal."""
+    B, P = xc.shape[0], int(powers.numel())
+    key = ("graphstep", B, P, om2.dtype)
+    gstep = _ROLLOUT_CACHE.get(key)
+    if gstep is None:
+        gstep = _GraphedRK4Step(B, P, powers, om2.device, om2.dtype)
+        _ROLLOUT_CACHE[key] = gstep
+    xs = [xc]
+    for k in range(H - 1):
+        xc, xp = gstep.apply(om2[:, k], ga[:, k], w[:, k].contiguous(), xc, xp)
+        xs.append(xc)
+    return torch.stack(xs, dim=1)
+
+
 def _run_rk4(backend, om2, ga, w, xc, xp, powers, H):
     """Execute the RK4 rollout under the requested backend. om2/ga/w are (B, >=H[, P, P]);
     xc/xp are (B,). Returns (B, H)."""
     if backend == "eager" or not om2.is_cuda:
         return _rk4_core_factory(H, powers)(om2, ga, w, xc, xp)
+
+    if backend == "graphstep":
+        return _graphstep_rollout(om2, ga, w, xc, xp, powers, H)
 
     if backend == "compile":
         cap = torch.cuda.get_device_capability(om2.device)

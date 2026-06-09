@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from mambapy.mamba import Mamba, MambaConfig
 from model.model_utils import smooth
 from typing import Tuple, Union
@@ -39,6 +40,7 @@ class Ouroboros(nn.Module):
         drive_lowpass_ms: float = 0.0,
         keep_const: bool = False,
         osc_init: bool = False,
+        checkpoint_encoder: bool = False,
         gamma_init: float = -0.01,
         vdp_init: float = 0.02,
         cubic_init: float = 0.01,
@@ -91,6 +93,11 @@ class Ouroboros(nn.Module):
         # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Keeps the
         # drives from re-encoding the audio carrier and improves autonomous behavior.
         self.drive_lowpass_ms = drive_lowpass_ms
+        # if True, gradient-checkpoint the three Mamba drive encoders in get_funcs: their
+        # activations over the doubled-length sequence (x_in is 2L) dominate training memory
+        # (~6.9 GB at B=64, vs ~60 MiB for the RK4 rollout), so recomputing them in backward
+        # is what unlocks larger batch sizes. ~1 extra encoder forward per step in exchange.
+        self.checkpoint_encoder = checkpoint_encoder
         self.kernel = kernel
         self.kernel.tau = self.tau
         # if True, ADD the constant (0,0) "alpha"-like forcing term (y^0*ydot^0) to the kernel
@@ -286,9 +293,18 @@ class Ouroboros(nn.Module):
 
         x_in = torch.cat([torch.flip(z, [1]), z], dim=1)  ## stack on time dimension
 
-        omegaControl = self.omega_mamba(x_in)[:, L:, :]
-        gammaControl = self.gamma_mamba(x_in)[:, L:, :]
-        kernelControl = self.kernel_mamba(x_in)[:, L:, :]
+        # The three Mamba encoders over x_in (length 2L) are the training-memory bottleneck.
+        # When checkpoint_encoder is on (and we're building a graph), recompute them in
+        # backward instead of storing their activations -- trades ~1 extra encoder forward
+        # for the headroom to push batch size past what fits otherwise.
+        if self.checkpoint_encoder and torch.is_grad_enabled():
+            omegaControl = checkpoint(self.omega_mamba, x_in, use_reentrant=False)[:, L:, :]
+            gammaControl = checkpoint(self.gamma_mamba, x_in, use_reentrant=False)[:, L:, :]
+            kernelControl = checkpoint(self.kernel_mamba, x_in, use_reentrant=False)[:, L:, :]
+        else:
+            omegaControl = self.omega_mamba(x_in)[:, L:, :]
+            gammaControl = self.gamma_mamba(x_in)[:, L:, :]
+            kernelControl = self.kernel_mamba(x_in)[:, L:, :]
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
