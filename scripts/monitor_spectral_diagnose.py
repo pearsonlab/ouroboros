@@ -230,10 +230,13 @@ print(json.dumps({'autonomy': float(score), 'breakdown': safe_bd}))
 
 
 def run_autonomy_on_checkpoint(ckpt_path):
-    r = subprocess.run(
-        ["/home/pearson/code/ouroboros/.venv/bin/python", "-c", AUTONOMY_SNIPPET, ckpt_path],
-        capture_output=True, text=True, timeout=900,
-    )
+    try:
+        r = subprocess.run(
+            ["/home/pearson/code/ouroboros/.venv/bin/python", "-c", AUTONOMY_SNIPPET, ckpt_path],
+            capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return None, {"error": "scoring subprocess timed out (GPU contention?)"}
     if r.returncode != 0:
         last_err = r.stderr.strip().splitlines()[-1] if r.stderr else "unknown"
         return None, {"error": last_err}
@@ -321,6 +324,9 @@ def main():
         if score is None:
             emit({"status": "CKPT_ERR", "ckpt_epoch": ckpt_epoch,
                   "err": bd.get("error", "?"), **base})
+            # Mark this ckpt as attempted so we don't burn GPU/wall on the same one
+            # every poll. Re-tried only when a NEW-numbered ckpt arrives.
+            state["last_ckpt_epoch"] = ckpt_epoch
             save_state(state); return
 
         prev_val = state.get("last_val_autonomy")
