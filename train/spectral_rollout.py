@@ -428,6 +428,7 @@ def spectral_rollout_step(
     lam_env_log: float = 0.0,         # weight on the log-ratio envelope loss (env_loss_log)
     env_log_eps: float = 1e-4,        # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
+    lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights
     tf_var: Optional[float] = None,   # precomputed Var(d2x) over the dataset; matches rollout_refine.py:110
     ic_mask: Optional[torch.Tensor] = None,
     ic_noise_rms: float = 1e-3,
@@ -486,8 +487,29 @@ def spectral_rollout_step(
     else:
         L_env_log = torch.zeros((), device=x.device, dtype=x.dtype)
 
-    total = lam_spec * L_spec + lam_tf * L_tf + lam_env * L_env + lam_env_log * L_env_log
-    return {"spec": L_spec, "tf": L_tf, "env": L_env, "env_log": L_env_log, "total": total}
+    # Degree-graded L2 penalty on the polynomial kernel weights. The weighting
+    # `model.kernel.lam ** (i + j)` shapes how each polynomial term is penalised
+    # by its total degree; `lam_reg` is the overall scale and defaults to 0 (off).
+    # Operates on the same `weights` tensor returned by get_funcs above -- no extra
+    # forward pass. Mirrors the legacy MSE-accel reg_weights block in train.train,
+    # which never ran in spectral mode prior to this.
+    if lam_reg > 0:
+        P = weights.shape[-1]
+        deg = torch.arange(P, dtype=weights.dtype, device=weights.device)
+        lam_grid = float(model.kernel.lam) ** (deg.view(P, 1) + deg.view(1, P))  # (P, P)
+        L_reg = (lam_grid * weights ** 2).sum(dim=(-1, -2, -3)).mean()
+    else:
+        L_reg = torch.zeros((), device=x.device, dtype=x.dtype)
+
+    total = (
+        lam_spec * L_spec
+        + lam_tf * L_tf
+        + lam_env * L_env
+        + lam_env_log * L_env_log
+        + lam_reg * L_reg
+    )
+    return {"spec": L_spec, "tf": L_tf, "env": L_env, "env_log": L_env_log,
+            "reg": L_reg, "total": total}
 
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:

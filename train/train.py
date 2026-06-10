@@ -180,6 +180,7 @@ def train(
     lam_env_log: float = 0.0,       # weight on the log-ratio envelope loss (env_loss_log)
     env_log_eps: float = 1e-4,      # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
+    lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
     env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
     # Step-based overrides (None = derived from _epochs * batches_per_epoch at startup).
@@ -270,7 +271,8 @@ def train(
             H_total_steps_eff = int(H_total_steps)
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
-            f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} "
+            f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} lam_reg={lam_reg} "
+            f"kernel.lam={float(model.kernel.lam):.4g} "
             f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
             f"rollout_backend={rollout_backend} "
             f"spec_warmup_steps={spec_warmup_steps_eff} env_warmup_steps={env_warmup_steps_eff} "
@@ -338,6 +340,7 @@ def train(
                     lam_env=lam_env_t,
                     lam_env_log=lam_env_log_t, env_log_eps=env_log_eps,
                     env_ms=env_ms,
+                    lam_reg=lam_reg,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
@@ -349,12 +352,12 @@ def train(
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
-                # One device->host sync for all scalar logging instead of 5 separate
+                # One device->host sync for all scalar logging instead of 6 separate
                 # .item() calls (one of which was a duplicate of out["spec"]): stack the
-                # loss tensors and transfer once. out["env"] / out["env_log"] are always
-                # tensors (zeros when their lam is 0), so the stack is well-formed.
-                spec_v, tf_v, env_v, env_log_v, total_v = torch.stack(
-                    [out["spec"], out["tf"], out["env"], out["env_log"], total_loss]
+                # loss tensors and transfer once. out["env"] / out["env_log"] / out["reg"]
+                # are always tensors (zeros when their lam is 0), so the stack is well-formed.
+                spec_v, tf_v, env_v, env_log_v, reg_v, total_v = torch.stack(
+                    [out["spec"], out["tf"], out["env"], out["env_log"], out["reg"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
                 writer.add_scalar("Loss/spec", spec_v, idx)
@@ -363,6 +366,8 @@ def train(
                     writer.add_scalar("Loss/env", env_v, idx)
                 if lam_env_log > 0:
                     writer.add_scalar("Loss/env_log", env_log_v, idx)
+                if lam_reg > 0:
+                    writer.add_scalar("Loss/reg", reg_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)

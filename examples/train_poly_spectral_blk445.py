@@ -130,13 +130,20 @@ def main():
                         "the doubled-length sequence dominate training memory (~6.9 GB at B=64); "
                         "recomputing them in backward trades ~one extra encoder forward per step for "
                         "the headroom to run larger batch sizes (e.g. B=128) within 11 GB.")
-    p.add_argument("--lam", type=float, default=1.068,
-                   help="fixed kernel-weight lambda (no CV in this PR).")
+    p.add_argument("--lam", type=float, default=1.0,
+                   help="degree-grading on the polynomial kernel weights: term (i, j) is "
+                        "weighted by lam**(i+j) inside the kernel-weight L2 penalty. lam<1 "
+                        "softens higher-degree terms, lam>1 strengthens them, lam=1 is flat. "
+                        "Penalty itself is gated by --lam-reg.")
     # loss
     p.add_argument("--lam-spec", type=float, default=1.0)
     p.add_argument("--lam-tf", type=float, default=1.0,
                    help="variance-normalized acceleration MSE anchor. Default-on so early "
                         "epochs have a smooth gradient signal before the spectral basin is informative.")
+    p.add_argument("--lam-reg", type=float, default=0.0,
+                   help="overall scale on the degree-graded L2 penalty `sum lam**(i+j) * weights**2` "
+                        "applied to the polynomial kernel weights. 0 disables (no behavior change). "
+                        "lam (above) shapes the degree grading; lam_reg scales the whole penalty.")
     p.add_argument("--lam-env-log", type=float, default=0.0,
                    help="weight on the LOG-RATIO envelope loss (|log((env(a)+eps)/(env(g)+eps))|). "
                         "Symmetric in (auto, target) -- penalizes shrinking past target the same as "
@@ -266,6 +273,7 @@ def main():
         lam_spec=args.lam_spec, lam_tf=args.lam_tf,
         lam_env=args.lam_env, lam_env_log=args.lam_env_log, env_log_eps=args.env_log_eps,
         env_ms=args.env_ms,
+        lam_reg=args.lam_reg,
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
         spec_warmup_steps=args.spec_warmup_steps,
@@ -301,6 +309,8 @@ def main():
         "lam_env_log": args.lam_env_log,
         "env_log_eps": args.env_log_eps,
         "env_ms": args.env_ms,
+        "lam_reg": args.lam_reg,
+        "lam": args.lam,
         "spec_configs": [list(c) for c in spec_configs],
         "H_min": args.H_min,
         "H_max": args.H_max,
