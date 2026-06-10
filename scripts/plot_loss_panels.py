@@ -64,12 +64,34 @@ def _detect_batches_per_epoch(run_dir, fallback=600):
     return fallback
 
 
+def _detect_resume_epoch(run_dir):
+    """Look for a 'loading from .../checkpoint_N.tar' line in the sibling train.log.
+    Returns N when present (the loop's `for epoch in range(N, ...)` starts at N, so
+    the first per-epoch point corresponds to epoch N), or 0 for from-scratch runs."""
+    try:
+        parent = os.path.dirname(run_dir.rstrip("/"))
+        log_path = os.path.join(parent, os.path.basename(run_dir.rstrip("/")) + "_train.log")
+        if not os.path.exists(log_path):
+            return 0
+        import re
+        with open(log_path) as f:
+            for i, line in enumerate(f):
+                if i > 200:
+                    break
+                m = re.search(r"loading from .*/checkpoint_(\d+)\.tar", line)
+                if m:
+                    return int(m.group(1))
+    except Exception:
+        pass
+    return 0
+
+
 def read_run(run_dir):
-    """Return per-batch scalars dict + an inferred batches-per-epoch."""
+    """Return per-batch scalars dict, inferred batches-per-epoch, and resume offset."""
     seed_dir = os.path.join(run_dir, "seed0")
     evs = sorted(glob.glob(os.path.join(seed_dir, "events.out.tfevents.*")))
     if not evs:
-        return None, None
+        return None, None, 0
     ea = EventAccumulator(evs[-1], size_guidance={"scalars": 0})
     ea.Reload()
     tags = ea.Tags().get("scalars", [])
@@ -79,7 +101,7 @@ def read_run(run_dir):
         if t in tags:
             sc = ea.Scalars(t)
             out[t] = np.array([s.value for s in sc])
-    return out, _detect_batches_per_epoch(run_dir)
+    return out, _detect_batches_per_epoch(run_dir), _detect_resume_epoch(run_dir)
 
 
 def per_epoch_means(values, batches_per_epoch):
@@ -130,7 +152,7 @@ def main():
 
     runs = []
     for r in args.run:
-        scalars, bpe = read_run(r["run_dir"])
+        scalars, bpe, resume_ep = read_run(r["run_dir"])
         if scalars is None:
             print(f"warn: no TB events in {r['run_dir']}/seed0", file=sys.stderr)
             continue
@@ -151,7 +173,8 @@ def main():
                 per_epoch["signed_amp_pen"] = arr
 
         runs.append({"label": r["label"], "run_dir": r["run_dir"],
-                     "scalars": scalars, "per_epoch": per_epoch})
+                     "scalars": scalars, "per_epoch": per_epoch,
+                     "resume_ep": resume_ep})
 
     if not runs:
         raise SystemExit("no runs with data")
@@ -191,6 +214,8 @@ def main():
         "osc_none": "tab:cyan",
         "osc_log1e4": "tab:brown",
         "full_osc": "tab:olive",
+        "tf10": "tab:pink",
+        "tf10_b64": "tab:gray",
     }
 
     # Detect the spec_warmup boundary per run -- the first epoch where lam_spec_t hits
@@ -205,8 +230,9 @@ def main():
         lam_max = float(np.max(lam))
         if lam_max <= 0:
             continue
-        # epoch index where the ramp first reaches (within 1%) its max
-        idx = int(np.argmax(lam >= lam_max * 0.99))
+        # epoch index where the ramp first reaches (within 1%) its max, shifted by
+        # the resume epoch so the boundary lands on the correct x for resumed runs.
+        idx = int(np.argmax(lam >= lam_max * 0.99)) + r.get("resume_ep", 0)
         warmup_boundaries.append((r["label"], idx))
 
     for ax, (tag, title, logy) in zip(axes, panels):
@@ -216,7 +242,9 @@ def main():
                 continue
             # signed amp_pen is a per-CHECKPOINT array (one value per epoch the cache
             # has scored), not a per-BATCH TB stream, so don't smooth it.
+            offset = r.get("resume_ep", 0)
             if tag == "signed_amp_pen":
+                # cache is already keyed by real epoch number -- no offset needed.
                 vs = v
                 xs = np.arange(len(vs))
                 # only draw where the cache actually has data
@@ -224,12 +252,12 @@ def main():
                 xs = xs[mask]
                 vs = vs[mask]
             elif smooth > 1 and len(v) >= smooth:
-                # simple moving average
+                # simple moving average; first valid window covers epochs [0..smooth-1]
                 vs = np.convolve(v, np.ones(smooth) / smooth, mode="valid")
-                xs = np.arange(len(vs)) + (smooth - 1)
+                xs = np.arange(len(vs)) + (smooth - 1) + offset
             else:
                 vs = v
-                xs = np.arange(len(vs))
+                xs = np.arange(len(vs)) + offset
             c = colors.get(r["label"], None)
             ax.plot(xs, vs, label=r["label"], color=c, lw=1.4,
                     marker="o" if tag == "signed_amp_pen" else None,
