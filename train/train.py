@@ -68,6 +68,10 @@ def save_model(
         "parameterization": getattr(model, "parameterization", "poly"),
         "drive_lowpass_ms": getattr(model, "drive_lowpass_ms", 0.0),
         "keep_const": getattr(model, "keep_const", False),
+        "use_tract": getattr(model, "use_tract", False),
+        "use_envelope": getattr(model, "use_envelope", False),
+        "env_lowpass_ms": getattr(model, "env_lowpass_ms", 2.0),
+        "env_gain_max": getattr(model, "env_gain_max", 100.0),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -138,6 +142,10 @@ def load_model(
             kernel=kernel,
             drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
             keep_const=sd.get("keep_const", False),
+            use_tract=sd.get("use_tract", False),
+            use_envelope=sd.get("use_envelope", False),
+            env_lowpass_ms=sd.get("env_lowpass_ms", 2.0),
+            env_gain_max=sd.get("env_gain_max", 100.0),
         )
     except:
         print("no kernel in savefile!")
