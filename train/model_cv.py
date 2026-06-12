@@ -235,6 +235,9 @@ def model_seed_cv_spectral(
     keep_const: bool = False,
     osc_init: bool = False,        # Strategy 1: van der Pol limit-cycle init (see Ouroboros.__init__)
     checkpoint_encoder: bool = False,  # gradient-checkpoint the Mamba drive encoders (memory for larger B)
+    use_tract: bool = False,       # opt-in: linear vocal-tract filter (FFT-domain H, identity at init)
+    use_envelope: bool = False,    # opt-in: learnable amplitude envelope head e(t)=exp(lowpass(.))
+    env_lowpass_ms: float = 20.0,
     lam: float = 1.068,            # fixed kernel-weight lambda (no CV in this PR)
     # training
     n_epochs: int = 50,
@@ -303,7 +306,9 @@ def model_seed_cv_spectral(
                           expand_factor=expand_factor, tau=tau, smooth_len=smooth_len,
                           kernel=kernel, drive_lowpass_ms=drive_lowpass_ms,
                           keep_const=keep_const, osc_init=osc_init,
-                          checkpoint_encoder=checkpoint_encoder)
+                          checkpoint_encoder=checkpoint_encoder,
+                          use_tract=use_tract, use_envelope=use_envelope,
+                          env_lowpass_ms=env_lowpass_ms)
         opt = Adam(model.parameters(), lr=lr)
         sched = ReduceLROnPlateau(opt, factor=0.5, patience=max(n_epochs // 25, 2),
                                   min_lr=1e-10)

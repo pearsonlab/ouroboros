@@ -130,6 +130,20 @@ def main():
                         "the doubled-length sequence dominate training memory (~6.9 GB at B=64); "
                         "recomputing them in backward trades ~one extra encoder forward per step for "
                         "the headroom to run larger batch sizes (e.g. B=128) within 11 GB.")
+    p.add_argument("--use-tract", action=argparse.BooleanOptionalAction, default=False,
+                   help="Enable the LTI vocal-tract filter (FFT-domain H = OEC resonance × trachea "
+                        "comb, identity-init, learnable). Adds a source/filter split: forward "
+                        "deconvolves audio through H^-1 to source, polynomial generates source'', "
+                        "then filters back through H to match audio''. No-op at init.")
+    p.add_argument("--use-envelope", action=argparse.BooleanOptionalAction, default=False,
+                   help="Enable the zero-init learnable amplitude envelope e(t)=exp(lowpass(.)). "
+                        "Applied as a positive scalar multiplier on the rollout source waveform "
+                        "(envelope-as-output, NOT folded into the kernel). e starts at 1 so the "
+                        "model at init matches legacy behavior; targets the global-amplitude "
+                        "wandering directly.")
+    p.add_argument("--env-lowpass-ms", type=float, default=20.0,
+                   help="Time constant (ms) for the lowpass on the envelope head output before "
+                        "exp. ~20 ms matches syllable amplitude-modulation timescales (10-100 Hz).")
     p.add_argument("--lam", type=float, default=1.0,
                    help="degree-grading on the polynomial kernel weights: term (i, j) is "
                         "weighted by lam**(i+j) inside the kernel-weight L2 penalty. lam<1 "
@@ -265,6 +279,8 @@ def main():
         tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, keep_const=args.keep_const,
         osc_init=args.osc_init,
         checkpoint_encoder=args.checkpoint_encoder,
+        use_tract=args.use_tract, use_envelope=args.use_envelope,
+        env_lowpass_ms=args.env_lowpass_ms,
         lam=args.lam,
         n_epochs=args.n_epochs, lr=args.lr, n_seeds=args.n_seeds,
         cull_frac=args.cull_frac, cull_keep=args.cull_keep,
@@ -303,6 +319,9 @@ def main():
         "drive_lowpass_ms": args.drive_lowpass_ms,
         "keep_const": bool(args.keep_const),
         "osc_init": bool(args.osc_init),
+        "use_tract": bool(args.use_tract),
+        "use_envelope": bool(args.use_envelope),
+        "env_lowpass_ms": args.env_lowpass_ms,
         "lam_spec": args.lam_spec,
         "lam_tf": args.lam_tf,
         "lam_env": args.lam_env,
