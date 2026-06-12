@@ -495,6 +495,7 @@ def autonomy_score(
     method: str = "rk4",
     rescale: bool = False,
     cold_start: bool = False,
+    return_trajectories: bool = False,
 ) -> tuple:
     """
     Validation metric for AUTONOMOUS reconstruction quality (model-selection criterion).
@@ -549,6 +550,9 @@ def autonomy_score(
     # autonomous integrator actually produced (not what the deployed rescale recipe
     # would emit).
     signed_amps_raw = []
+    # If `return_trajectories`, capture (tgt_n, auto_n_pre_rescale) per segment so the
+    # caller can render audio / spectrograms without a separate integration pass.
+    trajectories = [] if return_trajectories else None
     for seg in segments:
         seg = np.asarray(seg, dtype=np.float64)
         tgt = correct(seg)
@@ -556,6 +560,8 @@ def autonomy_score(
                                          detrend=True, verbose=False)
         n = min(len(tgt), len(auto))
         tgt_n, auto_n = tgt[:n], auto[:n]
+        if return_trajectories:
+            trajectories.append((tgt_n.copy(), auto_n.copy()))
         if (not np.isfinite(auto_n).all()) or np.nanstd(auto_n) < 1e-9:
             scores.append(diverge_score)
             bounded.append(0.0)
@@ -587,6 +593,8 @@ def autonomy_score(
                             if any(np.isfinite(signed_amps_raw)) else float("nan")),
         "signed_amp_per_voc": [float(v) for v in signed_amps_raw],
     }
+    if return_trajectories:
+        return float(np.mean(scores)), scores, breakdown, trajectories
     return float(np.mean(scores)), scores, breakdown
 
 
