@@ -450,17 +450,39 @@ def spectral_rollout_step(
     # Encode drives once (model.get_funcs mutates dxdt in place; pass a clone).
     omega, gamma, wk, weights, _ = model.get_funcs(x, dxdt.clone(), dt)
     z2 = (model.tau / dt) * dxdt  # rescaled velocity
-    tf_d2 = -(omega ** 2) * x - gamma * z2 - wk
+
+    # Learnable amplitude envelope e(t): computed once here and reused by both the TF anchor
+    # (immediately below) and the rollout (further down). None when the model has no envelope.
+    e = model.get_envelope(x, dxdt.clone(), dt) if getattr(model, "use_envelope", False) else None
+
+    # TF anchor (variance-normalized 1-step acceleration MSE; a basin-keeper for early epochs).
+    # When the model carries the envelope, the ODE describes a UNIT-amplitude source -- e carries
+    # amplitude in the rollout -- so the anchor must be computed on the envelope-NORMALIZED DATA
+    # s = x/e (target d2x/e), NOT on the raw audio. We rescale the DATA, not the prediction, so
+    # the kernel is evaluated at unit amplitude (plain poly; no reciprocal-e gains). Computing it
+    # on the raw audio instead would fit the ODE's limit cycle to the full audio amplitude and
+    # fight e. This anchor is OFF by default (lam_tf may be 0); this just makes its form correct
+    # if it is enabled. e is floored to avoid 0/0 in deep silence. The tract is intentionally
+    # left out of the anchor (it is identity at init and reshapes spectrum, not amplitude).
+    if e is not None:
+        ef = e.clamp_min(1e-6)
+        s, s2 = x / ef, z2 / ef
+        wk_s = model.kernel.forward_given_weights(torch.cat([s, s2], dim=-1), weights.clone())
+        tf_d2 = -(omega ** 2) * s - gamma * s2 - wk_s
+        tf_target = d2x / ef
+    else:
+        tf_d2 = -(omega ** 2) * x - gamma * z2 - wk
+        tf_target = d2x
     # Variance-normalized so the anchor scale is commensurable across vocs / runs.
     # tf_var should be the variance computed ONCE over the whole training set (see
     # rollout_refine.py:110) -- per-batch variance is unstable when the batch is mostly
     # silence (ONSET segments) and can drive the loss to explode. We clamp at a floor
     # to be extra safe.
     if tf_var is None:
-        v = float(d2x.detach().var().clamp_min(1e-3).item())
+        v = float(tf_target.detach().var().clamp_min(1e-3).item())
     else:
         v = max(float(tf_var), 1e-6)
-    L_tf = ((tf_d2 - d2x) ** 2).mean() / v
+    L_tf = ((tf_d2 - tf_target) ** 2).mean() / v
 
     # Rollout + spectral loss. Reuse the drives (ω, γ, w) and rescaled velocity z2
     # already encoded above for the TF anchor instead of re-running the Mamba encoders
@@ -477,9 +499,10 @@ def spectral_rollout_step(
     # plain positive gain (no kernel reciprocal-e terms; a small e just makes the output
     # quiet), low-passed to ~20 ms. H is the forward LTI tract (source -> radiated audio).
     # Both are identity at init (e == 1, H == 1), so this reduces to the bare rollout, and
-    # both are learned only through this MRSTFT comparison (the env penalty stays off).
-    if getattr(model, "use_envelope", False):
-        xg = model.get_envelope(x, dxdt.clone(), dt)[:, :H, 0] * xg  # (B, H)
+    # both are learned only through this MRSTFT comparison (the env penalty stays off). e is
+    # the SAME tensor used by the TF anchor above (one env encode per step).
+    if e is not None:
+        xg = e[:, :H, 0] * xg  # (B, H)
     if getattr(model, "use_tract", False):
         xg = model.tract.apply(xg[..., None])[..., 0]  # (B, H)
     tgt = x[:, :H, 0]
