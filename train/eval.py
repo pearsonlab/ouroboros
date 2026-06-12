@@ -378,18 +378,10 @@ def integrate_poly_autonomous(
     low-passed inside `get_funcs` if the model was trained with `drive_lowpass_ms`), then integrates
 
         dx/ds  = x'
-        dx'/ds = -omega(s)^2 x - gamma(s) x' - kernel(x, x'; w(s), e(s))
+        dx'/ds = -omega(s)^2 x - gamma(s) x' - kernel(x, x'; w(s))
 
     in the model's rescaled time s = t/tau, feeding the generated state (x, x') back into the
     nonlinearity each step. Only the drives (from data) and the initial condition come from outside.
-
-    When the model carries the vocal-tract / envelope extension (use_tract / use_envelope):
-      * the ODE is integrated in SOURCE coordinates -- the IC is the audio deconvolved through
-        the inverse tract H^-1, and the generated source is mapped back to audio by the forward
-        tract H at the end (an LTI filter, applied via `_finish`);
-      * the learnable envelope e(s) is folded into the kernel as the clamped per-degree gains
-        (so e sets the limit-cycle amplitude); it is all-ones for models without an envelope.
-    Both reduce to the legacy behavior when the flags are off.
     """
 
     L = len(audio)
@@ -401,47 +393,43 @@ def integrate_poly_autonomous(
     audio_t = torch.from_numpy(audio_3d).to(torch.float32).to("cuda")
     dy_t = torch.from_numpy(dy).to(torch.float32).to("cuda")
 
-    use_tract = getattr(model, "use_tract", False)
-    use_env = getattr(model, "use_envelope", False)
-    g_max = getattr(model, "env_gain_max", 100.0)
-
     with torch.no_grad():
         omega, gamma, _, weights, _ = model.get_funcs(audio_t, dy_t, dt)
-        # learnable amplitude envelope e(s); all-ones when the model has no envelope.
-        e_seq = model.get_envelope(audio_t, dy_t, dt) if use_env else None
-        # source coordinates for the initial condition: deconvolve audio through the tract
-        # (the ODE integrates the source; identity when use_tract is False).
-        src = (
-            model.tract.apply(audio_t, inverse=True) if use_tract else audio_t
-        ).detach().cpu().numpy().squeeze()
     omega = omega.detach().cpu().numpy().squeeze()
     gamma = gamma.detach().cpu().numpy().squeeze()
     weights = weights.detach().cpu().numpy()  # (1, L, P, P)
     _, _, P, P2 = weights.shape
     w_flat = weights.reshape(L, P * P2)
-    e_seq = (
-        e_seq.detach().cpu().numpy().squeeze() if e_seq is not None else np.ones(L)
-    )
 
     omega_interp = make_interp_spline(s_steps, omega)
     gamma_interp = make_interp_spline(s_steps, gamma)
     w_interp = make_interp_spline(s_steps, w_flat)  # vector-valued spline over time
-    e_interp = make_interp_spline(s_steps, e_seq)
 
-    # initial condition in source coordinates
-    src_dy = deriv_approx_dy(src[None, :, None])
-    x0 = float(src[0])
-    xp0 = (model.tau / dt) * float(src_dy[0, 0, 0])
+    x0 = float(audio[0])
+    xp0 = (model.tau / dt) * float(dy[0, 0, 0])
     ic = torch.tensor([x0, xp0], dtype=torch.float32, device="cuda")
     kernel = model.kernel
 
+    # learnable amplitude envelope e(s) (all-ones when the model has no envelope) and the
+    # forward vocal tract H. The source ODE is rolled out with the PLAIN kernel (no e), then
+    # the generated source is multiplied by e(s) and filtered by H -- matching the training
+    # path in train.spectral_rollout. Both are identity at init.
+    use_tract = getattr(model, "use_tract", False)
+    use_env = getattr(model, "use_envelope", False)
+    with torch.no_grad():
+        e_seq = (
+            model.get_envelope(audio_t, dy_t.clone(), dt).detach().cpu().numpy().squeeze()
+            if use_env
+            else np.ones(L)
+        )
+
     def _finish(x_src: np.ndarray) -> np.ndarray:
-        """map a generated source waveform back to audio via the tract, then detrend."""
-        x_src = np.asarray(x_src)
+        """envelope-scale the generated source, filter through the tract, then detrend."""
+        x_src = np.asarray(x_src) * e_seq[: len(x_src)]
         if use_tract:
             xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to("cuda")
             with torch.no_grad():
-                x_src = model.tract.apply(xt, inverse=False).detach().cpu().numpy().squeeze()
+                x_src = model.tract.apply(xt).detach().cpu().numpy().squeeze()
         return correct(x_src) if detrend else x_src
 
     if noise_sd > 0:
@@ -453,14 +441,10 @@ def integrate_poly_autonomous(
         xs = [x]
         ww = weights.reshape(L, 1, 1, P, P2)
         for k in range(L - 1):
-            om, ga, wk, ev = omega[k], gamma[k], ww[k], float(e_seq[k])
+            om, ga, wk = omega[k], gamma[k], ww[k]
 
             def f(xx, vv):
-                kern = float(
-                    kernel.forward_given_weights_numpy(
-                        np.array([[[xx, vv]]]), wk, env=ev, g_max=g_max
-                    ).squeeze()
-                )
+                kern = float(kernel.forward_given_weights_numpy(np.array([[[xx, vv]]]), wk).squeeze())
                 return vv, -(om**2) * xx - ga * vv - kern
 
             k1x, k1v = f(x, xp)
@@ -482,13 +466,10 @@ def integrate_poly_autonomous(
         om = float(omega_interp(s_np))
         ga = float(gamma_interp(s_np))
         w = w_interp(s_np).reshape(1, 1, P, P2)
-        ev = float(e_interp(s_np))
         x = float(z[0])
         xp = float(z[1])
         kern = float(
-            kernel.forward_given_weights_numpy(
-                np.array([[[x, xp]]]), w, env=ev, g_max=g_max
-            ).squeeze()
+            kernel.forward_given_weights_numpy(np.array([[[x, xp]]]), w).squeeze()
         )
         dxp = -(om**2) * x - ga * xp - kern
         return torch.tensor([xp, dxp], dtype=torch.float32, device=z.device)

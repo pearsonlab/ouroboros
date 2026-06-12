@@ -472,10 +472,23 @@ def spectral_rollout_step(
         drives=(omega, gamma, weights, z2),
         rollout_backend=rollout_backend,
     )
+    # Apply the learnable amplitude envelope e(t) and the linear vocal tract H to the rolled-
+    # out source BEFORE comparing to audio. e(t) multiplies the waveform per-timestep -- a
+    # plain positive gain (no kernel reciprocal-e terms; a small e just makes the output
+    # quiet), low-passed to ~20 ms. H is the forward LTI tract (source -> radiated audio).
+    # Both are identity at init (e == 1, H == 1), so this reduces to the bare rollout, and
+    # both are learned only through this MRSTFT comparison (the env penalty stays off).
+    if getattr(model, "use_envelope", False):
+        xg = model.get_envelope(x, dxdt.clone(), dt)[:, :H, 0] * xg  # (B, H)
+    if getattr(model, "use_tract", False):
+        xg = model.tract.apply(xg[..., None])[..., 0]  # (B, H)
     tgt = x[:, :H, 0]
 
     configs_H = _filter_configs_for_horizon(configs, H)
-    L_spec = mrstft_loss(xg, tgt, configs_H)
+    spec_parts = mrstft_loss(xg, tgt, configs_H, return_components=True)
+    L_spec = spec_parts["spec"]
+    L_sc = spec_parts["sc"]
+    L_logm = spec_parts["logm"]
     if lam_env > 0:
         L_env = env_loss(xg, tgt, dt, env_ms)
     else:
@@ -508,7 +521,8 @@ def spectral_rollout_step(
         + lam_env_log * L_env_log
         + lam_reg * L_reg
     )
-    return {"spec": L_spec, "tf": L_tf, "env": L_env, "env_log": L_env_log,
+    return {"spec": L_spec, "sc": L_sc, "logm": L_logm,
+            "tf": L_tf, "env": L_env, "env_log": L_env_log,
             "reg": L_reg, "total": total}
 
 
