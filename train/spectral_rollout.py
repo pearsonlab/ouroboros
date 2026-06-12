@@ -464,25 +464,32 @@ def spectral_rollout_step(
     # fight e. This anchor is OFF by default (lam_tf may be 0); this just makes its form correct
     # if it is enabled. e is floored to avoid 0/0 in deep silence. The tract is intentionally
     # left out of the anchor (it is identity at init and reshapes spectrum, not amplitude).
-    if e is not None:
-        ef = e.clamp_min(1e-6)
-        s, s2 = x / ef, z2 / ef
-        wk_s = model.kernel.forward_given_weights(torch.cat([s, s2], dim=-1), weights.clone())
-        tf_d2 = -(omega ** 2) * s - gamma * s2 - wk_s
-        tf_target = d2x / ef
+    # Short-circuit when lam_tf<=0: the envelope-normalized form scales as ~1/e and would
+    # log enormous (then potentially inf) values at deep-silence ONSET segments. With lam_tf=0
+    # the value isn't even backproppable, so skipping it saves a kernel forward and keeps the
+    # TB curves readable. L_tf is returned as a zero tensor for downstream stacking.
+    if lam_tf <= 0:
+        L_tf = torch.zeros((), device=x.device, dtype=x.dtype)
     else:
-        tf_d2 = -(omega ** 2) * x - gamma * z2 - wk
-        tf_target = d2x
-    # Variance-normalized so the anchor scale is commensurable across vocs / runs.
-    # tf_var should be the variance computed ONCE over the whole training set (see
-    # rollout_refine.py:110) -- per-batch variance is unstable when the batch is mostly
-    # silence (ONSET segments) and can drive the loss to explode. We clamp at a floor
-    # to be extra safe.
-    if tf_var is None:
-        v = float(tf_target.detach().var().clamp_min(1e-3).item())
-    else:
-        v = max(float(tf_var), 1e-6)
-    L_tf = ((tf_d2 - tf_target) ** 2).mean() / v
+        if e is not None:
+            ef = e.clamp_min(1e-6)
+            s, s2 = x / ef, z2 / ef
+            wk_s = model.kernel.forward_given_weights(torch.cat([s, s2], dim=-1), weights.clone())
+            tf_d2 = -(omega ** 2) * s - gamma * s2 - wk_s
+            tf_target = d2x / ef
+        else:
+            tf_d2 = -(omega ** 2) * x - gamma * z2 - wk
+            tf_target = d2x
+        # Variance-normalized so the anchor scale is commensurable across vocs / runs.
+        # tf_var should be the variance computed ONCE over the whole training set (see
+        # rollout_refine.py:110) -- per-batch variance is unstable when the batch is mostly
+        # silence (ONSET segments) and can drive the loss to explode. We clamp at a floor
+        # to be extra safe.
+        if tf_var is None:
+            v = float(tf_target.detach().var().clamp_min(1e-3).item())
+        else:
+            v = max(float(tf_var), 1e-6)
+        L_tf = ((tf_d2 - tf_target) ** 2).mean() / v
 
     # Rollout + spectral loss. Reuse the drives (ω, γ, w) and rescaled velocity z2
     # already encoded above for the TF anchor instead of re-running the Mamba encoders

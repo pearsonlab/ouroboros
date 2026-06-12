@@ -358,15 +358,19 @@ def train(
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
-                # One device->host sync for all scalar logging instead of 6 separate
-                # .item() calls (one of which was a duplicate of out["spec"]): stack the
-                # loss tensors and transfer once. out["env"] / out["env_log"] / out["reg"]
-                # are always tensors (zeros when their lam is 0), so the stack is well-formed.
-                spec_v, tf_v, env_v, env_log_v, reg_v, total_v = torch.stack(
-                    [out["spec"], out["tf"], out["env"], out["env_log"], out["reg"], total_loss]
+                # Stack the raw component tensors for a single host sync, then derive the
+                # weighted views in Python so the TB plots show each term's actual contribution
+                # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
+                # plain floats already on host.
+                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, total_v = torch.stack(
+                    [out["spec"], out["sc"], out["logm"], out["tf"],
+                     out["env"], out["env_log"], out["reg"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
+                # Raw values
                 writer.add_scalar("Loss/spec", spec_v, idx)
+                writer.add_scalar("Loss/sc", sc_v, idx)
+                writer.add_scalar("Loss/logm", logm_v, idx)
                 writer.add_scalar("Loss/tf", tf_v, idx)
                 if lam_env > 0:
                     writer.add_scalar("Loss/env", env_v, idx)
@@ -375,6 +379,17 @@ def train(
                 if lam_reg > 0:
                     writer.add_scalar("Loss/reg", reg_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
+                # Weighted (contribution to total) -- directly comparable across components
+                writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)
+                writer.add_scalar("LossW/sc",    float(lam_spec_t) * sc_v,    idx)
+                writer.add_scalar("LossW/logm",  float(lam_spec_t) * logm_v,  idx)
+                writer.add_scalar("LossW/tf",    float(lam_tf)     * tf_v,    idx)
+                if lam_env > 0:
+                    writer.add_scalar("LossW/env",     float(lam_env_t)     * env_v,     idx)
+                if lam_env_log > 0:
+                    writer.add_scalar("LossW/env_log", float(lam_env_log_t) * env_log_v, idx)
+                if lam_reg > 0:
+                    writer.add_scalar("LossW/reg",     float(lam_reg)       * reg_v,     idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)
