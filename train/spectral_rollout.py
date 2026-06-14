@@ -429,6 +429,8 @@ def spectral_rollout_step(
     env_log_eps: float = 1e-4,        # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights
+    lam_log_env_reg: float = 0.0,     # scale on (log(e + eps))^2 envelope anchor (gauge-fixing penalty)
+    log_env_reg_eps: float = 0.05,    # soft floor inside the log of the gauge anchor; bounds the per-sample backward grad to ~|2 log(eps)/eps|
     tf_var: Optional[float] = None,   # precomputed Var(d2x) over the dataset; matches rollout_refine.py:110
     ic_mask: Optional[torch.Tensor] = None,
     ic_noise_rms: float = 1e-3,
@@ -544,16 +546,30 @@ def spectral_rollout_step(
     else:
         L_reg = torch.zeros((), device=x.device, dtype=x.dtype)
 
+    # Gauge-fixing anchor on the envelope: U-shaped penalty (log(e + eps))^2 pulls e toward 1
+    # (its identity-init value). Without this, the spec loss is gauge-invariant under
+    # (e, x) -> (k*e, x/k) for any k > 0 -- which the kernel-weight L2 reg then exploits
+    # by sending k -> infinity to shrink the polynomial weights to zero. eps acts as a soft
+    # noise floor: the per-sample backward gradient is 2*log(e+eps)/(e+eps), so its max
+    # magnitude (at e=0) is |2*log(eps)/eps|. Setting eps=0.05 caps that at ~120, comparable
+    # to the safe ckpt-4 regime. Smaller eps (e.g. 1e-12 from the clamp_min form) lets a
+    # single low-e sample produce a multi-million per-sample grad and crash backward.
+    if lam_log_env_reg > 0 and e is not None:
+        L_log_env_reg = torch.log(e + log_env_reg_eps).pow(2).mean()
+    else:
+        L_log_env_reg = torch.zeros((), device=x.device, dtype=x.dtype)
+
     total = (
         lam_spec * L_spec
         + lam_tf * L_tf
         + lam_env * L_env
         + lam_env_log * L_env_log
         + lam_reg * L_reg
+        + lam_log_env_reg * L_log_env_reg
     )
     return {"spec": L_spec, "sc": L_sc, "logm": L_logm,
             "tf": L_tf, "env": L_env, "env_log": L_env_log,
-            "reg": L_reg, "total": total}
+            "reg": L_reg, "log_env_reg": L_log_env_reg, "total": total}
 
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:

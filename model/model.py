@@ -28,26 +28,35 @@ with elements used included in `third_party` for convenience.
 
 class Tract(nn.Module):
     r"""
-    Linear (LTI) vocal-tract filter, applied in the rFFT domain.
+    Linear (LTI) vocal-tract filter as a learnable RATIONAL transfer function in the
+    Laplace domain (a polynomial filter, like the Arneodo/Perl OEC + trachea equivalent
+    circuit), applied in the rFFT domain.
 
-    The Arneodo / Perl source->sound chain is a passive linear filter: an OEC Helmholtz
-    resonance (a damped 2-pole resonator) in series with a trachea feed-forward comb. Both
-    are linear, so the whole tract is one transfer function H(omega). We realize it as
+        H(jw) = K * prod_k [ (jw)^2 + 2 zeta_z,k w_z,k (jw) + w_z,k^2 ]
+                          / [ (jw)^2 + 2 zeta_p,k w_p,k (jw) + w_p,k^2 ]  *  (1 - r e^{-jw tau})
+                \________________ rational pole/zero cascade _______________/  \__ trachea comb __/
 
-        H(f) = exp(g_res * bump(f; f0, width))  *  (1 - r * exp(-2*pi*i*f*tau))
-               \_______ OEC resonance _______/    \____ trachea comb ____/
+    Each second-order section is a complex-conjugate POLE pair (a formant/resonance) and a
+    ZERO pair (an anti-resonance); n_sec sections give a rational filter with n_sec
+    resonances, and the paper's 3-state OEC circuit is one particular special case. Unlike a
+    zero-phase magnitude bump this carries the proper resonant PHASE (a pole pair's phase
+    swings ~+/-pi across its resonance). With real coefficients H(jw) is Hermitian, so the
+    rFFT -> *H -> irFFT in `apply` returns a real, correctly-phased signal. Applied FORWARD
+    only (source -> audio), so no invertibility / min-phase constraint is needed.
 
-    with f in cycles/sample. The resonance is a zero-phase log-magnitude Gaussian bump; the
-    comb is a real 2-tap FIR with |r| < 1. It is applied FORWARD only (source -> audio) on
-    the rolled-out waveform. Identity at init: g_res = 0 and r = 0 give H == 1, so a fresh
-    model leaves the rollout untouched and the tract is learned only if it lowers the loss.
+    Stability: dampings zeta_p > 0 (softplus) keep the poles in the left half-plane, so
+    |den| > 0 and the filter is bounded. Identity at init: each section's zeros are
+    initialized EQUAL to its poles (numerator == denominator => section == 1), K = 1, r = 0,
+    so H == 1 -- a fresh model leaves the rollout untouched and resonances emerge only as
+    training separates the zeros from the poles.
     """
 
     def __init__(
         self,
         device: str = "cuda",
-        f0_init: float = 0.06,
-        width_init: float = 0.03,
+        n_sec: int = 3,
+        f0_inits=(0.04, 0.10, 0.20),  # pole center freqs (cycles/sample); ~1.6/4/8 kHz @ 40 kHz
+        zeta_init: float = 0.1,        # pole/zero damping at init (Q ~ 5)
         tau_init: float = 10.0,
         pad: int = 128,
         r_max: float = 0.99,
@@ -56,33 +65,53 @@ class Tract(nn.Module):
         self.device = device
         self.pad = pad
         self.r_max = r_max
-        # OEC resonance magnitude exp(g_res * bump); g_res init 0 -> flat (identity).
-        self.g_res = nn.Parameter(torch.zeros((), device=device))
-        # center frequency in cycles/sample, in (0, 0.5) via 0.5*sigmoid.
-        self.f0_raw = nn.Parameter(
-            torch.tensor(math.log(f0_init / (0.5 - f0_init)), device=device)
-        )
-        self.log_width = nn.Parameter(torch.tensor(math.log(width_init), device=device))
-        # trachea comb reflection r = r_max*tanh(r_raw); r init 0 -> no comb.
+        self.n_sec = n_sec
+
+        f0s = list(f0_inits)[:n_sec]
+        if len(f0s) < n_sec:  # spread any extra sections across (0, 0.5)
+            f0s = [0.5 * (i + 1) / (n_sec + 1) for i in range(n_sec)]
+
+        def _logit(p):  # inverse of 0.5*sigmoid, p in (0, 0.5)
+            return math.log(p / (0.5 - p))
+
+        zr = math.log(math.expm1(zeta_init))  # inverse softplus
+        # pole parameters (one per section)
+        self.f0_raw = nn.Parameter(torch.tensor([_logit(f) for f in f0s], device=device))
+        self.zeta_p_raw = nn.Parameter(torch.full((n_sec,), float(zr), device=device))
+        # zero parameters -- initialized EQUAL to the poles so each section == 1 (identity).
+        self.fz_raw = nn.Parameter(self.f0_raw.detach().clone())
+        self.zeta_z_raw = nn.Parameter(self.zeta_p_raw.detach().clone())
+        # global gain K = exp(log_K); init 0 -> 1.
+        self.log_K = nn.Parameter(torch.zeros((), device=device))
+        # trachea comb: reflection r = r_max*tanh(r_raw) (init 0 -> no comb); delay tau samples.
         self.r_raw = nn.Parameter(torch.zeros((), device=device))
-        # comb delay tau in samples, positive via softplus.
         self.tau_raw = nn.Parameter(
             torch.tensor(math.log(math.expm1(tau_init)), device=device)
         )
 
     def _transfer(self, n: int, device, dtype) -> torch.Tensor:
-        """complex transfer function H(f) on the rFFT grid of a length-n signal."""
-        k = torch.arange(n // 2 + 1, device=device, dtype=dtype)
-        f = k / n
-        f0 = 0.5 * torch.sigmoid(self.f0_raw)
-        width = torch.exp(self.log_width)
-        bump = torch.exp(-0.5 * ((f - f0) / width) ** 2)
-        mag = torch.exp(self.g_res * bump)
+        """complex rational transfer function H(f) on the rFFT grid of a length-n signal."""
+        kf = torch.arange(n // 2 + 1, device=device, dtype=dtype)
+        w = 2 * math.pi * (kf / n)                    # rad/sample, >= 0
+        jw = torch.complex(torch.zeros_like(w), w)    # j*w
+        jw2 = jw * jw                                 # = -w^2
+
+        wp = 2 * math.pi * (0.5 * torch.sigmoid(self.f0_raw))   # (n_sec,) pole freqs
+        zp = F.softplus(self.zeta_p_raw)                        # (n_sec,) pole dampings > 0
+        wz = 2 * math.pi * (0.5 * torch.sigmoid(self.fz_raw))   # (n_sec,) zero freqs
+        zz = F.softplus(self.zeta_z_raw)                        # (n_sec,) zero dampings > 0
+
+        H = torch.ones_like(jw) * torch.exp(self.log_K)
+        for k in range(self.n_sec):
+            num = jw2 + (2 * zz[k] * wz[k]) * jw + wz[k] ** 2
+            den = jw2 + (2 * zp[k] * wp[k]) * jw + wp[k] ** 2
+            H = H * (num / den)
+
         r = self.r_max * torch.tanh(self.r_raw)
         tau = F.softplus(self.tau_raw)
-        ang = -2 * math.pi * f * tau
+        ang = -2 * math.pi * (kf / n) * tau
         comb = 1.0 - r * torch.complex(torch.cos(ang), torch.sin(ang))
-        return mag.to(comb.dtype) * comb
+        return H * comb
 
     def apply(self, x: torch.FloatTensor) -> torch.FloatTensor:
         """
@@ -458,7 +487,14 @@ class Ouroboros(nn.Module):
         z = torch.cat([x, dxdt], dim=-1)
         L = z.shape[1]
         x_in = torch.cat([torch.flip(z, [1]), z], dim=1)
-        e_log = self.env_net(self.env_mamba(x_in)[:, L:, :])
+        # Match the three drive encoders' checkpointing policy (see get_funcs): when
+        # checkpoint_encoder is on, recompute env_mamba in backward instead of storing its
+        # length-2L activations. Without this, env_mamba alone keeps ~600 MiB at B=64.
+        if self.checkpoint_encoder and torch.is_grad_enabled():
+            env_out = checkpoint(self.env_mamba, x_in, use_reentrant=False)[:, L:, :]
+        else:
+            env_out = self.env_mamba(x_in)[:, L:, :]
+        e_log = self.env_net(env_out)
         e_log = self._lowpass(e_log, dt, lp_ms=self.env_lowpass_ms)
         return torch.exp(e_log)
 

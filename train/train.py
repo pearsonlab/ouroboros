@@ -187,6 +187,8 @@ def train(
     env_log_eps: float = 1e-4,      # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
+    lam_log_env_reg: float = 0.0,   # scale on (log(e + eps))^2 envelope anchor (gauge-fixing)
+    log_env_reg_eps: float = 0.05,  # soft floor inside the log; bounds the per-sample backward grad
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
     env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
     # Step-based overrides (None = derived from _epochs * batches_per_epoch at startup).
@@ -278,6 +280,7 @@ def train(
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
             f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} lam_reg={lam_reg} "
+            f"lam_log_env_reg={lam_log_env_reg} log_env_reg_eps={log_env_reg_eps} "
             f"kernel.lam={float(model.kernel.lam):.4g} "
             f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
             f"rollout_backend={rollout_backend} "
@@ -347,6 +350,8 @@ def train(
                     lam_env_log=lam_env_log_t, env_log_eps=env_log_eps,
                     env_ms=env_ms,
                     lam_reg=lam_reg,
+                    lam_log_env_reg=lam_log_env_reg,
+                    log_env_reg_eps=log_env_reg_eps,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
@@ -362,9 +367,9 @@ def train(
                 # weighted views in Python so the TB plots show each term's actual contribution
                 # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
                 # plain floats already on host.
-                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, total_v = torch.stack(
+                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, log_env_reg_v, total_v = torch.stack(
                     [out["spec"], out["sc"], out["logm"], out["tf"],
-                     out["env"], out["env_log"], out["reg"], total_loss]
+                     out["env"], out["env_log"], out["reg"], out["log_env_reg"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
                 # Raw values
@@ -378,6 +383,8 @@ def train(
                     writer.add_scalar("Loss/env_log", env_log_v, idx)
                 if lam_reg > 0:
                     writer.add_scalar("Loss/reg", reg_v, idx)
+                if lam_log_env_reg > 0:
+                    writer.add_scalar("Loss/log_env_reg", log_env_reg_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
                 # Weighted (contribution to total) -- directly comparable across components
                 writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)
@@ -390,11 +397,31 @@ def train(
                     writer.add_scalar("LossW/env_log", float(lam_env_log_t) * env_log_v, idx)
                 if lam_reg > 0:
                     writer.add_scalar("LossW/reg",     float(lam_reg)       * reg_v,     idx)
+                if lam_log_env_reg > 0:
+                    writer.add_scalar("LossW/log_env_reg", float(lam_log_env_reg) * log_env_reg_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)
                 if lam_env_log > 0:
                     writer.add_scalar("Train/lam_env_log_t", float(lam_env_log_t), idx)
+                # Memory diagnostics: log allocated (live tensors) and reserved (PyTorch's
+                # caching allocator pool, including fragments). If reserved grows while
+                # allocated stays flat across batches, that's fragmentation. Logged every
+                # 50 batches (cheap query, but per-batch sync isn't free).
+                if idx % 50 == 0:
+                    writer.add_scalar("Mem/allocated_GiB",
+                                      torch.cuda.memory_allocated() / 1024 ** 3, idx)
+                    writer.add_scalar("Mem/reserved_GiB",
+                                      torch.cuda.memory_reserved() / 1024 ** 3, idx)
+                    writer.add_scalar("Mem/free_GiB",
+                                      torch.cuda.mem_get_info()[0] / 1024 ** 3, idx)
+                # Periodic empty_cache to reclaim fragmented memory between batches. Cost
+                # is a brief sync + losing the fast path for tensor allocation for one
+                # batch; benefit is that fragments stop accumulating across many batches.
+                # Frequency tuned for "every 100 batches" -- about every 14 min at our pace,
+                # negligible overhead.
+                if idx > 0 and idx % 100 == 0:
+                    torch.cuda.empty_cache()
                 continue
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD
