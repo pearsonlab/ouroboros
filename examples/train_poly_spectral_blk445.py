@@ -158,20 +158,16 @@ def main():
                    help="overall scale on the degree-graded L2 penalty `sum lam**(i+j) * weights**2` "
                         "applied to the polynomial kernel weights. 0 disables (no behavior change). "
                         "lam (above) shapes the degree grading; lam_reg scales the whole penalty.")
-    p.add_argument("--lam-log-env-reg", type=float, default=0.0,
-                   help="weight on the (log(e + eps))^2 envelope anchor. U-shaped penalty with "
-                        "minimum at e=1 (its identity-init value). Breaks the gauge invariance "
-                        "that lets the model exploit lam_reg by shrinking polynomial weights AND "
-                        "rollout amplitude while inflating e to compensate. The eps soft floor "
-                        "bounds the per-sample backward grad to ~|2 log(eps)/eps| (without it, a "
-                        "single low-e sample produces million-scale grad and NaN-cascades). "
-                        "Only meaningful when use_envelope is enabled. 0 disables.")
-    p.add_argument("--log-env-reg-eps", type=float, default=0.05,
-                   help="soft floor inside log() for the (log(e + eps))^2 gauge anchor. The "
-                        "per-sample backward grad max is ~|2 log(eps)/eps|: eps=0.05 caps it at "
-                        "~120 (ckpt-4-safe), eps=0.1 at ~46 (very safe), eps=1e-4 at 184k "
-                        "(catastrophic). Smaller eps = sharper pull on small-e samples but "
-                        "exponentially worse tail-grad. Default 0.05.")
+    p.add_argument("--lam-env-anchor", type=float, default=0.0,
+                   help="weight on the mean((e - 1)^2) envelope gauge anchor. Quadratic "
+                        "penalty with minimum at e=1 (its identity-init value); breaks the "
+                        "spec loss's (e, x) -> (k*e, x/k) gauge invariance. The soft-tanh on "
+                        "x bounds the (e -> 0, x -> infinity) direction by construction, so "
+                        "only the (e -> infinity) direction needs penalizing -- which (e-1)^2 "
+                        "does asymmetrically (large e penalized hard, small e mildly). "
+                        "Per-sample backward grad 2*(e-1)/N is bounded and smooth -- no eps "
+                        "machinery, no small-e gradient cliff. Only meaningful when "
+                        "use_envelope is enabled. Default 0 disables.")
     p.add_argument("--lam-env-log", type=float, default=0.0,
                    help="weight on the LOG-RATIO envelope loss (|log((env(a)+eps)/(env(g)+eps))|). "
                         "Symmetric in (auto, target) -- penalizes shrinking past target the same as "
@@ -304,8 +300,7 @@ def main():
         lam_env=args.lam_env, lam_env_log=args.lam_env_log, env_log_eps=args.env_log_eps,
         env_ms=args.env_ms,
         lam_reg=args.lam_reg,
-        lam_log_env_reg=args.lam_log_env_reg,
-        log_env_reg_eps=args.log_env_reg_eps,
+        lam_env_anchor=args.lam_env_anchor,
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
         spec_warmup_steps=args.spec_warmup_steps,
@@ -345,8 +340,7 @@ def main():
         "env_log_eps": args.env_log_eps,
         "env_ms": args.env_ms,
         "lam_reg": args.lam_reg,
-        "lam_log_env_reg": args.lam_log_env_reg,
-        "log_env_reg_eps": args.log_env_reg_eps,
+        "lam_env_anchor": args.lam_env_anchor,
         "lam": args.lam,
         "spec_configs": [list(c) for c in spec_configs],
         "H_min": args.H_min,

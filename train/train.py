@@ -187,8 +187,7 @@ def train(
     env_log_eps: float = 1e-4,      # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
-    lam_log_env_reg: float = 0.0,   # scale on (log(e + eps))^2 envelope anchor (gauge-fixing)
-    log_env_reg_eps: float = 0.05,  # soft floor inside the log; bounds the per-sample backward grad
+    lam_env_anchor: float = 0.0,    # scale on mean((e - 1)^2) envelope gauge anchor (pulls e toward 1)
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
     env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
     # Step-based overrides (None = derived from _epochs * batches_per_epoch at startup).
@@ -280,8 +279,7 @@ def train(
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
             f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} lam_reg={lam_reg} "
-            f"lam_log_env_reg={lam_log_env_reg} log_env_reg_eps={log_env_reg_eps} "
-            f"kernel.lam={float(model.kernel.lam):.4g} "
+            f"lam_env_anchor={lam_env_anchor} kernel.lam={float(model.kernel.lam):.4g} "
             f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
             f"rollout_backend={rollout_backend} "
             f"spec_warmup_steps={spec_warmup_steps_eff} env_warmup_steps={env_warmup_steps_eff} "
@@ -350,8 +348,7 @@ def train(
                     lam_env_log=lam_env_log_t, env_log_eps=env_log_eps,
                     env_ms=env_ms,
                     lam_reg=lam_reg,
-                    lam_log_env_reg=lam_log_env_reg,
-                    log_env_reg_eps=log_env_reg_eps,
+                    lam_env_anchor=lam_env_anchor,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
@@ -392,9 +389,9 @@ def train(
                 # weighted views in Python so the TB plots show each term's actual contribution
                 # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
                 # plain floats already on host.
-                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, log_env_reg_v, total_v = torch.stack(
+                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, env_anchor_v, total_v = torch.stack(
                     [out["spec"], out["sc"], out["logm"], out["tf"],
-                     out["env"], out["env_log"], out["reg"], out["log_env_reg"], total_loss]
+                     out["env"], out["env_log"], out["reg"], out["env_anchor"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
                 # Raw values
@@ -408,8 +405,8 @@ def train(
                     writer.add_scalar("Loss/env_log", env_log_v, idx)
                 if lam_reg > 0:
                     writer.add_scalar("Loss/reg", reg_v, idx)
-                if lam_log_env_reg > 0:
-                    writer.add_scalar("Loss/log_env_reg", log_env_reg_v, idx)
+                if lam_env_anchor > 0:
+                    writer.add_scalar("Loss/env_anchor", env_anchor_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
                 # Weighted (contribution to total) -- directly comparable across components
                 writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)
@@ -422,8 +419,8 @@ def train(
                     writer.add_scalar("LossW/env_log", float(lam_env_log_t) * env_log_v, idx)
                 if lam_reg > 0:
                     writer.add_scalar("LossW/reg",     float(lam_reg)       * reg_v,     idx)
-                if lam_log_env_reg > 0:
-                    writer.add_scalar("LossW/log_env_reg", float(lam_log_env_reg) * log_env_reg_v, idx)
+                if lam_env_anchor > 0:
+                    writer.add_scalar("LossW/env_anchor", float(lam_env_anchor) * env_anchor_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)

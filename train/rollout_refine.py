@@ -70,17 +70,25 @@ def stft_mag(x, n_fft, hop):
     return S.abs()  # (B, F, T)
 
 
-def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-5, return_components=False):
+def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-5, sc_eps=1e-2, return_components=False):
     """multi-resolution STFT magnitude loss: spectral convergence + log-magnitude L1.
 
     When return_components=True, returns dict {'spec', 'sc', 'logm'} of scalars instead
-    of the bare 'spec' scalar -- useful for separately logging each contributor."""
+    of the bare 'spec' scalar -- useful for separately logging each contributor.
+
+    sc_eps is the denominator floor in the spectral-convergence ratio. The original
+    1e-8 was unstably small for batches with silent targets (e.g. pre-onset prefix in
+    cold-start windows): when ||G||_F << 1e-8 the backward grad on A blows up to ~1/eps
+    per element (~1e8), overflows the chain rule through env_mamba, and crashes the
+    step. 1e-2 matches the typical ||G||_F noise floor for normalized audio at our
+    STFT sizes -- preserves SC behavior on voiced targets while bounding the silent-
+    target gradient to ~100 per element."""
     sc_total = 0.0
     logm_total = 0.0
     for n_fft, hop in configs:
         A = stft_mag(xg, n_fft, hop)
         G = stft_mag(tgt, n_fft, hop)
-        sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + 1e-8)
+        sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + sc_eps)
         logm = (torch.log(G + eps) - torch.log(A + eps)).abs().mean(dim=(-2, -1))
         sc_total = sc_total + sc.mean()
         logm_total = logm_total + logm.mean()
