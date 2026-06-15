@@ -321,6 +321,10 @@ def model_seed_cv_spectral(
         if glob.glob(os.path.join(run_dir, "*.tar")):
             model, opt, sched, start_epoch = load_model(run_dir)
             model.kernel.lam = float(lam)
+            # load_model restores the opt's saved LR from the ckpt; override here so
+            # an --lr passed at resume time actually takes effect.
+            for g in opt.param_groups:
+                g['lr'] = lr
         else:
             model, opt, sched = _build(seed)
             start_epoch = 0
