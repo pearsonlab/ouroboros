@@ -359,8 +359,33 @@ def train(
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):
                     writer.add_scalar("Loss/nan_skip", 1.0, idx)
+                    # Explicitly release the forward graph: 'continue' alone leaves the
+                    # autograd graph live until the next iteration's locals are rebound,
+                    # which on CUDA can hold ~hundreds of MiB of saved-for-backward
+                    # tensors (env_mamba pscan saves, rollout step ctxs). Without this,
+                    # a nan_skip is immediately followed by an OOM on the next forward.
+                    del out, total_loss
+                    optimizer.zero_grad(set_to_none=True)
+                    torch.cuda.empty_cache()
                     continue
+                # Defensive: backward through (log(e+eps))^2 can produce gradients that
+                # are individually finite but sum to non-finite values. If any param.grad
+                # is non-finite, clip_grad_norm_ propagates NaN to all params via the
+                # divide-by-NaN; abort the step before optimizer.step poisons the model.
                 total_loss.backward()
+                # One host sync via .item() on a scalar OR of per-param finite-checks.
+                # Each `(~isfinite).any()` returns a 0-D bool; stacking them and reducing
+                # once is much cheaper than 50 separate .all() syncs.
+                _bad = torch.stack([
+                    (~torch.isfinite(p.grad)).any()
+                    for p in model.parameters() if p.grad is not None
+                ]).any().item()
+                if _bad:
+                    writer.add_scalar("Loss/nan_skip", 1.0, idx)
+                    optimizer.zero_grad(set_to_none=True)
+                    del out, total_loss
+                    torch.cuda.empty_cache()
+                    continue
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
                 # Stack the raw component tensors for a single host sync, then derive the
