@@ -153,6 +153,7 @@ class Ouroboros(nn.Module):
         cubic_init: float = 0.01,
         const_init: float = 1e-3,
         use_tract: bool = False,
+        tract_n_sec: int = 3,
         use_envelope: bool = False,
         env_lowpass_ms: float = 20.0,
     ):
@@ -283,7 +284,8 @@ class Ouroboros(nn.Module):
             self.names = self.names + [r"$e$"]
 
         if use_tract:
-            self.tract = Tract(device=device)
+            self.tract = Tract(device=device, n_sec=tract_n_sec)
+            self.tract_n_sec = tract_n_sec
 
     def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
         """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.

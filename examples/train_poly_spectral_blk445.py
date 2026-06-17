@@ -135,6 +135,11 @@ def main():
                         "comb, identity-init, learnable). Adds a source/filter split: forward "
                         "deconvolves audio through H^-1 to source, polynomial generates source'', "
                         "then filters back through H to match audio''. No-op at init.")
+    p.add_argument("--tract-n-sec", type=int, default=3,
+                   help="Number of second-order pole/zero sections in the rational tract. Each "
+                        "section adds one formant + anti-formant pair. Default 3 (~3 formants); "
+                        "bird vocalizations typically show 4-6 prominent peaks so n_sec=5 or 6 "
+                        "can capture finer spectral structure. Identity-init regardless of n_sec.")
     p.add_argument("--use-envelope", action=argparse.BooleanOptionalAction, default=False,
                    help="Enable the zero-init learnable amplitude envelope e(t)=exp(lowpass(.)). "
                         "Applied as a positive scalar multiplier on the rollout source waveform "
@@ -289,7 +294,7 @@ def main():
         tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, keep_const=args.keep_const,
         osc_init=args.osc_init,
         checkpoint_encoder=args.checkpoint_encoder,
-        use_tract=args.use_tract, use_envelope=args.use_envelope,
+        use_tract=args.use_tract, tract_n_sec=args.tract_n_sec, use_envelope=args.use_envelope,
         env_lowpass_ms=args.env_lowpass_ms,
         lam=args.lam,
         n_epochs=args.n_epochs, lr=args.lr, n_seeds=args.n_seeds,
@@ -331,6 +336,7 @@ def main():
         "keep_const": bool(args.keep_const),
         "osc_init": bool(args.osc_init),
         "use_tract": bool(args.use_tract),
+        "tract_n_sec": int(args.tract_n_sec),
         "use_envelope": bool(args.use_envelope),
         "env_lowpass_ms": args.env_lowpass_ms,
         "lam_spec": args.lam_spec,

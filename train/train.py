@@ -69,6 +69,7 @@ def save_model(
         "drive_lowpass_ms": getattr(model, "drive_lowpass_ms", 0.0),
         "keep_const": getattr(model, "keep_const", False),
         "use_tract": getattr(model, "use_tract", False),
+        "tract_n_sec": getattr(model, "tract_n_sec", 3),
         "use_envelope": getattr(model, "use_envelope", False),
         "env_lowpass_ms": getattr(model, "env_lowpass_ms", 20.0),
     }
@@ -142,6 +143,7 @@ def load_model(
             drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
             keep_const=sd.get("keep_const", False),
             use_tract=sd.get("use_tract", False),
+            tract_n_sec=sd.get("tract_n_sec", 3),
             use_envelope=sd.get("use_envelope", False),
             env_lowpass_ms=sd.get("env_lowpass_ms", 20.0),
         )
