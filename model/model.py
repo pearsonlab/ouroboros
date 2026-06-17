@@ -1,5 +1,8 @@
+import math
+
 import torch
 from torch import nn
+import torch.nn.functional as F
 from mambapy.mamba import Mamba, MambaConfig
 from model.model_utils import smooth
 from typing import Tuple, Union
@@ -35,6 +38,8 @@ class Ouroboros(nn.Module):
         device: str = "cuda",
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
+        drive_lowpass_ms: float = 0.0,
+        keep_const: bool = False,
     ):
 
         super().__init__()
@@ -79,9 +84,48 @@ class Ouroboros(nn.Module):
 
         self.tau = tau
         self.smooth_len = smooth_len
+        # if > 0, low-pass the drives omega(t), gamma(t), and the kernel weights w(t) with a
+        # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Matches the
+        # mechanism added to ArneodoOuroboros so the drives stay slow / control-rate.
+        self.drive_lowpass_ms = drive_lowpass_ms
         self.kernel = kernel
         self.kernel.tau = self.tau
+        # if True, ADD the constant (0,0) "alpha"-like forcing term (y^0*ydot^0) to the kernel
+        # instead of zeroing it; it is low-passed at drive_lowpass_ms like the other drives.
+        self.keep_const = keep_const
+        if keep_const:
+            self.kernel.keep_const = True
+            # zero-init the (0,0) output of the kernel weight head so the alpha forcing starts at
+            # 0 and is learned gently (otherwise the random constant disrupts early training).
+            with torch.no_grad():
+                self.kernel.weights.weight[0].zero_()
+                self.kernel.weights.bias[0].zero_()
         self.names = [r"$\omega$", r"$\gamma$", "weighted kernels", "states"]
+
+    def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
+        """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.
+        lp_ms overrides the timescale (defaults to self.drive_lowpass_ms). The kernel radius is
+        capped at L-1 so very slow (large-sigma) low-passes work on short segments (reduce to
+        ~a segment-wide average)."""
+        ms = self.drive_lowpass_ms if lp_ms is None else lp_ms
+        sigma = (ms / 1e3) / dt  # samples
+        if sigma <= 0:
+            return x
+        L = x.shape[1]
+        radius = max(1, min(int(round(3 * sigma)), L - 1))
+        t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
+        kern = torch.exp(-0.5 * (t / sigma) ** 2)
+        kern = kern / kern.sum()
+        C = x.shape[-1]
+        k = kern.view(1, 1, -1).expand(C, 1, -1)
+        xc = F.pad(x.transpose(1, 2), (radius, radius), mode="reflect")
+        return F.conv1d(xc, k, groups=C).transpose(1, 2)
+
+    def _lowpass_weights(self, weights: torch.FloatTensor, dt: float) -> torch.FloatTensor:
+        """low-pass the polynomial kernel weights (B, L, P, P) along time."""
+        B, L, P, P2 = weights.shape
+        w = self._lowpass(weights.reshape(B, L, P * P2), dt)
+        return w.reshape(B, L, P, P2)
 
     def forward(
         self,
@@ -131,11 +175,18 @@ class Ouroboros(nn.Module):
             omegaControl
         ).abs()  # Since we take omega^2 anyway, we take the absolute value to prevent things from switching around too much
         gamma = self.gamma_net(gammaControl)
-        if smoothing:
+        weighted_kernels, weights = self.kernel(z, kernelControl)
+        if self.drive_lowpass_ms > 0:
+            # low-pass the drives in the loop, then recompute the nonlinearity from the
+            # low-passed weights so yhat is consistent with the (slow) drives
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             # smooth our model functions, if we choose to do so. I do not.
             omega = smooth(omega, smooth_len)
             gamma = smooth(gamma, smooth_len)
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         z1 = z[:, :, :1]
         z2 = z[:, :, 1:]
@@ -208,12 +259,16 @@ class Ouroboros(nn.Module):
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
+        weighted_kernels, weights = self.kernel(z, kernelControl)
 
-        if smoothing:
+        if self.drive_lowpass_ms > 0:
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             omega = smooth(omega.abs(), smooth_len)
             gamma = smooth(gamma, smooth_len)
-
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         return (
             omega,
@@ -377,3 +432,276 @@ class Ouroboros(nn.Module):
             gammas = smooth(gammas[None, :, None], smooth_len).squeeze()
 
         return yhat, omegas, gammas, kernel, weights
+
+
+class ArneodoOuroboros(nn.Module):
+    """
+    Variant of `Ouroboros` that parameterizes the second derivative using the
+    biomechanical syrinx ODE of Arneodo et al. 2021 (Current Biology) instead of a
+    full polynomial kernel. In physical time the (paper) model reads:
+
+        dx/dt = y
+        dy/dt = gamma^2 alpha + gamma^2 beta x + gamma^2 x^2
+                - gamma^2 x^3 - gamma x y - gamma x^2 y
+
+    where x is the labial displacement, gamma is a (constant) time-scaling factor,
+    and alpha, beta are the two bird-controlled parameters (sub-syringeal pressure
+    and syringeal-muscle tension).
+
+    This implementation additionally includes a *linear* damping term -gamma * delta * y
+    (delta(t) a third control series), which the strict paper polynomial lacks. It lets the
+    model represent sources with a linear damping/anti-damping term -- e.g. the Mindlin/gabo
+    data generator's `B * xdot` (van-der-Pol-style) term. delta can be either sign; delta < 0
+    is anti-damping (pumps energy, sustaining oscillation). Three parallel Mamba encoders
+    output alpha(t), beta(t), delta(t); gamma is a single learned positive scalar
+    (`self.gamma`), as in the paper where gamma is constant. delta's head is zero-initialized,
+    so the model *starts* at delta == 0 (the strict paper form) and only learns linear
+    damping if it reduces the loss -- the extended form is a strict superset of the paper one.
+
+    As in `Ouroboros`, the model works in rescaled time s = t/tau: `forward` scales the
+    input first derivative to x' = dx/ds = (tau/dt) * dxdt, and the training target is
+    d2x/ds2 = tau^2 * d2x/dt2. Substituting s = t/tau into the ODE above (the linear term
+    -gamma*delta*y rescales to -g*delta*x', matching the other damping terms) leaves the
+    form identical with a rescaled scalar g = tau * gamma, so this is a drop-in replacement
+    for the polynomial RHS and the existing training target scaling is unchanged:
+
+        d2x/ds2 = g^2 alpha + g^2 beta x + g^2 x^2 - g^2 x^3 - g (delta + x + x^2) x'
+
+    `self.gamma` is exactly this rescaled g. (With tau = dt, g = dt * gamma_phys, an O(1)
+    learnable scalar.)
+    """
+
+    def __init__(
+        self,
+        d_data: int,
+        n_layers: int = 2,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand_factor: int = 1,
+        device: str = "cuda",
+        tau: float = 1 / 10000,
+        smooth_len: float = 0.001,
+        gamma_init: float = 1.0,
+        drive_lowpass_ms: float = 1.0,
+    ):
+
+        super().__init__()
+
+        self.device = device
+
+        # we stack x and (scaled) dx on the time dimension, so d_model = 2 * d_data
+        alphaConfig = MambaConfig(
+            d_model=2 * d_data,
+            n_layers=n_layers,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand_factor=expand_factor,
+        )
+        betaConfig = MambaConfig(
+            d_model=2 * d_data,
+            n_layers=n_layers,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand_factor=expand_factor,
+        )
+        deltaConfig = MambaConfig(
+            d_model=2 * d_data,
+            n_layers=n_layers,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand_factor=expand_factor,
+        )
+
+        self.alpha_mamba = Mamba(alphaConfig).to(device)
+        self.beta_mamba = Mamba(betaConfig).to(device)
+        self.delta_mamba = Mamba(deltaConfig).to(device)
+
+        self.alpha_net = nn.Linear(
+            in_features=2 * d_data, out_features=d_data, device=device
+        )  # output unconstrained: alpha can be either sign
+        self.beta_net = nn.Linear(
+            in_features=2 * d_data, out_features=d_data, device=device
+        )  # output unconstrained: beta can be either sign
+        self.delta_net = nn.Linear(
+            in_features=2 * d_data, out_features=d_data, device=device
+        )  # output unconstrained: delta can be either sign (negative => anti-damping)
+
+        # Zero-initialize the control heads so the model starts at alpha = beta = delta = 0,
+        # i.e. yhat = g^2 (x^2 - x^3) - g (x + x^2) x' (bounded, structural terms only --
+        # exactly the strict-paper-form dynamics). Without this the heads emit O(1) forcing
+        # that is ~10-100x the target second-derivative scale, which makes the loss explode
+        # and conditioning poor at the start of training. Because delta is also zero-init,
+        # the extended (linear-damping) form is a strict superset of the paper form: the
+        # model starts strict and learns linear damping only if it reduces the loss.
+        for net in (self.alpha_net, self.beta_net, self.delta_net):
+            nn.init.zeros_(net.weight)
+            nn.init.zeros_(net.bias)
+
+        # gamma (rescaled time-scaling factor) is a single positive scalar, learned as
+        # softplus(log_gamma). Initialize log_gamma so that softplus(log_gamma) ~ gamma_init.
+        inv_softplus = math.log(math.expm1(gamma_init))  # inverse of softplus
+        self.log_gamma = nn.Parameter(torch.tensor(float(inv_softplus), device=device))
+
+        self.tau = tau
+        self.smooth_len = smooth_len
+        # if >0, hard-constrain the control series alpha/beta/delta to vary no faster than
+        # this timescale (ms) by low-pass filtering the Mamba heads' outputs (always, train
+        # + eval). Encodes a known physiological control-rate prior and prevents the drives
+        # from carrying carrier-frequency content. Gaussian sigma = drive_lowpass_ms.
+        # Defaults to 1 ms: across a 1-5 ms sweep R2 is flat (~0.75) and the drives are slow
+        # either way, and 1 ms gave the best autonomous (noise-sustained) spectral fidelity
+        # and cold-start stability. Set 0.0 for the unregularized model (higher one-step R2,
+        # but fast/spiky drives and an unstable cold start).
+        self.drive_lowpass_ms = drive_lowpass_ms
+        self.names = [r"$\alpha$", r"$\beta$", r"$\delta$", r"$\gamma$"]
+
+    @property
+    def gamma(self) -> torch.FloatTensor:
+        """rescaled, strictly-positive time-scaling scalar g = softplus(log_gamma)."""
+        return F.softplus(self.log_gamma)
+
+    def _lowpass(self, x: torch.FloatTensor, dt: float) -> torch.FloatTensor:
+        """
+        centered, zero-phase Gaussian low-pass along time (sigma = self.drive_lowpass_ms),
+        applied to a control series x of shape (B, L, 1). Differentiable (fixed kernel);
+        reflection-padded to avoid edge artifacts / phase delay.
+        """
+        sigma = (self.drive_lowpass_ms / 1e3) / dt  # samples
+        if sigma <= 0:
+            return x
+        radius = max(1, int(round(3 * sigma)))
+        t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
+        kern = torch.exp(-0.5 * (t / sigma) ** 2)
+        kern = (kern / kern.sum()).view(1, 1, -1)
+        xc = F.pad(x.transpose(1, 2), (radius, radius), mode="reflect")
+        return F.conv1d(xc, kern).transpose(1, 2)
+
+    def _encode(
+        self,
+        x: torch.FloatTensor,
+        dxdt: torch.FloatTensor,
+        dt: float,
+        smoothing: bool = False,
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """
+        shared input prep + encoders. Returns (alpha, beta, delta, z) where z = [x, x'] is
+        the state in rescaled time (x' = dx/ds = (tau/dt) * dxdt).
+        """
+
+        # scale first derivative to rescaled time: x' = dx/ds = (tau/dt) * dxdt.
+        # use out-of-place ops so we never mutate the caller's tensor.
+        dxdt = dxdt * (self.tau / dt)
+
+        z = torch.cat([x, dxdt], dim=-1)
+        L = z.shape[1]
+
+        # feed the state and its time-reversed copy to each encoder, then keep the
+        # forward-time half (matches Ouroboros.forward)
+        x_in = torch.cat([torch.flip(z, [1]), z], dim=1)
+
+        alphaControl = self.alpha_mamba(x_in)[:, L:, :]
+        betaControl = self.beta_mamba(x_in)[:, L:, :]
+        deltaControl = self.delta_mamba(x_in)[:, L:, :]
+
+        alpha = self.alpha_net(alphaControl)
+        beta = self.beta_net(betaControl)
+        delta = self.delta_net(deltaControl)
+
+        if self.drive_lowpass_ms > 0:
+            # hard timescale constraint: low-pass the drives (always, train + eval)
+            alpha = self._lowpass(alpha, dt)
+            beta = self._lowpass(beta, dt)
+            delta = self._lowpass(delta, dt)
+        elif smoothing:
+            smooth_len = int(round(self.smooth_len / dt))
+            alpha = smooth(alpha, smooth_len)
+            beta = smooth(beta, smooth_len)
+            delta = smooth(delta, smooth_len)
+
+        return alpha, beta, delta, z
+
+    def _rhs(
+        self,
+        alpha: torch.FloatTensor,
+        beta: torch.FloatTensor,
+        delta: torch.FloatTensor,
+        z: torch.FloatTensor,
+    ) -> torch.FloatTensor:
+        """
+        the Arneodo RHS in rescaled time, given alpha, beta, delta and state z = [x, x'].
+        returns the predicted second derivative d2x/ds2. The damping is
+        -g (delta + x + x^2) x': the (delta) term is the linear-damping extension, the
+        (x + x^2) terms are the strict paper nonlinear damping.
+        """
+        g = self.gamma
+        x = z[:, :, :1]
+        xp = z[:, :, 1:]
+        g2 = g * g
+        return (
+            g2 * alpha
+            + g2 * beta * x
+            + g2 * x**2
+            - g2 * x**3
+            - g * delta * xp
+            - g * x * xp
+            - g * x**2 * xp
+        )
+
+    def forward(
+        self,
+        x: torch.FloatTensor,
+        dxdt: torch.FloatTensor,
+        dt: float,
+        smoothing: bool = False,
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+        """
+        predicts the second derivative at time t via the Arneodo ODE.
+
+        inputs
+        ------
+            - x: cleaned audio segment (B, L, d_data)
+            - dxdt: first derivative estimate (unscaled; scaled internally by tau/dt)
+            - dt: sample interval
+            - smoothing: whether to smooth alpha, beta. We do not, but you can
+
+        outputs
+        ------
+            - yhat: predicted second derivative, scaled by tau^2 (i.e. d2x/ds2)
+            - alpha: the alpha(t) time series. Returned in the second slot (where the
+              polynomial model returns kernel weights) so the train loop signature
+              matches; it is NOT regularized (train with reg_weights=False).
+        """
+
+        alpha, beta, delta, z = self._encode(x, dxdt, dt, smoothing=smoothing)
+        yhat = self._rhs(alpha, beta, delta, z)
+        return yhat, alpha
+
+    def get_funcs(
+        self,
+        x: torch.FloatTensor,
+        dxdt: torch.FloatTensor,
+        dt: float,
+        smoothing: bool = False,
+    ) -> Tuple[
+        torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor
+    ]:
+        """
+        given data, returns the learned model functions for the Arneodo parameterization.
+
+        inputs
+        ------
+            - x: audio segment (B, L, d_data)
+            - dxdt: first derivative estimate (unscaled)
+            - dt: sampling timestep
+            - smoothing: whether to smooth alpha, beta, delta
+
+        returns
+        ------
+            - alpha: alpha(t) control time series (B, L, d_data)
+            - beta: beta(t) control time series (B, L, d_data)
+            - delta: delta(t) linear-damping control time series (B, L, d_data)
+            - gamma: the learned scalar g (rescaled time-scaling factor)
+        """
+
+        alpha, beta, delta, _ = self._encode(x, dxdt, dt, smoothing=smoothing)
+        return alpha, beta, delta, self.gamma

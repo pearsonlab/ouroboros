@@ -10,6 +10,7 @@ from utils import (
 from torchdiffeq import odeint_adjoint
 
 from scipy.interpolate import make_interp_spline
+from scipy.signal import welch
 
 """
 tools for evaluating model performance. covers both regular evaluation and model integration
@@ -220,6 +221,356 @@ def integrate_second_deriv(
     yhat = yhat[0].detach().cpu().numpy().squeeze()
     yhat = correct(yhat)
     return yhat
+
+
+def integrate_model_autonomous(
+    model: torch.nn.Module,
+    audio: np.ndarray,
+    dt: float,
+    method: str = "rk4",
+    detrend: bool = True,
+    verbose: bool = True,
+) -> np.ndarray:
+    """
+    fully autonomous (closed-loop) integration of an `ArneodoOuroboros` model.
+
+    Unlike `integrate_model_d2`, which replays the model's predicted second derivative
+    evaluated at the *data* points, this integrates the biomechanical syrinx ODE while
+    feeding the last generated state (x, x') back into the right-hand side. The state is
+    therefore generated entirely by the integrator -- only the control time series
+    alpha(t), beta(t) (produced once by the encoder from `audio`, as in the paper's
+    neurally-driven synthesis), the scalar gamma, and the initial condition come from
+    outside the integrator.
+
+    We integrate in the model's rescaled time s = t / tau, where the state is z = [x, x']
+    with x' = dx/ds, gamma is the learned (rescaled) scalar `model.gamma`, and
+
+        dx/ds  = x'
+        dx'/ds = g^2 a + g^2 b x + g^2 x^2 - g^2 x^3 - g (d + x + x^2) x'
+
+    with g = gamma, a = alpha(s), b = beta(s), d = delta(s) (the linear-damping series).
+
+    inputs
+    -----
+        - model: a trained ArneodoOuroboros
+        - audio: 1-D audio segment used to produce alpha(t), beta(t) and the IC
+        - dt: audio sampling spacing (seconds)
+        - method: integration method (passed to torchdiffeq)
+        - detrend: whether to low-pass detrend the generated waveform (as in `correct`)
+        - verbose: print integration progress
+
+    returns
+    -----
+        - the autonomously generated waveform x, sampled at the same points as `audio`
+    """
+
+    L = len(audio)
+    t_steps = np.arange(0, L * dt + dt / 2, dt)[:L]
+    s_steps = t_steps / model.tau  # rescaled time s = t / tau
+
+    audio_3d = audio[None, :, None]
+    dy = deriv_approx_dy(audio_3d)  # per-sample first derivative dx/dn
+
+    audio_t = torch.from_numpy(audio_3d).to(torch.float32).to("cuda")
+    dy_t = torch.from_numpy(dy).to(torch.float32).to("cuda")
+
+    with torch.no_grad():
+        alpha, beta, delta, gamma = model.get_funcs(audio_t, dy_t, dt)
+
+    alpha = alpha.detach().cpu().numpy().squeeze()
+    beta = beta.detach().cpu().numpy().squeeze()
+    delta = delta.detach().cpu().numpy().squeeze()
+    gamma = float(gamma.detach().cpu().numpy())
+    g2 = gamma**2
+
+    # control parameters as smooth functions of rescaled time
+    alpha_interp = make_interp_spline(s_steps, alpha)
+    beta_interp = make_interp_spline(s_steps, beta)
+    delta_interp = make_interp_spline(s_steps, delta)
+
+    # initial condition in rescaled time: x(0) and x'(0) = dx/ds = (tau/dt) * dx/dn
+    x0 = float(audio[0])
+    xp0 = (model.tau / dt) * float(dy[0, 0, 0])
+    ic = torch.tensor([x0, xp0], dtype=torch.float32, device="cuda")
+
+    def dz_hat(s, z):
+        if verbose:
+            print(
+                f"{(s - s_steps[0]) / (s_steps[-1] - s_steps[0]) * 100:0.3f}%,",
+                end="\r",
+            )
+
+        s_np = s.detach().cpu().numpy()
+        a = float(alpha_interp(s_np))
+        b = float(beta_interp(s_np))
+        d = float(delta_interp(s_np))
+
+        x = z[0]
+        xp = z[1]
+
+        dx = xp
+        dxp = (
+            g2 * a
+            + g2 * b * x
+            + g2 * x**2
+            - g2 * x**3
+            - gamma * d * xp
+            - gamma * x * xp
+            - gamma * x**2 * xp
+        )
+
+        return torch.hstack([dx.reshape(1), dxp.reshape(1)])
+
+    eval_times = torch.from_numpy(s_steps).to(ic.device)
+
+    with torch.no_grad():
+        sol = odeint_adjoint(
+            dz_hat, ic, eval_times, adjoint_params=(), method=method, options=dict()
+        ).transpose(0, 1)
+
+    x_gen = sol[0].detach().cpu().numpy().squeeze()
+    if detrend:
+        x_gen = correct(x_gen)
+    return x_gen
+
+
+def integrate_poly_autonomous(
+    model: torch.nn.Module,
+    audio: np.ndarray,
+    dt: float,
+    method: str = "rk4",
+    detrend: bool = True,
+    noise_sd: float = 0.0,
+    seed: int = 0,
+    verbose: bool = True,
+) -> np.ndarray:
+    """
+    fully autonomous (closed-loop) integration of a polynomial `Ouroboros`.
+
+    Precomputes the drives omega(t), gamma(t) and the kernel weights w(t) from `audio` (these are
+    low-passed inside `get_funcs` if the model was trained with `drive_lowpass_ms`), then integrates
+
+        dx/ds  = x'
+        dx'/ds = -omega(s)^2 x - gamma(s) x' - kernel(x, x'; w(s))
+
+    in the model's rescaled time s = t/tau, feeding the generated state (x, x') back into the
+    nonlinearity each step. Only the drives (from data) and the initial condition come from outside.
+    """
+
+    L = len(audio)
+    t_steps = np.arange(0, L * dt + dt / 2, dt)[:L]
+    s_steps = t_steps / model.tau
+
+    audio_3d = audio[None, :, None]
+    dy = deriv_approx_dy(audio_3d)
+    audio_t = torch.from_numpy(audio_3d).to(torch.float32).to("cuda")
+    dy_t = torch.from_numpy(dy).to(torch.float32).to("cuda")
+
+    with torch.no_grad():
+        omega, gamma, _, weights, _ = model.get_funcs(audio_t, dy_t, dt)
+    omega = omega.detach().cpu().numpy().squeeze()
+    gamma = gamma.detach().cpu().numpy().squeeze()
+    weights = weights.detach().cpu().numpy()  # (1, L, P, P)
+    _, _, P, P2 = weights.shape
+    w_flat = weights.reshape(L, P * P2)
+
+    omega_interp = make_interp_spline(s_steps, omega)
+    gamma_interp = make_interp_spline(s_steps, gamma)
+    w_interp = make_interp_spline(s_steps, w_flat)  # vector-valued spline over time
+
+    x0 = float(audio[0])
+    xp0 = (model.tau / dt) * float(dy[0, 0, 0])
+    ic = torch.tensor([x0, xp0], dtype=torch.float32, device="cuda")
+    kernel = model.kernel
+
+    if noise_sd > 0:
+        # stochastic forcing (Euler-Maruyama on the velocity) to sustain a noise-driven
+        # oscillation at the data amplitude. RK4 drift per sample (drives held constant over
+        # the 1-sample step, fine since they are low-passed), plus additive noise on x'.
+        rng = np.random.default_rng(seed)
+        x, xp = x0, xp0
+        xs = [x]
+        ww = weights.reshape(L, 1, 1, P, P2)
+        for k in range(L - 1):
+            om, ga, wk = omega[k], gamma[k], ww[k]
+
+            def f(xx, vv):
+                kern = float(kernel.forward_given_weights_numpy(np.array([[[xx, vv]]]), wk).squeeze())
+                return vv, -(om**2) * xx - ga * vv - kern
+
+            k1x, k1v = f(x, xp)
+            k2x, k2v = f(x + 0.5 * k1x, xp + 0.5 * k1v)
+            k3x, k3v = f(x + 0.5 * k2x, xp + 0.5 * k2v)
+            k4x, k4v = f(x + k3x, xp + k3v)
+            x = x + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
+            xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6 + noise_sd * rng.standard_normal()
+            xs.append(x)
+        x_gen = np.array(xs)
+        return correct(x_gen) if detrend else x_gen
+
+    def dz_hat(s, z):
+        if verbose:
+            print(
+                f"{(s - s_steps[0]) / (s_steps[-1] - s_steps[0]) * 100:0.3f}%,",
+                end="\r",
+            )
+        s_np = s.detach().cpu().numpy()
+        om = float(omega_interp(s_np))
+        ga = float(gamma_interp(s_np))
+        w = w_interp(s_np).reshape(1, 1, P, P2)
+        x = float(z[0])
+        xp = float(z[1])
+        kern = float(
+            kernel.forward_given_weights_numpy(np.array([[[x, xp]]]), w).squeeze()
+        )
+        dxp = -(om**2) * x - ga * xp - kern
+        return torch.tensor([xp, dxp], dtype=torch.float32, device=z.device)
+
+    eval_times = torch.from_numpy(s_steps).to(ic.device)
+    with torch.no_grad():
+        sol = odeint_adjoint(
+            dz_hat, ic, eval_times, adjoint_params=(), method=method, options=dict()
+        ).transpose(0, 1)
+
+    x_gen = sol[0].detach().cpu().numpy().squeeze()
+    if detrend:
+        x_gen = correct(x_gen)
+    return x_gen
+
+
+def autonomy_score(
+    model: torch.nn.Module,
+    segments: list,
+    dt: float,
+    fmax: float = 8000.0,
+    w_amp: float = 1.0,
+    w_pitch: float = 1.0,
+    diverge_score: float = -5.0,
+    method: str = "rk4",
+    rescale: bool = False,
+    cold_start: bool = False,
+) -> tuple:
+    """
+    validation metric for AUTONOMOUS reconstruction quality (model-selection criterion).
+
+    For each pre-windowed (sustained) vocalization segment, run the model's DETERMINISTIC
+    autonomous integration and score it against the target by phase-robust spectral (log-PSD)
+    correlation, minus log-ratio penalties on amplitude and pitch:
+
+        score = spectral_corr(autonomous, target)
+                - w_amp   * |log(std_auto   / std_target)|
+                - w_pitch * |log(pitch_auto / pitch_target)|
+
+    A divergent / collapsed rollout (non-finite or ~zero) gets `diverge_score`. Works for both
+    the polynomial (`integrate_poly_autonomous`) and Arneodo (`integrate_model_autonomous`) models.
+
+    If `rescale=True`, the autonomous output's RMS is matched to the target's before scoring (the
+    deployed recipe -- amplitude is an arbitrary overall-scale gauge fixed at generation by
+    `generate_autonomous`). This zeroes `amp_pen` for bounded rollouts, so selection then turns on
+    the genuinely-constrained quantities (spectral shape + pitch + boundedness). A divergent rollout
+    is still detected on the RAW output and gets `diverge_score` (collapse is not rescaled away).
+
+    If `cold_start=True`, the caller is asserting that each `segments[i]` already includes a silence
+    lead-in (the SILENCE_PAD=2000-sample / 50-ms convention used by
+    `examples/scan_seed_amp_coldstart.py` and `make_paired_data_v2.py`). The integration IC is the
+    first sample of the segment (already the behavior of `integrate_{poly,model}_autonomous`),
+    which then equals near-silence and exercises the ignition path -- the situation finchsim's
+    real-time synthesis actually faces. Mechanically the metric is unchanged; this flag exists
+    so callers can request the cold-start scoring contract and so the chosen mode is recorded in
+    the breakdown. Typically paired with `rescale=False` (amplitude must contribute to the score,
+    because a single shipped rescale constant cannot fix voc-variable cold-start amplitude).
+    See docs/small_k_rollout_plan.md §3.2.
+
+    returns
+    -----
+        - mean score over segments
+        - per-segment scores (list)
+        - breakdown dict (mean spectral corr, amp penalty, pitch penalty, bounded fraction,
+          plus the `cold_start` flag for downstream logging)
+    """
+    fs = 1.0 / dt
+
+    def _logpsd(x):
+        f, P = welch(x - np.mean(x), fs=fs, nperseg=min(1024, len(x)))
+        m = f <= fmax
+        return np.log(P[m] + 1e-20)
+
+    def _peak(x):
+        f, P = welch(x - np.mean(x), fs=fs, nperseg=min(1024, len(x)))
+        P[0] = 0
+        return float(f[np.argmax(P)])
+
+    is_poly = hasattr(model, "kernel")
+    scores, specs, amps, pits, bounded = [], [], [], [], []
+    for seg in segments:
+        seg = np.asarray(seg, dtype=np.float64)
+        tgt = correct(seg)
+        if is_poly:
+            auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
+                                             detrend=True, verbose=False)
+        else:
+            auto = integrate_model_autonomous(model, seg, dt, method=method, detrend=True,
+                                              verbose=False)
+        n = min(len(tgt), len(auto))
+        tgt_n, auto_n = tgt[:n], auto[:n]
+        if (not np.isfinite(auto_n).all()) or np.nanstd(auto_n) < 1e-9:
+            scores.append(diverge_score)
+            bounded.append(0.0)
+            specs.append(np.nan); amps.append(np.nan); pits.append(np.nan)
+            continue
+        bounded.append(1.0)
+        if rescale:  # gauge-fix amplitude to the target RMS (the deployed recipe)
+            auto_n = auto_n * (np.nanstd(tgt_n) / (np.nanstd(auto_n) + 1e-12))
+        sc = float(np.corrcoef(_logpsd(tgt_n), _logpsd(auto_n))[0, 1])
+        amp = abs(np.log((np.nanstd(auto_n) + 1e-12) / (np.nanstd(tgt_n) + 1e-12)))
+        pit = abs(np.log((_peak(auto_n) + 1e-9) / (_peak(tgt_n) + 1e-9)))
+        scores.append(sc - w_amp * amp - w_pitch * pit)
+        specs.append(sc); amps.append(amp); pits.append(pit)
+
+    breakdown = {
+        "spec_corr": float(np.nanmean(specs)) if len(specs) else float("nan"),
+        "amp_pen": float(np.nanmean(amps)) if len(amps) else float("nan"),
+        "pitch_pen": float(np.nanmean(pits)) if len(pits) else float("nan"),
+        "bounded_frac": float(np.mean(bounded)) if len(bounded) else 0.0,
+        "cold_start": bool(cold_start),
+        "rescale": bool(rescale),
+    }
+    return float(np.mean(scores)), scores, breakdown
+
+
+def generate_autonomous(
+    model: torch.nn.Module,
+    audio: np.ndarray,
+    dt: float,
+    rescale: bool = True,
+    ref_rms: float = None,
+    method: str = "rk4",
+    detrend: bool = True,
+    verbose: bool = False,
+) -> np.ndarray:
+    """
+    DEPLOYED autonomous generation: closed-loop integration + amplitude rescaling.
+
+    Autonomous amplitude is a poorly-constrained, marginal direction (the transverse Floquet
+    exponent is left free by on-orbit teacher-forced fitting), so the raw free-running amplitude
+    decays/grows/varies by seed. The overall scale is an arbitrary audio-unit gauge, so we fix it
+    at generation: run the deterministic closed-loop rollout, then (if `rescale`) match its RMS to
+    a reference -- `ref_rms` if given, else the input window's own (detrended) RMS for reconstruction.
+
+    Works for poly (`integrate_poly_autonomous`) and Arneodo (`integrate_model_autonomous`) models.
+    Returns the (rescaled) generated waveform; a divergent/collapsed rollout is returned unscaled.
+    """
+    is_poly = hasattr(model, "kernel")
+    if is_poly:
+        auto = integrate_poly_autonomous(model, audio, dt, method=method, detrend=detrend,
+                                         noise_sd=0.0, verbose=verbose)
+    else:
+        auto = integrate_model_autonomous(model, audio, dt, method=method, detrend=detrend,
+                                          verbose=verbose)
+    if rescale and np.isfinite(auto).all() and np.nanstd(auto) > 1e-9:
+        target = ref_rms if ref_rms is not None else float(np.nanstd(correct(np.asarray(audio, dtype=np.float64))))
+        auto = auto * (target / (np.nanstd(auto) + 1e-12))
+    return auto
 
 
 def eval_model_error(

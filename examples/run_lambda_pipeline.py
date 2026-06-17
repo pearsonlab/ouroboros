@@ -1,0 +1,253 @@
+"""
+Production selection pipeline for the (low-pass) polynomial Ouroboros: pick the best SEED, then
+amplitude-rescale at generation.
+
+Autonomous-reconstruction quality is dominated by the random SEED (init + batch order), not by the
+kernel-weight lambda (lambda is irrelevant for autonomy; see docs/autonomous_amplitude.md). So the
+recipe is: fix lambda, train several seeds, and SELECT the best seed on the VALIDATION set by
+RESCALED autonomy (amplitude is a free overall-scale gauge, fixed at generation by
+train.eval.generate_autonomous). The (0,0) polynomial 'alpha' term is kept on (R2-neutral here; may
+help other datasets). A FILE-LEVEL holdout is used for the autonomy vocalizations:
+  - training chunks from most data shards,
+  - validation autonomy vocs from a held-out shard (seed selection),
+  - test autonomy vocs from another held-out shard (final report + a rescaled reconstruction wav).
+
+Pass --lam <=0 to instead sweep the standard 7-point lambda grid. Pass --cull-frac (e.g. 0.4) to
+enable SEED CULLING: train all seeds to that fraction of the budget, then finish only the top
+--cull-keep by the configured validation autonomy metric (~halves the seed-search cost; see docs).
+
+Pass --cold-start-selection to switch the selection metric to COLD-START RAW autonomy: val/test
+vocs are loaded with the silence lead-in (silence_pad + voc), the integration IC is at the lead-in
+start (≈ silence), and amplitude is left in the score (no rescaling). This matches the situation
+finchsim's real-time synthesis faces and is the binding criterion for the deployed pipeline; see
+docs/small_k_rollout_plan.md §3.2. Without this flag, selection uses mid-voc rescaled autonomy
+(the legacy recipe).
+
+Pass --k-rollout 2/4/8 (and optionally --lambda-k) to enable the small-k Euler-step consistency
+loss during training (docs/small_k_rollout_plan.md §3.1). Default 0 = off (legacy training).
+
+Run from the repo root:
+    python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' --out-dir ./poly_pipeline \
+        --n-epochs 50 --n-seeds 5 --lam 1.068 --drive-lowpass-ms 1.0 --d-state 4
+    # with seed culling (train 8 seeds, finish the best 2 after 40% of epochs):
+    python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' --n-seeds 8 \
+        --cull-frac 0.4 --cull-keep 2
+    # plan §5 row (cold-start selection, no k-rollout):
+    python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' \
+        --out-dir ./poly_pipeline_baseline --n-epochs 50 --n-seeds 16 --lam 1.068 \
+        --cull-frac 0.4 --cull-keep 3 --cold-start-selection
+    # plan §5 row k=4 (cold-start selection + small-k consistency):
+    python -m examples.run_lambda_pipeline --data-glob 'data500/gabo_p*' \
+        --out-dir ./poly_pipeline_k4 --n-epochs 50 --n-seeds 16 --lam 1.068 \
+        --cull-frac 0.4 --cull-keep 3 --cold-start-selection --k-rollout 4 --lambda-k 0.3
+"""
+
+import argparse
+import glob
+import json
+import os
+
+import numpy as np
+from scipy.io import wavfile
+
+from data.load_data import get_segmented_audio
+from data.data_utils import get_loaders
+from train.model_cv import model_cv_lambdas
+from train.eval import autonomy_score, generate_autonomous
+
+
+def load_voc_windows(data_dir, n_vocs, start_offset_ms, n):
+    """held-out sustained vocalization windows (start `start_offset_ms` after onset)."""
+    segs = []
+    for wav in sorted(glob.glob(os.path.join(data_dir, "*.wav")))[:n_vocs]:
+        sr, af = wavfile.read(wav)
+        if af.dtype == np.int16:
+            af = af / -np.iinfo(af.dtype).min
+        af = af.astype(np.float64)
+        onoffs = np.atleast_2d(np.loadtxt(wav.replace(".wav", ".txt")))
+        s = int(onoffs[0][0] * sr) + int(start_offset_ms / 1e3 * sr)
+        seg = af[s:s + n]
+        if len(seg) == n:
+            segs.append(seg)
+    return segs, sr
+
+
+def load_voc_windows_coldstart(data_dir, n_vocs, silence_pad_samples):
+    """held-out cold-start windows: `silence_pad_samples` lead-in + full vocalization.
+
+    Matches the convention used by examples/scan_seed_amp_coldstart.py and
+    make_paired_data_v2.py (50 ms lead-in at 40 kHz = 2000 samples). Per-voc lengths
+    vary, so we trim to the shortest common length so all segments stack uniformly.
+    """
+    raw = []
+    sr = None
+    for wav in sorted(glob.glob(os.path.join(data_dir, "*.wav")))[:n_vocs]:
+        sr, af = wavfile.read(wav)
+        if af.dtype == np.int16:
+            af = af / -np.iinfo(af.dtype).min
+        af = af.astype(np.float64)
+        onoffs = np.atleast_2d(np.loadtxt(wav.replace(".wav", ".txt")))
+        on_i = int(round(onoffs[0][0] * sr))
+        off_i = int(round(onoffs[0][1] * sr))
+        start = max(0, on_i - silence_pad_samples)
+        raw.append(af[start:off_i])
+    if not raw:
+        return [], sr
+    L = min(len(s) for s in raw)
+    segs = [s[:L] for s in raw]
+    return segs, sr
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--data-glob", default="data500/gabo_p*")
+    p.add_argument("--out-dir", default="poly_pipeline")
+    p.add_argument("--n-epochs", type=int, default=50)
+    p.add_argument("--n-seeds", type=int, default=5)
+    p.add_argument("--cull-frac", type=float, default=0.0,
+                   help="seed culling: train all runs to this fraction of n-epochs, then finish only "
+                        "the top --cull-keep by rescaled validation autonomy (0 = train all fully). "
+                        "~0.4 is a good default; the autonomy ranking settles by ~40%% of the budget.")
+    p.add_argument("--cull-keep", type=int, default=2,
+                   help="number of top runs to finish when culling")
+    p.add_argument("--lam", type=float, default=1.068,
+                   help="fixed kernel-weight lambda (lambda is irrelevant for autonomy; the SEED "
+                        "is what matters, so we fix lambda and select over seeds). Pass <=0 to "
+                        "sweep the standard 7-point lambda grid instead.")
+    p.add_argument("--keep-const", action=argparse.BooleanOptionalAction, default=True,
+                   help="keep the (0,0) polynomial 'alpha' forcing term (R2-neutral on gabo; may "
+                        "help on other datasets)")
+    p.add_argument("--drive-lowpass-ms", type=float, default=1.0)
+    p.add_argument("--d-state", type=int, default=4)
+    p.add_argument("--n-kernels", type=int, default=15)
+    p.add_argument("--context-len", type=float, default=0.1)
+    p.add_argument("--batch-size", type=int, default=8)
+    p.add_argument("--max-vocs-per-shard", type=int, default=0,
+                   help="cap training chunks per shard; 0 = legacy 100000 / n_train_dirs.")
+    p.add_argument("--save-freq", type=int, default=0,
+                   help="checkpoint every N epochs; 0 = legacy max(n_epochs//5, 1).")
+    p.add_argument("--n-val-vocs", type=int, default=3)
+    p.add_argument("--n-test-vocs", type=int, default=3)
+    p.add_argument("--auto-n", type=int, default=3000, help="autonomy window length (samples); "
+                   "ignored when --cold-start-selection is set (cold-start uses lead-in + full voc).")
+    p.add_argument("--start-offset-ms", type=float, default=50.0,
+                   help="mid-voc start offset (legacy / non-cold-start selection only).")
+    p.add_argument("--cold-start-selection", action=argparse.BooleanOptionalAction, default=False,
+                   help="select seeds by COLD-START RAW autonomy (lead-in + full voc, IC at "
+                        "silence, no rescaling) instead of the legacy mid-voc rescaled metric. "
+                        "This is the binding criterion for finchsim real-time synthesis. "
+                        "See docs/small_k_rollout_plan.md §3.2.")
+    p.add_argument("--silence-pad-samples", type=int, default=2000,
+                   help="silence lead-in length in samples for --cold-start-selection. "
+                        "Default 2000 (= 50 ms at 40 kHz; matches make_paired_data_v2.py).")
+    p.add_argument("--k-rollout", type=int, default=0,
+                   help=">=2 enables the small-k Euler-step rollout consistency loss "
+                        "during training (docs/small_k_rollout_plan.md §3.1). Must be much "
+                        "less than one carrier cycle (~16 samples at sr=40 kHz). Default 0 = off.")
+    p.add_argument("--lambda-k", type=float, default=0.3,
+                   help="weight on the k-step rollout loss (ignored if --k-rollout < 2).")
+    p.add_argument("--k-rollout-units", choices=["rescaled", "physical"], default="rescaled",
+                   help="time-unit system for the k-step rollout (see train.train.train). "
+                        "'rescaled' (default) keeps the two MSE terms commensurable and is "
+                        "the recommended choice. 'physical' reproduces the broken-scale "
+                        "May-30 matrix run.")
+    p.add_argument("--seed", type=int, default=1234)
+    p.add_argument("--n-jobs", type=int, default=8)
+    args = p.parse_args()
+
+    dirs = sorted(d for d in glob.glob(args.data_glob) if os.path.isdir(d))
+    assert len(dirs) >= 3, "need >=3 data shards for train/val/test holdout"
+    train_dirs, val_dir, test_dir = dirs[:-2], dirs[-2], dirs[-1]
+    out_dir = os.path.abspath(args.out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # training chunks from the train shards
+    chunks, sr = [], None
+    per = args.max_vocs_per_shard if args.max_vocs_per_shard > 0 else 100000 // max(1, len(train_dirs))
+    for d in train_dirs:
+        audio, sr = get_segmented_audio(d, d, max_vocs=per, context_len=args.context_len,
+                                        seed=args.seed, training=True, extend=True, shuffle_order=True)
+        chunks += audio
+    dt = 1 / sr
+    dls = get_loaders(np.stack(chunks, 0), num_workers=args.n_jobs, batch_size=args.batch_size,
+                      train_size=0.6, cv=True, seed=args.seed, dt=dt)
+
+    # held-out autonomy vocalizations (file-level holdout). Window depends on the
+    # selection metric: cold-start uses lead-in + full voc (variable length, trimmed
+    # to common min); mid-voc uses a fixed-length window starting `start_offset_ms`
+    # after onset (the legacy recipe).
+    if args.cold_start_selection:
+        val_vocs, _ = load_voc_windows_coldstart(val_dir, args.n_val_vocs,
+                                                 args.silence_pad_samples)
+        test_vocs, _ = load_voc_windows_coldstart(test_dir, args.n_test_vocs,
+                                                  args.silence_pad_samples)
+        # cold-start mode wants amplitude IN the score (see docs/small_k_rollout_plan.md §3.2).
+        rescale_for_selection = False
+    else:
+        val_vocs, _ = load_voc_windows(val_dir, args.n_val_vocs, args.start_offset_ms, args.auto_n)
+        test_vocs, _ = load_voc_windows(test_dir, args.n_test_vocs, args.start_offset_ms,
+                                        args.auto_n)
+        # legacy mid-voc recipe: amplitude is gauge-fixed at generation, so rescale away here
+        # and let selection turn on spec/pitch/boundedness.
+        rescale_for_selection = True
+    voc_L = len(val_vocs[0]) if val_vocs else 0
+    print(f"train chunks={len(chunks)} from {len(train_dirs)} shards | "
+          f"val_vocs={len(val_vocs)} from {os.path.basename(val_dir)} (L={voc_L}) | "
+          f"test_vocs={len(test_vocs)} from {os.path.basename(test_dir)} | sr={sr} | "
+          f"selection={'cold-start-raw' if args.cold_start_selection else 'mid-voc-rescaled'} | "
+          f"k_rollout={args.k_rollout} (lambda_k={args.lambda_k}, "
+          f"units={args.k_rollout_units})", flush=True)
+
+    best_model = model_cv_lambdas(
+        dls=dls, dt=dt, n_epochs=args.n_epochs, lr=1e-3, n_kernels=args.n_kernels,
+        expand_factor=10, n_layers=3, d_state=args.d_state, d_conv=4, tau=dt,
+        model_path=out_dir, save_freq=args.save_freq if args.save_freq > 0 else max(args.n_epochs // 5, 1),
+        drive_lowpass_ms=args.drive_lowpass_ms, n_seeds=args.n_seeds,
+        selection="autonomy", val_vocs=val_vocs, test_vocs=test_vocs,
+        keep_const=args.keep_const, rescale_autonomy=rescale_for_selection,
+        lambdas=None if args.lam <= 0 else [args.lam],
+        cull_frac=args.cull_frac, cull_keep=args.cull_keep,
+        k_rollout=args.k_rollout, lambda_k=args.lambda_k,
+        k_rollout_units=args.k_rollout_units,
+        cold_start_autonomy=args.cold_start_selection,
+    )
+
+    # DEPLOYED generation: rescaled autonomous reconstruction of the held-out test vocs.
+    # (Amplitude is a free gauge fixed at generation by generate_autonomous.) When the
+    # selection metric was cold-start raw, also report the cold-start raw test number --
+    # this is the binding metric for finchsim deployment (docs/small_k_rollout_plan.md §6).
+    if test_vocs:
+        # authoritative selected lambda from the selector (handles fixed-lambda, swept-grid, and culled)
+        sel_lambda = float(getattr(best_model, "_selected_lambda", args.lam))
+        score, _, bd = autonomy_score(best_model, test_vocs, dt, rescale=True,
+                                      cold_start=args.cold_start_selection)
+        recon = generate_autonomous(best_model, test_vocs[0], dt, rescale=True)
+        wav = (recon / (np.abs(recon).max() + 1e-12) * 0.95 * 32767).astype(np.int16)
+        wavfile.write(os.path.join(out_dir, "selected_autonomous_recon.wav"), int(round(1 / dt)), wav)
+        manifest = {"selected_lambda": sel_lambda, "n_seeds": int(args.n_seeds),
+                    "keep_const": bool(args.keep_const), "drive_lowpass_ms": float(args.drive_lowpass_ms),
+                    "cold_start_selection": bool(args.cold_start_selection),
+                    "k_rollout": int(args.k_rollout), "lambda_k": float(args.lambda_k),
+                    "k_rollout_units": str(args.k_rollout_units),
+                    "rescaled_test_autonomy": score, "spec_corr": bd["spec_corr"],
+                    "pitch_pen": bd["pitch_pen"], "bounded_frac": bd["bounded_frac"]}
+        if args.cold_start_selection:
+            # also record the cold-start RAW score: the no-rescale number that selection used,
+            # the metric finchsim deployment actually has to clear.
+            raw_score, _, raw_bd = autonomy_score(best_model, test_vocs, dt, rescale=False,
+                                                  cold_start=True)
+            manifest["coldstart_raw_test_autonomy"] = raw_score
+            manifest["coldstart_amp_pen"] = raw_bd["amp_pen"]
+            print(f"COLD-START RAW test autonomy = {raw_score:+.3f}  (amp_pen={raw_bd['amp_pen']:.3f}, "
+                  f"spec={raw_bd['spec_corr']:.2f}, pitch_pen={raw_bd['pitch_pen']:.2f}, "
+                  f"bounded={raw_bd['bounded_frac']:.2f})", flush=True)
+        with open(os.path.join(out_dir, "selected_model.json"), "w") as f:
+            json.dump(manifest, f, indent=2)
+        print(f"deployed (rescaled) test autonomy = {score:+.3f}  (spec={bd['spec_corr']:.2f}, "
+              f"pitch_pen={bd['pitch_pen']:.2f}, bounded={bd['bounded_frac']:.2f})", flush=True)
+        print(f"wrote {out_dir}/selected_autonomous_recon.wav + selected_model.json", flush=True)
+    print("PIPELINE DONE", flush=True)
+
+
+if __name__ == "__main__":
+    main()

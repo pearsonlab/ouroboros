@@ -1,7 +1,7 @@
 from data.load_data import get_segmented_audio
 from data.data_utils import get_loaders
 
-from train.model_cv import model_cv_lambdas
+from train.model_cv import model_cv_lambdas, train_arneodo
 
 from typing import Union
 import os
@@ -22,6 +22,13 @@ def train_model(
     batch_size: int = 32,
     n_epochs: int = 100,
     save_freq: int = 5,
+    parameterization: str = "poly",
+    lr: float = 1e-3,
+    n_layers: int = 3,
+    d_state: int = 1,
+    d_conv: int = 4,
+    expand_factor: int = 10,
+    drive_lowpass_ms: float = 1.0,
 ) -> torch.nn.Module:
     """
     function for training a model. takes audio from
@@ -41,6 +48,20 @@ def train_model(
             batch_size: batch size during training
             n_epochs: max number of passes through the data during training
             save_freq: how often (in epochs) we want to checkpoint model
+            parameterization: "poly" for the full-polynomial Ouroboros (with lambda
+                cross-validation), or "arneodo" for the Arneodo 2021 syrinx ODE
+                parameterization (single fit, no regularization CV)
+            lr: learning rate
+            n_layers: number of mamba layers in each encoder
+            d_state: internal SSM state size of the mamba encoders. The default (1) is
+                small; bumping it (e.g. 4) substantially improves fit -- with enough data
+                the arneodo model reaches R^2 > 0.98 at d_state=4. Mind GPU memory: the
+                parallel scan allocates ~batch * npo2(2*seq) * 2*expand_factor * d_state.
+            d_conv: width of the mamba convolutional kernel
+            expand_factor: channel expansion from audio to mamba input
+            drive_lowpass_ms: (arneodo only) hard low-pass timescale (ms) on the
+                alpha/beta/delta drives; default 1 ms gives slow, physiological drives and
+                cold-start-stable autonomous dynamics. Set 0.0 for the unregularized model.
     returns
     --------
             best model after hyperparameter cross-validation
@@ -86,20 +107,36 @@ def train_model(
         dt=dt,
     )
 
-    best_model = model_cv_lambdas(
-        dls=dataloaders,
-        dt=dt,
-        n_epochs=n_epochs,
-        lr=1e-3,
-        n_kernels=15,
-        expand_factor=10,
-        n_layers=3,
-        d_state=1,
-        d_conv=4,
-        tau=dt,
-        model_path=model_dir,
-        save_freq=save_freq,
-    )
+    if parameterization == "arneodo":
+        best_model = train_arneodo(
+            dls=dataloaders,
+            dt=dt,
+            n_epochs=n_epochs,
+            lr=lr,
+            expand_factor=expand_factor,
+            n_layers=n_layers,
+            d_state=d_state,
+            d_conv=d_conv,
+            tau=dt,
+            model_path=model_dir,
+            save_freq=save_freq,
+            drive_lowpass_ms=drive_lowpass_ms,
+        )
+    else:
+        best_model = model_cv_lambdas(
+            dls=dataloaders,
+            dt=dt,
+            n_epochs=n_epochs,
+            lr=lr,
+            n_kernels=15,
+            expand_factor=expand_factor,
+            n_layers=n_layers,
+            d_state=d_state,
+            d_conv=d_conv,
+            tau=dt,
+            model_path=model_dir,
+            save_freq=save_freq,
+        )
 
     return best_model
 

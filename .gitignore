@@ -161,3 +161,30 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# example run outputs (generated data, checkpoints, plots)
+arneodo_run/
+arneodo_big/
+arneodo_feas/
+arneodo_ft/
+arneodo_lp/
+arneodo_sweep/
+poly_lp/
+poly_lp_sweep/
+poly_ft_*/
+poly_pipeline/
+poly_pipeline_test/
+data500/
+poly_alpha/
+poly_alpha_ms/
+poly_ftspec_*/
+poly_ro_pipeline/
+poly_ro_*/
+poly_ftspec_env10_*/
+poly_attr_*/
+poly_pipeline_verify/
+poly_pipeline_full/
+poly_seedcull/
+poly_smallk_*/
+poly_smallk_logs/
+finch_*/
