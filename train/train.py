@@ -64,10 +64,17 @@ def save_model(
         "d_state": d_state,
         "d_conv": d_conv,
         "expand_factor": expand_factor,
+        # parameterization tag for forward-compat (always "poly" on this branch)
+        "parameterization": getattr(model, "parameterization", "poly"),
+        "drive_lowpass_ms": getattr(model, "drive_lowpass_ms", 0.0),
+        "keep_const": getattr(model, "keep_const", False),
+        "use_tract": getattr(model, "use_tract", False),
+        "use_envelope": getattr(model, "use_envelope", False),
+        "env_lowpass_ms": getattr(model, "env_lowpass_ms", 20.0),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
-    except KeyError:
+    except (KeyError, AttributeError):
         pass
 
     torch.save(sd, location)
@@ -132,6 +139,11 @@ def load_model(
             tau=sd["tau"],
             smooth_len=sd["smooth_len"],
             kernel=kernel,
+            drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
+            keep_const=sd.get("keep_const", False),
+            use_tract=sd.get("use_tract", False),
+            use_envelope=sd.get("use_envelope", False),
+            env_lowpass_ms=sd.get("env_lowpass_ms", 20.0),
         )
     except:
         print("no kernel in savefile!")
@@ -162,6 +174,31 @@ def train(
     start_epoch=0,
     model_info={},
     save_freq=0,
+    max_saved: int = 5,
+    loss_mode: str = "mse_accel",
+    # spectral-rollout knobs (only consulted when loss_mode == "spectral_rollout")
+    H_min: int = 512,
+    H_max: int = 2048,
+    H_schedule: str = "geom",
+    lam_spec: float = 1.0,
+    lam_tf: float = 1.0,
+    lam_env: float = 0.0,
+    lam_env_log: float = 0.0,       # weight on the log-ratio envelope loss (env_loss_log)
+    env_log_eps: float = 1e-4,      # noise floor inside the log() in env_loss_log
+    env_ms: float = 2.0,
+    lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
+    spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
+    env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
+    # Step-based overrides (None = derived from _epochs * batches_per_epoch at startup).
+    # Set these to decouple the curriculum from dataset size: same number of gradient
+    # updates regardless of how many batches an epoch contains.
+    spec_warmup_steps: int = None,
+    env_warmup_steps: int = None,
+    H_total_steps: int = None,
+    spec_configs=None,
+    ic_noise_rms: float = 1e-3,
+    grad_clip: float = 5.0,
+    rollout_backend: str = "eager",  # RK4 backend: 'eager' | 'cudagraph' | 'compile'
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -200,6 +237,62 @@ def train(
 
     train_losses, val_losses = [], []
 
+    if loss_mode == "spectral_rollout":
+        from train.spectral_rollout import (
+            spectral_rollout_step,
+            horizon_for_step,
+            DEFAULT_CONFIGS,
+            ONSET,
+        )
+        if spec_configs is None:
+            spec_configs = DEFAULT_CONFIGS
+        # Precompute Var(d2x) over the whole training set once, in the same
+        # rescaled-time units used in the inner loop. Matches rollout_refine.py:110
+        # and prevents the per-batch variance from blowing up the TF anchor on
+        # batches dominated by silence (ONSET segments).
+        tf_var_running = 0.0
+        n_seen = 0
+        with torch.no_grad():
+            for batch in loaders["train"]:
+                d2 = batch[2]   # (B, L, 1)
+                d2 = d2.to("cuda", non_blocking=True).to(torch.float32) / (dt ** 2) * model.tau ** 2
+                tf_var_running += float(d2.var().item()) * d2.shape[0]
+                n_seen += d2.shape[0]
+        tf_var = max(tf_var_running / max(1, n_seen), 1e-6)
+        # Decouple the curricula from dataset size: each ramp is measured in global
+        # gradient steps (batches). If the user didn't override, derive from epoch
+        # values × current epoch length so existing CLI invocations are unchanged.
+        batches_per_epoch = len(loaders["train"])
+        if spec_warmup_steps is None:
+            spec_warmup_steps_eff = spec_warmup_epochs * batches_per_epoch
+        else:
+            spec_warmup_steps_eff = int(spec_warmup_steps)
+        if env_warmup_steps is None:
+            env_warmup_steps_eff = env_warmup_epochs * batches_per_epoch
+        else:
+            env_warmup_steps_eff = int(env_warmup_steps)
+        if H_total_steps is None:
+            H_total_steps_eff = nEpochs * batches_per_epoch
+        else:
+            H_total_steps_eff = int(H_total_steps)
+        print(
+            f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
+            f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} lam_reg={lam_reg} "
+            f"kernel.lam={float(model.kernel.lam):.4g} "
+            f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
+            f"rollout_backend={rollout_backend} "
+            f"spec_warmup_steps={spec_warmup_steps_eff} env_warmup_steps={env_warmup_steps_eff} "
+            f"H_total_steps={H_total_steps_eff} (batches_per_epoch={batches_per_epoch})",
+            flush=True,
+        )
+        if rollout_backend not in ("eager", "graphstep") and H_schedule not in ("pow2", "const"):
+            print(
+                f"  WARNING: rollout_backend={rollout_backend!r} captures one CUDA graph "
+                f"per distinct H; schedule {H_schedule!r} yields many. Use H_schedule='pow2' "
+                f"to bucket horizons in factor-of-2 steps.",
+                flush=True,
+            )
+
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
         model.train()
 
@@ -207,14 +300,102 @@ def train(
             loaders["train"], start=epoch * len(loaders["train"])
         ):
             optimizer.zero_grad()
-            x, dxdt, dx2dt2 = batch  # each is bsz x seq len x 1
+            if len(batch) == 4:
+                x, dxdt, dx2dt2, cats = batch  # categories from edge-biased sampler
+            else:
+                x, dxdt, dx2dt2 = batch
+                cats = None
             bsz, _, n = x.shape
 
-            x = x.to("cuda").to(torch.float32)
-            dxdt = dxdt.to("cuda").to(torch.float32)
+            x = x.to("cuda", non_blocking=True).to(torch.float32)
+            dxdt = dxdt.to("cuda", non_blocking=True).to(torch.float32)
             dx2 = (
-                dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
+                dx2dt2.to("cuda", non_blocking=True).to(torch.float32) / (dt**2) * model.tau**2
             )  # rescale dx2, rather than model output
+
+            if loss_mode == "spectral_rollout":
+                # Skip model.forward entirely; spectral_rollout_step calls get_funcs
+                # internally with a cloned dxdt (forward and get_funcs mutate dxdt in place).
+                ic_mask = None
+                if cats is not None:
+                    ic_mask = (cats == ONSET).to("cuda")
+                # All curricula indexed by GLOBAL STEP (= `idx` thanks to
+                # enumerate(..., start=epoch * len(loader))) -- decouples them from
+                # dataset size. H is still updated per-batch but pow2 only yields a few
+                # distinct values so the graphed/compiled backends stay cache-friendly.
+                H = horizon_for_step(idx, H_total_steps_eff, H_min, H_max, H_schedule)
+                # Linearly ramp the spectral term so the random-init Mamba can first move
+                # into the TF basin (where drives become meaningful) before the spectral
+                # loss -- which is enormous when the rollout is saturated against quiet
+                # targets -- starts pulling on params.
+                if spec_warmup_steps_eff > 0 and idx < spec_warmup_steps_eff:
+                    lam_spec_t = lam_spec * (idx / float(spec_warmup_steps_eff))
+                else:
+                    lam_spec_t = lam_spec
+                if env_warmup_steps_eff > 0 and idx < env_warmup_steps_eff:
+                    ramp = idx / float(env_warmup_steps_eff)
+                    lam_env_t = lam_env * ramp
+                    lam_env_log_t = lam_env_log * ramp
+                else:
+                    lam_env_t = lam_env
+                    lam_env_log_t = lam_env_log
+                out = spectral_rollout_step(
+                    model, x, dxdt, dx2, dt,
+                    H=H, configs=spec_configs,
+                    lam_spec=lam_spec_t, lam_tf=lam_tf,
+                    lam_env=lam_env_t,
+                    lam_env_log=lam_env_log_t, env_log_eps=env_log_eps,
+                    env_ms=env_ms,
+                    lam_reg=lam_reg,
+                    tf_var=tf_var,
+                    ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
+                    rollout_backend=rollout_backend,
+                )
+                total_loss = out["total"]
+                if not torch.isfinite(total_loss):
+                    writer.add_scalar("Loss/nan_skip", 1.0, idx)
+                    continue
+                total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                # Stack the raw component tensors for a single host sync, then derive the
+                # weighted views in Python so the TB plots show each term's actual contribution
+                # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
+                # plain floats already on host.
+                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, total_v = torch.stack(
+                    [out["spec"], out["sc"], out["logm"], out["tf"],
+                     out["env"], out["env_log"], out["reg"], total_loss]
+                ).tolist()
+                train_losses.append(spec_v)
+                # Raw values
+                writer.add_scalar("Loss/spec", spec_v, idx)
+                writer.add_scalar("Loss/sc", sc_v, idx)
+                writer.add_scalar("Loss/logm", logm_v, idx)
+                writer.add_scalar("Loss/tf", tf_v, idx)
+                if lam_env > 0:
+                    writer.add_scalar("Loss/env", env_v, idx)
+                if lam_env_log > 0:
+                    writer.add_scalar("Loss/env_log", env_log_v, idx)
+                if lam_reg > 0:
+                    writer.add_scalar("Loss/reg", reg_v, idx)
+                writer.add_scalar("Loss/total", total_v, idx)
+                # Weighted (contribution to total) -- directly comparable across components
+                writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)
+                writer.add_scalar("LossW/sc",    float(lam_spec_t) * sc_v,    idx)
+                writer.add_scalar("LossW/logm",  float(lam_spec_t) * logm_v,  idx)
+                writer.add_scalar("LossW/tf",    float(lam_tf)     * tf_v,    idx)
+                if lam_env > 0:
+                    writer.add_scalar("LossW/env",     float(lam_env_t)     * env_v,     idx)
+                if lam_env_log > 0:
+                    writer.add_scalar("LossW/env_log", float(lam_env_log_t) * env_log_v, idx)
+                if lam_reg > 0:
+                    writer.add_scalar("LossW/reg",     float(lam_reg)       * reg_v,     idx)
+                writer.add_scalar("Train/H", float(H), idx)
+                writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
+                writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)
+                if lam_env_log > 0:
+                    writer.add_scalar("Train/lam_env_log_t", float(lam_env_log_t), idx)
+                continue
 
             dx2hat, weights = model(x, dxdt, dt, smoothing)  # state: B x L x SD
 
@@ -289,7 +470,10 @@ def train(
 
             train_loss = loss_fn(y, yhat[:, :L, :])
 
-            #l = loss
+            # Default objective is the data loss; the polynomial parameterization adds a
+            # weight-complexity penalty when reg_weights=True. Previously total_loss was
+            # only defined inside the if-reg_weights block, which crashed unregularized runs.
+            total_loss = train_loss
             if reg_weights:
                 B, L, P, P = weights.shape
                 lam_mat = torch.arange(
@@ -313,7 +497,16 @@ def train(
             if reg_weights:
                 writer.add_scalar("Penalty/train", penalty.item(), idx)
 
-        if epoch % val_freq == 0:
+        # The MSE-accel val loop runs only for the legacy mode (and only if a val loader
+        # was provided). In spectral_rollout mode the autonomy-based selection in
+        # train.model_cv handles validation, so we skip the body here -- but we MUST
+        # fall through to the save_model block below, so do NOT use `continue` (it
+        # would skip the rest of this epoch iteration including save_model).
+        if (
+            epoch % val_freq == 0
+            and loss_mode != "spectral_rollout"
+            and "val" in loaders
+        ):
             model.eval()
             vl = 0.0
             vp = 0.0
@@ -322,12 +515,15 @@ def train(
                 loaders["val"], start=epoch * len(loaders["train"])
             ):
                 with torch.no_grad():
-                    x, dxdt, dx2dt2 = batch  # each is bsz x seq len x 1
+                    if len(batch) == 4:
+                        x, dxdt, dx2dt2, _ = batch
+                    else:
+                        x, dxdt, dx2dt2 = batch
                     bsz, _, n = x.shape
 
-                    x = x.to("cuda").to(torch.float32)
-                    dxdt = dxdt.to("cuda").to(torch.float32)
-                    dx2 = dx2dt2.to("cuda").to(torch.float32) / (dt**2) * model.tau**2
+                    x = x.to("cuda", non_blocking=True).to(torch.float32)
+                    dxdt = dxdt.to("cuda", non_blocking=True).to(torch.float32)
+                    dx2 = dx2dt2.to("cuda", non_blocking=True).to(torch.float32) / (dt**2) * model.tau**2
 
                     dx2hat, weights = model(x, dxdt, dt, smoothing)
 
@@ -436,15 +632,18 @@ def train(
             writer.add_scalar("Loss/validation", vl / len(loaders["val"]), idx)
             writer.add_scalar("Penalty/validation", vp / len(loaders["val"]), idx)
 
-            if epoch % save_freq == 0:
-                save_model(
-                    model,
-                    optimizer,
-                    location=os.path.join(runDir, f"checkpoint_{epoch}.tar"),
-                    n_layers=model_info["n layers"],
-                    d_state=model_info["d state"],
-                    d_conv=model_info["d conv"],
-                    expand_factor=model_info["expand factor"],
-                )
+        # Periodic checkpoint -- OUTSIDE the val block so spectral_rollout mode (which
+        # skips the val loop) still saves. Triggered by save_freq>0 only.
+        if save_freq > 0 and (epoch % save_freq) == 0:
+            save_model(
+                model,
+                optimizer,
+                location=os.path.join(runDir, f"checkpoint_{epoch}.tar"),
+                n_layers=model_info["n layers"],
+                d_state=model_info["d state"],
+                d_conv=model_info["d conv"],
+                expand_factor=model_info["expand factor"],
+                max_saved=max_saved,
+            )
     writer.close()
     return train_losses, val_losses, model, optimizer

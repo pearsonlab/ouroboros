@@ -9,6 +9,7 @@ from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import os
 import glob
+import gc
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -212,3 +213,217 @@ def model_cv_lambdas(
     data_df.to_csv(os.path.join(model_path, "cv_errs.csv"))
 
     return full_model_poly
+
+
+# --- Seed loop + culling + cold-start autonomy selection ---------------------------------
+
+def model_seed_cv_spectral(
+    dls: dict,
+    dt: float,
+    val_vocs: list,
+    test_vocs: list,
+    *,
+    # model capacity
+    n_kernels: int = 15,
+    n_layers: int = 4,
+    d_state: int = 4,
+    d_conv: int = 4,
+    expand_factor: int = 4,
+    tau: float = None,             # default 1/sr if None
+    smooth_len: float = 0.001,
+    drive_lowpass_ms: float = 1.0,
+    keep_const: bool = False,
+    osc_init: bool = False,        # Strategy 1: van der Pol limit-cycle init (see Ouroboros.__init__)
+    checkpoint_encoder: bool = False,  # gradient-checkpoint the Mamba drive encoders (memory for larger B)
+    use_tract: bool = False,       # opt-in: linear vocal-tract filter (FFT-domain H, identity at init)
+    use_envelope: bool = False,    # opt-in: learnable amplitude envelope head e(t)=exp(lowpass(.))
+    env_lowpass_ms: float = 20.0,
+    lam: float = 1.068,            # fixed kernel-weight lambda (no CV in this PR)
+    # training
+    n_epochs: int = 50,
+    lr: float = 1e-3,
+    n_seeds: int = 4,
+    cull_frac: float = 0.0,
+    cull_keep: int = 2,
+    save_freq: int = 5,
+    max_saved: int = 5,
+    model_path: str = "",
+    # spectral loss
+    H_min: int = 512,
+    H_max: int = 2048,
+    H_schedule: str = "geom",
+    lam_spec: float = 1.0,
+    lam_tf: float = 1.0,
+    lam_env: float = 0.0,
+    lam_env_log: float = 0.0,
+    env_log_eps: float = 1e-4,
+    env_ms: float = 2.0,
+    lam_reg: float = 0.0,
+    spec_warmup_epochs: int = 5,
+    env_warmup_epochs: int = 0,
+    spec_warmup_steps: int = None,
+    env_warmup_steps: int = None,
+    H_total_steps: int = None,
+    spec_configs=None,
+    ic_noise_rms: float = 1e-3,
+    grad_clip: float = 5.0,
+    rollout_backend: str = "eager",
+    # selection
+    rescale_autonomy: bool = False,
+    cold_start_autonomy: bool = True,
+) -> torch.nn.Module:
+    """Seed loop for the spectral-rollout polynomial Ouroboros, with optional
+    culling and cold-start-raw autonomy selection.
+
+    Trains `n_seeds` independent random inits at a fixed kernel-weight `lam`, all
+    with loss_mode='spectral_rollout' (see train/spectral_rollout.py). Each seed
+    integrates over the edge-biased training set; validation uses cold-start
+    autonomy (held-out vocs `val_vocs` already include the silence lead-in -- the
+    integration IC then equals near-silence and exercises the ignition path).
+
+    If `cull_frac` in (0, 1) and `cull_keep < n_seeds`, train all seeds to
+    `cull_frac * n_epochs`, rank by val cold-start autonomy, and finish only the
+    top `cull_keep`. Roughly halves the seed-search cost (see
+    docs/autonomous_amplitude.md on main branch).
+
+    Returns the best seed by val autonomy. Saves a `seed_cv.csv` summary and
+    sets `best._selected_seed`, `best._selected_test_autonomy`,
+    `best._selected_breakdown` for the caller's manifest.
+    """
+    from train.eval import autonomy_score
+
+    model_info = {
+        "n layers": n_layers, "d state": d_state, "d conv": d_conv,
+        "expand factor": expand_factor,
+    }
+    assert tau is not None, "model_seed_cv_spectral requires explicit tau (e.g. 1/sr)"
+
+    def _build(seed):
+        torch.manual_seed(seed); np.random.seed(seed)
+        kernel = fullPolyModule(nTerms=n_kernels, device="cuda", x_dim=1, z_dim=2,
+                                activation=lambda x: x, lam=float(lam))
+        model = Ouroboros(d_data=1, n_layers=n_layers, d_state=d_state, d_conv=d_conv,
+                          expand_factor=expand_factor, tau=tau, smooth_len=smooth_len,
+                          kernel=kernel, drive_lowpass_ms=drive_lowpass_ms,
+                          keep_const=keep_const, osc_init=osc_init,
+                          checkpoint_encoder=checkpoint_encoder,
+                          use_tract=use_tract, use_envelope=use_envelope,
+                          env_lowpass_ms=env_lowpass_ms)
+        opt = Adam(model.parameters(), lr=lr)
+        sched = ReduceLROnPlateau(opt, factor=0.5, patience=max(n_epochs // 25, 2),
+                                  min_lr=1e-10)
+        return model, opt, sched
+
+    def _train_to(seed, target):
+        run_dir = os.path.join(model_path, f"seed{seed}")
+        os.makedirs(run_dir, exist_ok=True)
+        if glob.glob(os.path.join(run_dir, "*.tar")):
+            model, opt, sched, start_epoch = load_model(run_dir)
+            model.kernel.lam = float(lam)
+        else:
+            model, opt, sched = _build(seed)
+            start_epoch = 0
+        if start_epoch < target:
+            train(
+                model, opt,
+                loss_fn=lambda y, yhat: sse(yhat, y, reduction="mean"),  # unused in spectral mode
+                loaders=dls, scheduler=sched,
+                nEpochs=target, val_freq=max(1, target // 10), runDir=run_dir,
+                dt=dt, vis_freq=0, smoothing=False, reg_weights=False,
+                start_epoch=start_epoch, save_freq=save_freq, max_saved=max_saved,
+                model_info=model_info,
+                loss_mode="spectral_rollout",
+                H_min=H_min, H_max=H_max, H_schedule=H_schedule,
+                lam_spec=lam_spec, lam_tf=lam_tf, lam_env=lam_env,
+                lam_env_log=lam_env_log, env_log_eps=env_log_eps,
+                env_ms=env_ms,
+                lam_reg=lam_reg,
+                spec_warmup_epochs=spec_warmup_epochs,
+                env_warmup_epochs=env_warmup_epochs,
+                spec_warmup_steps=spec_warmup_steps,
+                env_warmup_steps=env_warmup_steps,
+                H_total_steps=H_total_steps,
+                spec_configs=spec_configs, ic_noise_rms=ic_noise_rms,
+                grad_clip=grad_clip, rollout_backend=rollout_backend,
+            )
+            save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
+                       n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,
+                       d_conv=d_conv, max_saved=max_saved)
+        return model, run_dir
+
+    def _autonomy(model, vocs):
+        model.eval()
+        with torch.no_grad():
+            score, _, bd = autonomy_score(model, vocs, dt,
+                                          rescale=rescale_autonomy,
+                                          cold_start=cold_start_autonomy)
+        return score, bd
+
+    records = []
+    do_cull = (0.0 < cull_frac < 1.0) and cull_keep < n_seeds
+    if do_cull:
+        cull_epoch = max(1, int(round(cull_frac * n_epochs)))
+        metric_tag = ("cold-start-raw" if cold_start_autonomy
+                      else ("rescaled" if rescale_autonomy else "raw"))
+        print(f"\n=== seed culling: train all {n_seeds} seeds to epoch {cull_epoch} "
+              f"({cull_frac:.0%} of {n_epochs}), then finish top {cull_keep} by "
+              f"{metric_tag} val autonomy ===", flush=True)
+        ranked = []
+        for seed in range(n_seeds):
+            model, run_dir = _train_to(seed, cull_epoch)
+            va, bd = _autonomy(model, val_vocs)
+            ranked.append((va, seed, run_dir))
+            print(f"  [cull@{cull_epoch}] seed={seed}: val autonomy={va:+.4f} "
+                  f"(spec={bd['spec_corr']:.2f} amp_pen={bd['amp_pen']:.2f} "
+                  f"pitch_pen={bd['pitch_pen']:.2f} bounded={bd['bounded_frac']:.2f})",
+                  flush=True)
+            del model; gc.collect(); torch.cuda.empty_cache()
+        ranked.sort(key=lambda r: (r[0] if np.isfinite(r[0]) else -np.inf), reverse=True)
+        keep = ranked[:cull_keep]
+        culled = ranked[cull_keep:]
+        print("  keep: " + ", ".join(f"seed{s}({a:+.3f})" for a, s, _ in keep), flush=True)
+        if culled:
+            print("  cull: " + ", ".join(f"seed{s}({a:+.3f})" for a, s, _ in culled),
+                  flush=True)
+        for _, seed, _ in keep:
+            model, run_dir = _train_to(seed, n_epochs)
+            va, bd = _autonomy(model, val_vocs)
+            print(f"  [final] seed={seed}: val autonomy={va:+.4f} "
+                  f"(spec={bd['spec_corr']:.2f} amp_pen={bd['amp_pen']:.2f} "
+                  f"pitch_pen={bd['pitch_pen']:.2f} bounded={bd['bounded_frac']:.2f})",
+                  flush=True)
+            records.append({"seed": seed, "val_autonomy": va, "ckpt": run_dir,
+                            **{f"val_{k}": v for k, v in bd.items()}})
+            del model; gc.collect(); torch.cuda.empty_cache()
+    else:
+        for seed in range(n_seeds):
+            model, run_dir = _train_to(seed, n_epochs)
+            va, bd = _autonomy(model, val_vocs)
+            print(f"seed={seed}: val autonomy={va:+.4f} "
+                  f"(spec={bd['spec_corr']:.2f} amp_pen={bd['amp_pen']:.2f} "
+                  f"pitch_pen={bd['pitch_pen']:.2f} bounded={bd['bounded_frac']:.2f})",
+                  flush=True)
+            records.append({"seed": seed, "val_autonomy": va, "ckpt": run_dir,
+                            **{f"val_{k}": v for k, v in bd.items()}})
+            del model; gc.collect(); torch.cuda.empty_cache()
+
+    df = pd.DataFrame(records)
+    df.to_csv(os.path.join(model_path, "seed_cv.csv"), index=False)
+    # tie-breaker: max bounded_frac among the top val_autonomy (so collapsed-but-lucky
+    # rollouts don't beat truly bounded ones if they happen to land at the same score)
+    best_row = df.sort_values(["val_autonomy", "val_bounded_frac"]).iloc[-1]
+    best_ckpt = best_row["ckpt"]
+    print(f"\n=== seed selection: best seed={int(best_row['seed'])} "
+          f"val_autonomy={best_row['val_autonomy']:+.4f} ===", flush=True)
+
+    best_model, _, _, _ = load_model(best_ckpt)
+    best_model.eval()
+    test_score, test_bd = _autonomy(best_model, test_vocs) if test_vocs else (float("nan"), {})
+    print(f"BEST seed={int(best_row['seed'])}: test autonomy={test_score:+.4f}",
+          flush=True)
+    best_model._selected_seed = int(best_row["seed"])
+    best_model._selected_lambda = float(lam)
+    best_model._selected_val_autonomy = float(best_row["val_autonomy"])
+    best_model._selected_test_autonomy = float(test_score)
+    best_model._selected_test_breakdown = dict(test_bd)
+    return best_model

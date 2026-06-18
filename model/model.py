@@ -1,9 +1,12 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from mambapy.mamba import Mamba, MambaConfig
 from model.model_utils import smooth
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 # from model.kernels import *
+import math
 
 import numpy as np
 from tqdm import tqdm
@@ -23,6 +26,83 @@ with elements used included in `third_party` for convenience.
 """
 
 
+class Tract(nn.Module):
+    r"""
+    Linear (LTI) vocal-tract filter, applied in the rFFT domain.
+
+    The Arneodo / Perl source->sound chain is a passive linear filter: an OEC Helmholtz
+    resonance (a damped 2-pole resonator) in series with a trachea feed-forward comb. Both
+    are linear, so the whole tract is one transfer function H(omega). We realize it as
+
+        H(f) = exp(g_res * bump(f; f0, width))  *  (1 - r * exp(-2*pi*i*f*tau))
+               \_______ OEC resonance _______/    \____ trachea comb ____/
+
+    with f in cycles/sample. The resonance is a zero-phase log-magnitude Gaussian bump; the
+    comb is a real 2-tap FIR with |r| < 1. It is applied FORWARD only (source -> audio) on
+    the rolled-out waveform. Identity at init: g_res = 0 and r = 0 give H == 1, so a fresh
+    model leaves the rollout untouched and the tract is learned only if it lowers the loss.
+    """
+
+    def __init__(
+        self,
+        device: str = "cuda",
+        f0_init: float = 0.06,
+        width_init: float = 0.03,
+        tau_init: float = 10.0,
+        pad: int = 128,
+        r_max: float = 0.99,
+    ):
+        super().__init__()
+        self.device = device
+        self.pad = pad
+        self.r_max = r_max
+        # OEC resonance magnitude exp(g_res * bump); g_res init 0 -> flat (identity).
+        self.g_res = nn.Parameter(torch.zeros((), device=device))
+        # center frequency in cycles/sample, in (0, 0.5) via 0.5*sigmoid.
+        self.f0_raw = nn.Parameter(
+            torch.tensor(math.log(f0_init / (0.5 - f0_init)), device=device)
+        )
+        self.log_width = nn.Parameter(torch.tensor(math.log(width_init), device=device))
+        # trachea comb reflection r = r_max*tanh(r_raw); r init 0 -> no comb.
+        self.r_raw = nn.Parameter(torch.zeros((), device=device))
+        # comb delay tau in samples, positive via softplus.
+        self.tau_raw = nn.Parameter(
+            torch.tensor(math.log(math.expm1(tau_init)), device=device)
+        )
+
+    def _transfer(self, n: int, device, dtype) -> torch.Tensor:
+        """complex transfer function H(f) on the rFFT grid of a length-n signal."""
+        k = torch.arange(n // 2 + 1, device=device, dtype=dtype)
+        f = k / n
+        f0 = 0.5 * torch.sigmoid(self.f0_raw)
+        width = torch.exp(self.log_width)
+        bump = torch.exp(-0.5 * ((f - f0) / width) ** 2)
+        mag = torch.exp(self.g_res * bump)
+        r = self.r_max * torch.tanh(self.r_raw)
+        tau = F.softplus(self.tau_raw)
+        ang = -2 * math.pi * f * tau
+        comb = 1.0 - r * torch.complex(torch.cos(ang), torch.sin(ang))
+        return mag.to(comb.dtype) * comb
+
+    def apply(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        """
+        filter a (B, L, 1) real waveform along time by H (forward). Reflection-padded to
+        limit circular-convolution edge ringing.
+        """
+        B, L, C = x.shape
+        pad = min(self.pad, max(0, L - 1))
+        xc = x.transpose(1, 2)
+        if pad > 0:
+            xc = F.pad(xc, (pad, pad), mode="reflect")
+        n = xc.shape[-1]
+        X = torch.fft.rfft(xc, dim=-1)
+        H = self._transfer(n, x.device, x.dtype)
+        y = torch.fft.irfft(X * H[None, None, :], n=n, dim=-1)
+        if pad > 0:
+            y = y[..., pad : pad + L]
+        return y.transpose(1, 2)
+
+
 class Ouroboros(nn.Module):
     def __init__(
         self,
@@ -35,6 +115,17 @@ class Ouroboros(nn.Module):
         device: str = "cuda",
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
+        drive_lowpass_ms: float = 0.0,
+        keep_const: bool = False,
+        osc_init: bool = False,
+        checkpoint_encoder: bool = False,
+        gamma_init: float = -0.01,
+        vdp_init: float = 0.02,
+        cubic_init: float = 0.01,
+        const_init: float = 1e-3,
+        use_tract: bool = False,
+        use_envelope: bool = False,
+        env_lowpass_ms: float = 20.0,
     ):
 
         super().__init__()
@@ -79,9 +170,116 @@ class Ouroboros(nn.Module):
 
         self.tau = tau
         self.smooth_len = smooth_len
+        # if > 0, low-pass the drives omega(t), gamma(t), and the kernel weights w(t) with a
+        # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Keeps the
+        # drives from re-encoding the audio carrier and improves autonomous behavior.
+        self.drive_lowpass_ms = drive_lowpass_ms
+        # if True, gradient-checkpoint the three Mamba drive encoders in get_funcs: their
+        # activations over the doubled-length sequence (x_in is 2L) dominate training memory
+        # (~6.9 GB at B=64, vs ~60 MiB for the RK4 rollout), so recomputing them in backward
+        # is what unlocks larger batch sizes. ~1 extra encoder forward per step in exchange.
+        self.checkpoint_encoder = checkpoint_encoder
         self.kernel = kernel
         self.kernel.tau = self.tau
+        # if True, ADD the constant (0,0) "alpha"-like forcing term (y^0*ydot^0) to the kernel
+        # instead of zeroing it; it is low-passed at drive_lowpass_ms like the other drives.
+        self.keep_const = keep_const
+        if keep_const:
+            self.kernel.keep_const = True
+            # zero-init the (0,0) output of the kernel weight head so the alpha forcing starts at
+            # 0 and is learned gently (otherwise the random constant disrupts early training).
+            with torch.no_grad():
+                self.kernel.weights.weight[0].zero_()
+                self.kernel.weights.bias[0].zero_()
+        # Strategy 1 "oscillator init": start every seed as a marginal van der Pol limit cycle
+        # instead of the default coin-flip-sign, ~40x-too-stiff linear damping. At the default
+        # init |gamma| ~ 0.4 (envelope tau ~ 0.1 ms) with random per-seed sign, so ~half of seeds
+        # are purely dissipative (oscillation dies instantly -> the model can only AM-modulate
+        # input/IC noise). osc_init makes the damping a small NEGATIVE constant (slow energy
+        # injection, envelope tau ~ ms) and seeds an amplitude-dependent re-damping (+y^2*ydot)
+        # plus a hardening cubic (+y^3) so the growth saturates into a bounded cycle. The
+        # corresponding control-head WEIGHTS are zeroed so these start as clean constants the
+        # encoders can later modulate; only the structural prior is injected.
+        #
+        # Net damping in ydot-dot is -(gamma_init + vdp_init*y^2)*ydot, zero at amplitude
+        # A* = sqrt(-gamma_init/vdp_init) (~0.7 with the defaults), i.e. a limit cycle near |y|~0.7.
+        if osc_init:
+            with torch.no_grad():
+                # gamma: pure small negative constant (anti-damping) -> energy injection
+                self.gamma_net.weight.zero_()
+                self.gamma_net.bias.fill_(float(gamma_init))
+                # kernel polynomial weights: index (i,j) -> row i*W + j in the flattened
+                # (poly_dim+1)x(poly_dim+1) output of kernel.weights. yhat subtracts
+                # weighted_kernels, so a +w[i,j] adds -w[i,j]*y^i*ydot^j to ydot-dot.
+                W = self.kernel.poly_dim + 1
+                def _seed(i, j, val):
+                    idx = i * W + j
+                    self.kernel.weights.weight[idx].zero_()
+                    self.kernel.weights.bias[idx].fill_(float(val))
+                _seed(2, 1, vdp_init)    # +y^2*ydot -> amplitude-dependent re-damping (saturation)
+                _seed(3, 0, cubic_init)  # +y^3      -> hardening spring (bounds amplitude)
+                if keep_const:
+                    # tiny constant drive to break the y=0 fixed-point symmetry so the cycle ignites
+                    _seed(0, 0, const_init)
         self.names = [r"$\omega$", r"$\gamma$", "weighted kernels", "states"]
+
+        # ---- learnable amplitude envelope + vocal-tract filter (opt-in) ----
+        # Both default off, so an Ouroboros built/loaded without the flags is the legacy
+        # poly model. They act ONLY on the rolled-out waveform (see get_envelope / Tract and
+        # train.spectral_rollout): the synthesized source x(t) is multiplied by e(t) and
+        # filtered by H, then compared to the audio. e is NOT in the kernel / 2nd-derivative,
+        # so there are no reciprocal-e gains and a small e simply makes the output quiet.
+        self.use_tract = use_tract
+        self.use_envelope = use_envelope
+        self.env_lowpass_ms = env_lowpass_ms
+
+        if use_envelope:
+            # a fourth parallel Mamba encoder emits the (log) amplitude envelope e(t).
+            envConfig = MambaConfig(
+                d_model=2 * d_data,
+                n_layers=n_layers,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand_factor=expand_factor,
+            )
+            self.env_mamba = Mamba(envConfig).to(device)
+            # head outputs log e(t); e = exp(.). Zero-init => e starts at 1 (no scaling),
+            # so the model begins exactly at the un-enveloped rollout and learns amplitude
+            # only if it lowers the loss.
+            self.env_net = nn.Linear(
+                in_features=2 * d_data, out_features=d_data, device=device
+            )
+            nn.init.zeros_(self.env_net.weight)
+            nn.init.zeros_(self.env_net.bias)
+            self.names = self.names + [r"$e$"]
+
+        if use_tract:
+            self.tract = Tract(device=device)
+
+    def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
+        """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.
+        lp_ms overrides the timescale (defaults to self.drive_lowpass_ms). The kernel radius is
+        capped at L-1 so very slow (large-sigma) low-passes work on short segments (reduce to
+        ~a segment-wide average)."""
+        ms = self.drive_lowpass_ms if lp_ms is None else lp_ms
+        sigma = (ms / 1e3) / dt  # samples
+        if sigma <= 0:
+            return x
+        L = x.shape[1]
+        radius = max(1, min(int(round(3 * sigma)), L - 1))
+        t = torch.arange(-radius, radius + 1, device=x.device, dtype=x.dtype)
+        kern = torch.exp(-0.5 * (t / sigma) ** 2)
+        kern = kern / kern.sum()
+        C = x.shape[-1]
+        k = kern.view(1, 1, -1).expand(C, 1, -1)
+        xc = F.pad(x.transpose(1, 2), (radius, radius), mode="reflect")
+        return F.conv1d(xc, k, groups=C).transpose(1, 2)
+
+    def _lowpass_weights(self, weights: torch.FloatTensor, dt: float) -> torch.FloatTensor:
+        """low-pass the polynomial kernel weights (B, L, P, P) along time."""
+        B, L, P, P2 = weights.shape
+        w = self._lowpass(weights.reshape(B, L, P * P2), dt)
+        return w.reshape(B, L, P, P2)
 
     def forward(
         self,
@@ -131,11 +329,18 @@ class Ouroboros(nn.Module):
             omegaControl
         ).abs()  # Since we take omega^2 anyway, we take the absolute value to prevent things from switching around too much
         gamma = self.gamma_net(gammaControl)
-        if smoothing:
+        weighted_kernels, weights = self.kernel(z, kernelControl)
+        if self.drive_lowpass_ms > 0:
+            # low-pass the drives in the loop, then recompute the nonlinearity from the
+            # low-passed weights so yhat is consistent with the (slow) drives
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             # smooth our model functions, if we choose to do so. I do not.
             omega = smooth(omega, smooth_len)
             gamma = smooth(gamma, smooth_len)
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         z1 = z[:, :, :1]
         z2 = z[:, :, 1:]
@@ -202,18 +407,31 @@ class Ouroboros(nn.Module):
 
         x_in = torch.cat([torch.flip(z, [1]), z], dim=1)  ## stack on time dimension
 
-        omegaControl = self.omega_mamba(x_in)[:, L:, :]
-        gammaControl = self.gamma_mamba(x_in)[:, L:, :]
-        kernelControl = self.kernel_mamba(x_in)[:, L:, :]
+        # The three Mamba encoders over x_in (length 2L) are the training-memory bottleneck.
+        # When checkpoint_encoder is on (and we're building a graph), recompute them in
+        # backward instead of storing their activations -- trades ~1 extra encoder forward
+        # for the headroom to push batch size past what fits otherwise.
+        if self.checkpoint_encoder and torch.is_grad_enabled():
+            omegaControl = checkpoint(self.omega_mamba, x_in, use_reentrant=False)[:, L:, :]
+            gammaControl = checkpoint(self.gamma_mamba, x_in, use_reentrant=False)[:, L:, :]
+            kernelControl = checkpoint(self.kernel_mamba, x_in, use_reentrant=False)[:, L:, :]
+        else:
+            omegaControl = self.omega_mamba(x_in)[:, L:, :]
+            gammaControl = self.gamma_mamba(x_in)[:, L:, :]
+            kernelControl = self.kernel_mamba(x_in)[:, L:, :]
 
         omega = self.omega_net(omegaControl).abs()
         gamma = self.gamma_net(gammaControl)
+        weighted_kernels, weights = self.kernel(z, kernelControl)
 
-        if smoothing:
+        if self.drive_lowpass_ms > 0:
+            omega = self._lowpass(omega, dt)
+            gamma = self._lowpass(gamma, dt)
+            weights = self._lowpass_weights(weights, dt)
+            weighted_kernels = self.kernel.forward_given_weights(z, weights)
+        elif smoothing:
             omega = smooth(omega.abs(), smooth_len)
             gamma = smooth(gamma, smooth_len)
-
-        weighted_kernels, weights = self.kernel(z, kernelControl)
 
         return (
             omega,
@@ -222,6 +440,27 @@ class Ouroboros(nn.Module):
             weights,
             torch.cat([omegaControl, gammaControl, kernelControl], dim=-1),
         )
+
+    def get_envelope(
+        self, x: torch.FloatTensor, dxdt: torch.FloatTensor, dt: float
+    ) -> Optional[torch.FloatTensor]:
+        """
+        learnable amplitude envelope e(t) = exp(lowpass(env_head)), shape (B, L, 1), or
+        None when use_envelope is False. A fourth Mamba encoder reads the same [x, x']
+        state as the drives; the head is zero-init (e starts at 1) and always low-passed at
+        env_lowpass_ms (default 20 ms) so e is the slow amplitude gauge. It is applied as a
+        plain multiplicative factor on the rolled-out waveform (e * x), NOT in the kernel,
+        so there is no reciprocal-e term and a small e just makes the output quiet.
+        """
+        if not self.use_envelope:
+            return None
+        dxdt = dxdt * (self.tau / dt)  # rescaled velocity; out-of-place (no caller mutation)
+        z = torch.cat([x, dxdt], dim=-1)
+        L = z.shape[1]
+        x_in = torch.cat([torch.flip(z, [1]), z], dim=1)
+        e_log = self.env_net(self.env_mamba(x_in)[:, L:, :])
+        e_log = self._lowpass(e_log, dt, lp_ms=self.env_lowpass_ms)
+        return torch.exp(e_log)
 
     def integrate(
         self,
