@@ -388,10 +388,13 @@ def integrate_poly_autonomous(
     t_steps = np.arange(0, L * dt + dt / 2, dt)[:L]
     s_steps = t_steps / model.tau
 
+    # Use the model's device so this works on either CPU or CUDA. Lets the monitor
+    # evaluate ckpts on CPU when GPU is contention-saturated by ongoing training.
+    dev = next(model.parameters()).device
     audio_3d = audio[None, :, None]
     dy = deriv_approx_dy(audio_3d)
-    audio_t = torch.from_numpy(audio_3d).to(torch.float32).to("cuda")
-    dy_t = torch.from_numpy(dy).to(torch.float32).to("cuda")
+    audio_t = torch.from_numpy(audio_3d).to(torch.float32).to(dev)
+    dy_t = torch.from_numpy(dy).to(torch.float32).to(dev)
 
     with torch.no_grad():
         omega, gamma, _, weights, _ = model.get_funcs(audio_t, dy_t, dt)
@@ -407,7 +410,7 @@ def integrate_poly_autonomous(
 
     x0 = float(audio[0])
     xp0 = (model.tau / dt) * float(dy[0, 0, 0])
-    ic = torch.tensor([x0, xp0], dtype=torch.float32, device="cuda")
+    ic = torch.tensor([x0, xp0], dtype=torch.float32, device=dev)
     kernel = model.kernel
 
     # learnable amplitude envelope e(s) (all-ones when the model has no envelope) and the
@@ -427,7 +430,7 @@ def integrate_poly_autonomous(
         """envelope-scale the generated source, filter through the tract, then detrend."""
         x_src = np.asarray(x_src) * e_seq[: len(x_src)]
         if use_tract:
-            xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to("cuda")
+            xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to(dev)
             with torch.no_grad():
                 x_src = model.tract.apply(xt).detach().cpu().numpy().squeeze()
         return correct(x_src) if detrend else x_src

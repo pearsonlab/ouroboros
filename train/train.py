@@ -83,6 +83,7 @@ def save_model(
 
 def load_model(
     location: str,
+    device: str = "cuda",
 ) -> Tuple[nn.Module, torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler, int]:
     """
     load a model. requires that save files contained information about the structure of
@@ -108,7 +109,7 @@ def load_model(
     location = model_files[most_recent]
     print(f"loading from {location}")
 
-    sd = torch.load(location, weights_only=False)
+    sd = torch.load(location, weights_only=False, map_location=device)
     try:
         n_layers = sd["n_layers"]
         d_state = sd["d_state"]
@@ -124,7 +125,7 @@ def load_model(
         # but probably should have saved it. oh well! we set to 1 for compatibility with all my saves.
         kernel = fullPolyModule(
             nTerms=sd["n_kernel"],
-            device="cuda",
+            device=device,
             x_dim=1,
             z_dim=2,
             activation=lambda x: x,
@@ -140,6 +141,7 @@ def load_model(
             tau=sd["tau"],
             smooth_len=sd["smooth_len"],
             kernel=kernel,
+            device=device,
             drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
             keep_const=sd.get("keep_const", False),
             use_tract=sd.get("use_tract", False),
@@ -156,6 +158,15 @@ def load_model(
     scheduler = ReduceLROnPlateau(opt, factor=0.75, patience=5, min_lr=1e-10)
     model.load_state_dict(sd["ouroboros"])
     opt.load_state_dict(sd["opt"])
+
+    # Free any allocator fragments left over from the ckpt-loading sequence.
+    # Without this, the resume's startup pool can sit ~hundreds of MiB above the
+    # actual working set, which combined with the first-step graph capture
+    # transient can OOM at batch sizes that a fresh-start of the same config
+    # would fit comfortably in.
+    del sd
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return model, opt, scheduler, epochs[most_recent]
 
