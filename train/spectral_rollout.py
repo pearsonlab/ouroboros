@@ -524,11 +524,14 @@ def spectral_rollout_step(
     if torch.is_grad_enabled() and xg.requires_grad:
         SPEC_GRAD_MAX_NORM = 10.0
         def _clip(g, max_norm=SPEC_GRAD_MAX_NORM):
+            # Async clip: scale by min(1, max_norm/(n + eps)) instead of `if n > max_norm`.
+            # The branch form calls `.__bool__()` on a 0-D CUDA tensor, forcing a host
+            # sync per backward (~24% per-epoch overhead measured on 1080 Ti). The
+            # clamp(max=1) keeps direction identical and avoids the sync.
             g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
             n = g.norm()
-            if n > max_norm:
-                return g * (max_norm / n)
-            return g
+            scale = (max_norm / (n + 1e-12)).clamp(max=1.0)
+            return g * scale
         xg.register_hook(_clip)
 
     tgt = x[:, :H, 0]
