@@ -70,7 +70,7 @@ def stft_mag(x, n_fft, hop):
     return S.abs()  # (B, F, T)
 
 
-def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-5, sc_eps=1e-2, return_components=False):
+def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_components=False):
     """multi-resolution STFT magnitude loss: spectral convergence + log-magnitude L1.
 
     When return_components=True, returns dict {'spec', 'sc', 'logm'} of scalars instead
