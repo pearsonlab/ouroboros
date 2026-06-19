@@ -97,17 +97,9 @@ class Tract(nn.Module):
         jw2 = jw * jw                                 # = -w^2
 
         wp = 2 * math.pi * (0.5 * torch.sigmoid(self.f0_raw))   # (n_sec,) pole freqs
-        # Floor the damping ratio at ZETA_MIN to cap Q = 1/(2*zeta) at ~10. Without this,
-        # F.softplus(.) can drive zeta -> 0, putting poles on the jw-axis (Q -> infinity).
-        # An infinite-Q resonance amplifies its source frequency without bound, the rolled-
-        # out audio's spectral magnitudes blow up past the spec loss's sc_eps floor, and the
-        # backward gradient through ||G - A||_F / (||G||_F + sc_eps) NaNs out -- the cascade
-        # source identified 2026-06-19. ZETA_MIN = 0.05 -> Q_max = 10, still well above
-        # typical formant Q values of 3-8.
-        ZETA_MIN = 0.05
-        zp = F.softplus(self.zeta_p_raw) + ZETA_MIN             # (n_sec,) pole dampings, capped Q
+        zp = F.softplus(self.zeta_p_raw)                        # (n_sec,) pole dampings > 0
         wz = 2 * math.pi * (0.5 * torch.sigmoid(self.fz_raw))   # (n_sec,) zero freqs
-        zz = F.softplus(self.zeta_z_raw) + ZETA_MIN             # (n_sec,) zero dampings, capped Q
+        zz = F.softplus(self.zeta_z_raw)                        # (n_sec,) zero dampings > 0
 
         H = torch.ones_like(jw) * torch.exp(self.log_K)
         for k in range(self.n_sec):
