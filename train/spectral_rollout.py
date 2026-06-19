@@ -513,6 +513,24 @@ def spectral_rollout_step(
         xg = e[:, :H, 0] * xg  # (B, H)
     if getattr(model, "use_tract", False):
         xg = model.tract.apply(xg[..., None])[..., 0]  # (B, H)
+
+    # Backward gradient clip at the rolled-out audio: caps the spec loss's backward
+    # contribution norm to SPEC_GRAD_MAX_NORM before it flows back into env_mamba's
+    # pscan and the polynomial dynamics. The 1/(A_i + eps) term in mrstft_loss can
+    # produce per-bin grads ~1e5; after iSTFT-equivalent and pscan amplification these
+    # easily overflow fp32 and freeze the model via the post-backward NaN check. Norm
+    # clip preserves direction. Non-finite values are zeroed so a single bad bin
+    # doesn't poison the whole chain. Identity in forward; only affects backward.
+    if torch.is_grad_enabled() and xg.requires_grad:
+        SPEC_GRAD_MAX_NORM = 10.0
+        def _clip(g, max_norm=SPEC_GRAD_MAX_NORM):
+            g = torch.where(torch.isfinite(g), g, torch.zeros_like(g))
+            n = g.norm()
+            if n > max_norm:
+                return g * (max_norm / n)
+            return g
+        xg.register_hook(_clip)
+
     tgt = x[:, :H, 0]
 
     configs_H = _filter_configs_for_horizon(configs, H)
