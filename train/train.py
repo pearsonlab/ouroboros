@@ -378,24 +378,14 @@ def train(
                     optimizer.zero_grad(set_to_none=True)
                     torch.cuda.empty_cache()
                     continue
-                # Defensive: backward through (log(e+eps))^2 can produce gradients that
-                # are individually finite but sum to non-finite values. If any param.grad
-                # is non-finite, clip_grad_norm_ propagates NaN to all params via the
-                # divide-by-NaN; abort the step before optimizer.step poisons the model.
                 total_loss.backward()
-                # One host sync via .item() on a scalar OR of per-param finite-checks.
-                # Each `(~isfinite).any()` returns a 0-D bool; stacking them and reducing
-                # once is much cheaper than 50 separate .all() syncs.
-                _bad = torch.stack([
-                    (~torch.isfinite(p.grad)).any()
-                    for p in model.parameters() if p.grad is not None
-                ]).any().item()
-                if _bad:
-                    writer.add_scalar("Loss/nan_skip", 1.0, idx)
-                    optimizer.zero_grad(set_to_none=True)
-                    del out, total_loss
-                    torch.cuda.empty_cache()
-                    continue
+                # Zero out NaN/Inf entries in every param.grad so a single bad backward
+                # path (spec 1/(A+eps), env_mamba pscan, TF anchor) contributes zero rather
+                # than poisoning every param via clip_grad_norm_'s divide-by-NaN. Healthy
+                # params still drive the step. Unconditional -> no per-param syncs.
+                for p in model.parameters():
+                    if p.grad is not None:
+                        p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
                 # Stack the raw component tensors for a single host sync, then derive the
