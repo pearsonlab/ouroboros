@@ -476,12 +476,29 @@ class Ouroboros(nn.Module):
         self, x: torch.FloatTensor, dxdt: torch.FloatTensor, dt: float
     ) -> Optional[torch.FloatTensor]:
         """
-        learnable amplitude envelope e(t) = exp(lowpass(env_head)), shape (B, L, 1), or
-        None when use_envelope is False. A fourth Mamba encoder reads the same [x, x']
-        state as the drives; the head is zero-init (e starts at 1) and always low-passed at
-        env_lowpass_ms (default 20 ms) so e is the slow amplitude gauge. It is applied as a
-        plain multiplicative factor on the rolled-out waveform (e * x), NOT in the kernel,
-        so there is no reciprocal-e term and a small e just makes the output quiet.
+        learnable amplitude envelope e(t) = softplus(lowpass(env_head)) / log(2),
+        shape (B, L, 1), or None when use_envelope is False. A fourth Mamba encoder
+        reads the same [x, x'] state as the drives; the head is zero-init so the
+        pre-activation is 0, giving softplus(0)/log(2) = 1 -- the identity gauge
+        starting point. Always low-passed at env_lowpass_ms (default 20 ms) so e is
+        the slow amplitude gauge. Applied as a plain multiplicative factor on the
+        rolled-out waveform (e * x), NOT in the kernel.
+
+        Why softplus(...)/log(2) instead of exp(...):
+          - softplus(x) is BOUNDED in growth: softplus(x) ~= x for large positive x,
+            so even softplus(1000) = 1000 (no fp32 inf). exp(88) = inf in fp32, and
+            the env_anchor + (e-1)^2 gradients combined with env_mamba drift could
+            push the pre-exp tensor over that threshold on rare batches, producing
+            inf * 0 = NaN in the rolled-out spec loss and triggering the cascade we
+            saw on 2026-06-18 (env_lowpass_ms=2 run on blk445).
+          - softplus' derivative is sigmoid(x), bounded in [0, 1]. exp's derivative
+            is exp(x) itself -- unboundedly amplifying. The new envelope therefore
+            cannot blow up backward gradients on extreme batches.
+          - Identity-init preserved: softplus(0)/log(2) = log(2)/log(2) = 1, so
+            existing (e-1)^2 anchor and all the resume/load paths are unchanged.
+          - Small-e behaviour also smoother: silence regions have softplus(very
+            negative) -> 0 smoothly, vs exp which has the same limit but with
+            unbounded gradient on the way down.
         """
         if not self.use_envelope:
             return None
@@ -496,9 +513,9 @@ class Ouroboros(nn.Module):
             env_out = checkpoint(self.env_mamba, x_in, use_reentrant=False)[:, L:, :]
         else:
             env_out = self.env_mamba(x_in)[:, L:, :]
-        e_log = self.env_net(env_out)
-        e_log = self._lowpass(e_log, dt, lp_ms=self.env_lowpass_ms)
-        return torch.exp(e_log)
+        e_pre = self.env_net(env_out)
+        e_pre = self._lowpass(e_pre, dt, lp_ms=self.env_lowpass_ms)
+        return F.softplus(e_pre) / math.log(2)
 
     def integrate(
         self,
