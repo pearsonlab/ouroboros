@@ -370,6 +370,7 @@ def integrate_poly_autonomous(
     noise_sd: float = 0.0,
     seed: int = 0,
     verbose: bool = True,
+    return_envelope: bool = False,
 ) -> np.ndarray:
     """
     Fully autonomous (closed-loop) integration of a polynomial `Ouroboros`.
@@ -457,7 +458,10 @@ def integrate_poly_autonomous(
             x = x + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
             xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6 + noise_sd * rng.standard_normal()
             xs.append(x)
-        return _finish(np.array(xs))
+        out = _finish(np.array(xs))
+        if return_envelope:
+            return out, e_seq[: len(out)].copy()
+        return out
 
     def dz_hat(s, z):
         if verbose:
@@ -484,7 +488,10 @@ def integrate_poly_autonomous(
         ).transpose(0, 1)
 
     x_gen = sol[0].detach().cpu().numpy().squeeze()
-    return _finish(x_gen)
+    out = _finish(x_gen)
+    if return_envelope:
+        return out, e_seq[: len(out)].copy()
+    return out
 
 
 def autonomy_score(
@@ -559,12 +566,19 @@ def autonomy_score(
     for seg in segments:
         seg = np.asarray(seg, dtype=np.float64)
         tgt = correct(seg)
-        auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
-                                         detrend=True, verbose=False)
+        if return_trajectories:
+            auto, env = integrate_poly_autonomous(
+                model, seg, dt, method=method, noise_sd=0.0,
+                detrend=True, verbose=False, return_envelope=True)
+        else:
+            auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
+                                             detrend=True, verbose=False)
+            env = None
         n = min(len(tgt), len(auto))
         tgt_n, auto_n = tgt[:n], auto[:n]
         if return_trajectories:
-            trajectories.append((tgt_n.copy(), auto_n.copy()))
+            env_n = env[:n] if env is not None else np.ones(n)
+            trajectories.append((tgt_n.copy(), auto_n.copy(), env_n.copy()))
         if (not np.isfinite(auto_n).all()) or np.nanstd(auto_n) < 1e-9:
             scores.append(diverge_score)
             bounded.append(0.0)
