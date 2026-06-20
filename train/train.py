@@ -213,6 +213,11 @@ def train(
     ic_noise_rms: float = 1e-3,
     grad_clip: float = 5.0,
     rollout_backend: str = "eager",  # RK4 backend: 'eager' | 'cudagraph' | 'compile'
+    # Linear LR ramp: lr at epoch 0 == optimizer's current lr (the --lr value);
+    # at epoch >= lr_ramp_epochs lr == lr_end; linearly interpolated in between.
+    # lr_end=None disables (constant LR), preserving the legacy behaviour.
+    lr_end: float = None,
+    lr_ramp_epochs: int = 5,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -307,8 +312,19 @@ def train(
                 flush=True,
             )
 
+    # Capture starting LR (set by model_cv.py from --lr) so the ramp interpolates from
+    # that value rather than from whatever Adam was constructed with.
+    lr_start_per_group = [g['lr'] for g in optimizer.param_groups]
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
         model.train()
+        # Per-epoch LR ramp: linear from lr_start (epoch 0) to lr_end (epoch lr_ramp_epochs),
+        # then hold. No-op if lr_end is None (constant LR).
+        if lr_end is not None and lr_ramp_epochs > 0:
+            frac = min(1.0, epoch / float(lr_ramp_epochs))
+            for g, lr0 in zip(optimizer.param_groups, lr_start_per_group):
+                g['lr'] = lr0 + (lr_end - lr0) * frac
+            writer.add_scalar("Train/lr", float(optimizer.param_groups[0]['lr']),
+                              epoch * len(loaders["train"]))
 
         for idx, batch in enumerate(
             loaders["train"], start=epoch * len(loaders["train"])
