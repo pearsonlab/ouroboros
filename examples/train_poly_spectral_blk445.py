@@ -45,28 +45,74 @@ def _stems(data_dir, audio_id="_cleaned.wav"):
     return wavs
 
 
-def _file_level_split(wavs, val_frac=0.1, test_frac=0.1, seed=1234):
-    """Deterministic per-stem split (no overlap of recordings across splits)."""
+def _group_of(stem, stratify_sep):
+    """Group key from a stem: the prefix before the FIRST occurrence of stratify_sep.
+    Returns '__none__' when stratify_sep is empty or absent."""
+    if not stratify_sep or stratify_sep not in stem:
+        return "__none__"
+    return stem.split(stratify_sep, 1)[0]
+
+
+def _file_level_split(wavs, val_frac=0.1, test_frac=0.1, seed=1234, stratify_sep=None):
+    """Deterministic per-stem split. If stratify_sep is provided, perform a
+    per-group stratified split so val/test sets are guaranteed to cover every
+    group (e.g. every (bird, syllable) prefix in a multi-syllable run)."""
     rng = np.random.default_rng(seed)
-    idx = np.arange(len(wavs))
-    rng.shuffle(idx)
-    n_test = max(1, int(round(test_frac * len(wavs))))
-    n_val = max(1, int(round(val_frac * len(wavs))))
-    test_i = idx[:n_test]
-    val_i = idx[n_test:n_test + n_val]
-    train_i = idx[n_test + n_val:]
-    return ([wavs[i] for i in train_i],
-            [wavs[i] for i in val_i],
-            [wavs[i] for i in test_i])
+    if not stratify_sep:
+        idx = np.arange(len(wavs))
+        rng.shuffle(idx)
+        n_test = max(1, int(round(test_frac * len(wavs))))
+        n_val = max(1, int(round(val_frac * len(wavs))))
+        test_i = idx[:n_test]
+        val_i = idx[n_test:n_test + n_val]
+        train_i = idx[n_test + n_val:]
+        return ([wavs[i] for i in train_i],
+                [wavs[i] for i in val_i],
+                [wavs[i] for i in test_i])
+    # Stratified per-prefix
+    by_group = {}
+    for w in wavs:
+        g = _group_of(os.path.basename(w), stratify_sep)
+        by_group.setdefault(g, []).append(w)
+    train, val, test = [], [], []
+    for g in sorted(by_group):
+        ws = by_group[g]
+        idx = np.arange(len(ws))
+        rng.shuffle(idx)
+        n_test = max(1, int(round(test_frac * len(ws))))
+        n_val = max(1, int(round(val_frac * len(ws))))
+        test.extend(ws[i] for i in idx[:n_test])
+        val.extend(ws[i] for i in idx[n_test:n_test + n_val])
+        train.extend(ws[i] for i in idx[n_test + n_val:])
+    rng.shuffle(train)
+    return train, val, test
 
 
-def _coldstart_from_files(wav_files, silence_pad_samples, n_vocs):
+def _coldstart_from_files(wav_files, silence_pad_samples, n_vocs, stratify_sep=None):
     """Held-out cold-start vocs from an explicit list of WAV files (parallel to
     examples/_voc_windows.load_voc_windows_coldstart, but file-list-based so we can
-    do file-level train/val/test holdout inside a single data directory)."""
+    do file-level train/val/test holdout inside a single data directory).
+
+    When stratify_sep is given, the selection is round-robin across groups so each
+    (bird, syllable) prefix contributes ~n_vocs/N_groups vocs. n_vocs is the TOTAL
+    number of returned vocs; groups with fewer than ceil(n_vocs/N) usable files
+    contribute what they have."""
+    if stratify_sep:
+        by_group = {}
+        for w in wav_files:
+            g = _group_of(os.path.basename(w), stratify_sep)
+            by_group.setdefault(g, []).append(w)
+        groups = sorted(by_group)
+        per_group = max(1, n_vocs // max(1, len(groups)))
+        picked = []
+        for g in groups:
+            picked.extend(by_group[g][:per_group])
+        wav_iter = picked[:n_vocs]
+    else:
+        wav_iter = wav_files[:n_vocs]
     raw = []
     sr = None
-    for wav in wav_files[:n_vocs]:
+    for wav in wav_iter:
         sr, af = wavfile.read(wav)
         if af.dtype == np.int16:
             af = af / -np.iinfo(af.dtype).min
@@ -97,6 +143,10 @@ def main():
     p.add_argument("--test-frac", type=float, default=0.1)
     p.add_argument("--n-val-vocs", type=int, default=8)
     p.add_argument("--n-test-vocs", type=int, default=8)
+    p.add_argument("--stratify-sep", default=None,
+                   help="If set, file-level split and cold-start voc picker stratify by the "
+                        "prefix before the FIRST occurrence of this separator in the stem. "
+                        "Use '__' for the multi-syllable staging (scripts/stage_finch_multi.py).")
     p.add_argument("--silence-pad-samples", type=int, default=2000,
                    help="cold-start lead-in (samples). 2000 matches the existing finchsim convention.")
     # sampler
@@ -246,11 +296,24 @@ def main():
         raise SystemExit(f"no WAV files found under {data_dir}; "
                          "run scripts/stage_finch_blk445_syllC.py first.")
     train_wavs, val_wavs, test_wavs = _file_level_split(
-        wavs, val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed
+        wavs, val_frac=args.val_frac, test_frac=args.test_frac, seed=args.seed,
+        stratify_sep=args.stratify_sep,
     )
     train_txts = [w.replace(".wav", ".txt") for w in train_wavs]
-    print(f"file-level split: train={len(train_wavs)} val={len(val_wavs)} test={len(test_wavs)}",
-          flush=True)
+    if args.stratify_sep:
+        # Show per-group composition so accidental imbalance is obvious in the log.
+        from collections import Counter
+        def _group_counts(ws):
+            return dict(sorted(Counter(_group_of(os.path.basename(w), args.stratify_sep)
+                                       for w in ws).items()))
+        print(f"file-level split: train={len(train_wavs)} val={len(val_wavs)} test={len(test_wavs)}",
+              flush=True)
+        print(f"  train per-group: {_group_counts(train_wavs)}", flush=True)
+        print(f"  val   per-group: {_group_counts(val_wavs)}", flush=True)
+        print(f"  test  per-group: {_group_counts(test_wavs)}", flush=True)
+    else:
+        print(f"file-level split: train={len(train_wavs)} val={len(val_wavs)} test={len(test_wavs)}",
+              flush=True)
 
     ratio = tuple(float(r) for r in args.ratio.split(","))
     assert len(ratio) == 3, "--ratio must be ONSET,OFFSET,MID"
@@ -285,8 +348,10 @@ def main():
     # `cv=False` because we use FILE-LEVEL holdout for val/test (cleaner than splitting
     # inside the sampler pool, which would mix recordings across the split).
 
-    val_vocs, _ = _coldstart_from_files(val_wavs, args.silence_pad_samples, args.n_val_vocs)
-    test_vocs, _ = _coldstart_from_files(test_wavs, args.silence_pad_samples, args.n_test_vocs)
+    val_vocs, _ = _coldstart_from_files(val_wavs, args.silence_pad_samples, args.n_val_vocs,
+                                        stratify_sep=args.stratify_sep)
+    test_vocs, _ = _coldstart_from_files(test_wavs, args.silence_pad_samples, args.n_test_vocs,
+                                         stratify_sep=args.stratify_sep)
     voc_L = len(val_vocs[0]) if val_vocs else 0
     print(f"val_vocs={len(val_vocs)} test_vocs={len(test_vocs)} (cold-start L={voc_L})",
           flush=True)
