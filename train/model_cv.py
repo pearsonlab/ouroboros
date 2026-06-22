@@ -273,6 +273,8 @@ def model_seed_cv_spectral(
     # linear LR ramp (constant LR when lr_end is None)
     lr_end: float = None,
     lr_ramp_epochs: int = 5,
+    # intra-epoch save cadence in minutes; 0 disables
+    save_minutes: float = 0.0,
     # selection
     rescale_autonomy: bool = False,
     cold_start_autonomy: bool = True,
@@ -356,6 +358,7 @@ def model_seed_cv_spectral(
                 spec_configs=spec_configs, ic_noise_rms=ic_noise_rms,
                 grad_clip=grad_clip, rollout_backend=rollout_backend,
                 lr_end=lr_end, lr_ramp_epochs=lr_ramp_epochs,
+                save_minutes=save_minutes,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

@@ -277,6 +277,9 @@ def main():
                    help="end LR for the linear ramp. None = constant --lr (legacy).")
     p.add_argument("--lr-ramp-epochs", type=int, default=5,
                    help="epochs over which lr ramps from --lr to --lr-end. No-op if --lr-end None.")
+    p.add_argument("--save-minutes", type=float, default=0.0,
+                   help="intra-epoch save cadence (minutes wall-clock). 0 disables. "
+                        "Saved as inflight_latest.tar (separate from per-epoch ckpts).")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -383,6 +386,7 @@ def main():
         spec_configs=spec_configs, ic_noise_rms=args.ic_noise_rms, grad_clip=args.grad_clip,
         rollout_backend=args.rollout_backend,
         lr_end=args.lr_end, lr_ramp_epochs=args.lr_ramp_epochs,
+        save_minutes=args.save_minutes,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
 

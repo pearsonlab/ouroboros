@@ -46,7 +46,9 @@ def save_model(
             they're saved with epoch number in the tag
     """
 
-    current_saves = glob.glob(os.path.join("/".join(location.split("/")[:-1]), "*.tar"))
+    # Match only `checkpoint_<int>.tar` so side-stream saves (e.g. `inflight_latest.tar`
+    # from --save-minutes) don't get globbed in and crash the int(epoch) parse below.
+    current_saves = glob.glob(os.path.join("/".join(location.split("/")[:-1]), "checkpoint_*.tar"))
     if len(current_saves) >= max_saved:
         save_epochs = [
             int(s.split("/")[-1].split(".tar")[0].split("_")[-1]) for s in current_saves
@@ -218,6 +220,13 @@ def train(
     # lr_end=None disables (constant LR), preserving the legacy behaviour.
     lr_end: float = None,
     lr_ramp_epochs: int = 5,
+    # Intra-epoch save cadence (minutes wall-clock). 0 disables; otherwise an
+    # in-flight checkpoint is overwritten at `inflight_latest.tar` once this
+    # many minutes have elapsed since the last save (epoch-boundary saves count).
+    # The `inflight_*` prefix is excluded from the `checkpoint_*.tar` glob the
+    # loader uses, so resume still picks the latest per-epoch save and the
+    # sidecar's epoch-keyed bookkeeping is unaffected.
+    save_minutes: float = 0.0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -315,6 +324,8 @@ def train(
     # Capture starting LR (set by model_cv.py from --lr) so the ramp interpolates from
     # that value rather than from whatever Adam was constructed with.
     lr_start_per_group = [g['lr'] for g in optimizer.param_groups]
+    import time as _time
+    _last_save_t = _time.time()
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
         model.train()
         # Per-epoch LR ramp: linear from lr_start (epoch 0) to lr_end (epoch lr_ramp_epochs),
@@ -404,6 +415,21 @@ def train(
                         p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
+                # Intra-epoch save: write/overwrite `inflight_latest.tar` once
+                # `save_minutes` of wall-clock have elapsed since the last save.
+                # The .item()-free clock check is per-batch, cheap; the actual
+                # torch.save runs only when the gate trips.
+                if save_minutes > 0 and (_time.time() - _last_save_t) > save_minutes * 60:
+                    save_model(
+                        model, optimizer,
+                        location=os.path.join(runDir, "inflight_latest.tar"),
+                        n_layers=model_info["n layers"],
+                        d_state=model_info["d state"],
+                        d_conv=model_info["d conv"],
+                        expand_factor=model_info["expand factor"],
+                        max_saved=max_saved,
+                    )
+                    _last_save_t = _time.time()
                 # Stack the raw component tensors for a single host sync, then derive the
                 # weighted views in Python so the TB plots show each term's actual contribution
                 # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
@@ -713,5 +739,6 @@ def train(
                 expand_factor=model_info["expand factor"],
                 max_saved=max_saved,
             )
+            _last_save_t = _time.time()  # reset so inflight save doesn't fire right after
     writer.close()
     return train_losses, val_losses, model, optimizer
