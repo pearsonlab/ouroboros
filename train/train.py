@@ -105,7 +105,9 @@ def load_model(
         - epoch: training epoch corresponding to this checkpoint
     """
 
-    model_files = glob.glob(os.path.join(location, "*.tar"))
+    # Match only `checkpoint_<int>.tar` so side-stream saves like `inflight_latest.tar`
+    # (intra-epoch save from --save-minutes) don't get picked up and crash the int() parse.
+    model_files = glob.glob(os.path.join(location, "checkpoint_*.tar"))
     epochs = [int(m.split("/checkpoint_")[-1].split(".tar")[0]) for m in model_files]
     most_recent = np.argsort(epochs)[-1]
     location = model_files[most_recent]
