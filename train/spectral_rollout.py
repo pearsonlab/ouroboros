@@ -33,6 +33,7 @@ from train.rollout_refine import (
     mrstft_loss,
     env_loss,
     env_loss_log,
+    gaussian_envelope,
 )
 
 # ONSET category from data.load_data (kept local to avoid the import cycle the data
@@ -574,8 +575,16 @@ def spectral_rollout_step(
     # (e -> infinity) is unbounded, and the quadratic asymmetrically penalizes e>1 more
     # than e<1. Per-sample backward grad is 2*(e_i - 1)/N -- bounded and smooth, no eps
     # machinery and no small-e gradient cliff.
+    # Pointwise envelope supervision: pull the model's envelope head e(t) toward
+    # the target audio's Gaussian-low-passed |x| amplitude envelope at every sample,
+    # rather than the gauge-only (e - 1)^2 pull toward identity. Both share the same
+    # role (fix the (e, x) -> (k*e, x/k) gauge), but this version gives the env_mamba
+    # an explicit per-sample target instead of a constant. Mean square error over
+    # the horizon, matching the (B, H) shapes from gaussian_envelope.
     if lam_env_anchor > 0 and e is not None:
-        L_env_anchor = (e - 1).pow(2).mean()
+        with torch.no_grad():
+            tgt_env = gaussian_envelope(tgt, dt, env_ms)  # (B, H), no grad through target
+        L_env_anchor = (e[:, :H, 0] - tgt_env).pow(2).mean()
     else:
         L_env_anchor = torch.zeros((), device=x.device, dtype=x.dtype)
 
