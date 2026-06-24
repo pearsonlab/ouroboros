@@ -463,32 +463,36 @@ def integrate_poly_autonomous(
             return out, e_seq[: len(out)].copy()
         return out
 
-    def dz_hat(s, z):
-        if verbose:
-            print(
-                f"{(s - s_steps[0]) / (s_steps[-1] - s_steps[0]) * 100:0.3f}%,",
-                end="\r",
+    # Manual RK4 with the same soft-tanh state saturation as train/spectral_rollout.py
+    # (BX, BXP). The previous odeint_adjoint path ran the bare polynomial ODE with no
+    # state bound, so any transient that pushed |y| past ~1 (where the 15th-order kernel
+    # terms dominate) blew up. The training rollout already clamps both states after
+    # each substep; doing the same here closes the train/val gap and stops the
+    # autonomous integrator from diverging when the trajectory grazes the edge of the
+    # trained region.
+    from train.rollout_refine import BX, BXP
+    x, xp = x0, xp0
+    xs = [x]
+    ww = weights.reshape(L, 1, 1, P, P2)
+    for k in range(L - 1):
+        om, ga, wk = omega[k], gamma[k], ww[k]
+
+        def f(xx, vv):
+            kern = float(
+                kernel.forward_given_weights_numpy(np.array([[[xx, vv]]]), wk).squeeze()
             )
-        s_np = s.detach().cpu().numpy()
-        om = float(omega_interp(s_np))
-        ga = float(gamma_interp(s_np))
-        w = w_interp(s_np).reshape(1, 1, P, P2)
-        x = float(z[0])
-        xp = float(z[1])
-        kern = float(
-            kernel.forward_given_weights_numpy(np.array([[[x, xp]]]), w).squeeze()
-        )
-        dxp = -(om**2) * x - ga * xp - kern
-        return torch.tensor([xp, dxp], dtype=torch.float32, device=z.device)
+            return vv, -(om ** 2) * xx - ga * vv - kern
 
-    eval_times = torch.from_numpy(s_steps).to(ic.device)
-    with torch.no_grad():
-        sol = odeint_adjoint(
-            dz_hat, ic, eval_times, adjoint_params=(), method=method, options=dict()
-        ).transpose(0, 1)
-
-    x_gen = sol[0].detach().cpu().numpy().squeeze()
-    out = _finish(x_gen)
+        k1x, k1v = f(x, xp)
+        k2x, k2v = f(x + 0.5 * k1x, xp + 0.5 * k1v)
+        k3x, k3v = f(x + 0.5 * k2x, xp + 0.5 * k2v)
+        k4x, k4v = f(x + k3x, xp + k3v)
+        x = x + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
+        xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6
+        x = BX * np.tanh(x / BX)
+        xp = BXP * np.tanh(xp / BXP)
+        xs.append(x)
+    out = _finish(np.array(xs))
     if return_envelope:
         return out, e_seq[: len(out)].copy()
     return out

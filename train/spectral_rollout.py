@@ -15,7 +15,7 @@ of the waveform:
      early-epoch training has a smooth gradient signal before the spectral basin
      becomes informative, and an envelope L1 term (default off) for amplitude pinning.
 
-The RK4 inner loop and soft-tanh saturation (BX=0.5, BXP=1.0) match train/rollout_refine.py,
+The RK4 inner loop and soft-tanh saturation (BX, BXP from train/rollout_refine.py) match,
 which already validated this kernel for post-hoc fine-tuning. The novelty here is using
 it as the PRIMARY objective from scratch, with per-example cold-start IC selection
 driven by the edge-biased sampler's category labels.

@@ -34,7 +34,10 @@ from scipy.io import wavfile
 
 from utils import deriv_approx_dy, deriv_approx_d2y
 
-BX, BXP = 0.5, 1.0  # soft-saturation bounds (>> data/limit-cycle scale; only tame divergence)
+BX, BXP = 3.0, 5.0  # soft-saturation bounds, sized so steady-state |y| ≈ 1 (env-match)
+                     # sits well inside the box but transient excursions are still tamed.
+                     # Old (0.5, 1.0) assumed e ≈ 1 so y was small; the env_anchor =
+                     # mean((e - target_env)^2) pulls e to ≈ 0.01-0.02, so y ≈ audio/e ≈ 1.
 DEFAULT_CONFIGS = ((256, 64), (512, 128), (1024, 256))
 
 
