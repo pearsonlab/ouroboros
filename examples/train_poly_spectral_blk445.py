@@ -128,18 +128,15 @@ def _coldstart_from_files(wav_files, silence_pad_samples, n_vocs, stratify_sep=N
             onoffs = np.atleast_2d(np.loadtxt(wav.replace(".wav", ".txt")))
         on_i = int(round(onoffs[0][0] * sr))
         if target_duration_ms > 0:
-            target_end_s = onoffs[0][0] + target_duration_ms / 1e3
-            last_idx = 0
-            for k in range(len(onoffs)):
-                if onoffs[k][1] <= target_end_s:
-                    last_idx = k
-                else:
-                    break
-            off_i = int(round(onoffs[last_idx][1] * sr))
+            # Fixed-length window so all vocs are the same length regardless
+            # of source annotation density. See scripts/monitor_spectral_diagnose.py.
+            target_len = silence_pad_samples + int(round(target_duration_ms / 1e3 * sr))
+            start = max(0, on_i - silence_pad_samples)
+            raw.append(af[start:start + target_len])
         else:
             off_i = int(round(onoffs[0][1] * sr))
-        start = max(0, on_i - silence_pad_samples)
-        raw.append(af[start:off_i])
+            start = max(0, on_i - silence_pad_samples)
+            raw.append(af[start:off_i])
     if not raw:
         return [], sr
     L = min(len(s) for s in raw)
