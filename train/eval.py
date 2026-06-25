@@ -478,8 +478,17 @@ def integrate_poly_autonomous(
         om, ga, wk = omega[k], gamma[k], ww[k]
 
         def f(xx, vv):
+            # Clamp BEFORE the kernel eval so the 16th-order polynomial is never
+            # evaluated outside the trained region, even within an RK4 substep.
+            # Without this, the inter-substep extrapolation (xc + 0.5*k1x) can push
+            # the polynomial input arbitrarily far past BX/BXP, overflow numpy
+            # float64, and produce NaN that propagates past the end-of-step tanh
+            # clamp (since tanh(NaN)=NaN). Linear -om^2*xx and -ga*vv terms stay
+            # on the unclamped state to preserve standard RK4 semantics.
+            xx_c = BX * np.tanh(xx / BX)
+            vv_c = BXP * np.tanh(vv / BXP)
             kern = float(
-                kernel.forward_given_weights_numpy(np.array([[[xx, vv]]]), wk).squeeze()
+                kernel.forward_given_weights_numpy(np.array([[[xx_c, vv_c]]]), wk).squeeze()
             )
             return vv, -(om ** 2) * xx - ga * vv - kern
 
