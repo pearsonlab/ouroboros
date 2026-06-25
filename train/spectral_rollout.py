@@ -95,14 +95,14 @@ def _rk4_core_factory(H, powers):
             om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
 
             def f(xx, vv):
-                # See eval.integrate_poly_autonomous: clamp BEFORE the kernel eval
-                # so the 16th-order polynomial is never evaluated outside the trained
-                # box (even within an RK4 substep). Linear terms stay on the
-                # unclamped state to preserve standard RK4 semantics.
-                xx_c = BX * torch.tanh(xx / BX)
-                vv_c = BXP * torch.tanh(vv / BXP)
-                xpw = xx_c.unsqueeze(1) ** powers  # (B, P)
-                xvw = vv_c.unsqueeze(1) ** powers  # (B, P)
+                # NOTE: substep-clamp (eval.integrate_poly_autonomous) is intentionally
+                # NOT applied here: each extra tanh op saves another (B,) tensor for
+                # backward (~few hundred MB across H=2048 substeps), tipping resumes
+                # into OOM. Training relies on the post-step clamp + grad nan_to_num
+                # to bound divergence; eval gets the surgical fix because integration
+                # is no-grad and the float64 overflow path is the real divergence cause.
+                xpw = xx.unsqueeze(1) ** powers  # (B, P)
+                xvw = vv.unsqueeze(1) ** powers  # (B, P)
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 return vv, -om2k * xx - gak * vv - kern
 
@@ -129,11 +129,9 @@ def _rk4_step(carry, x, powers):
     om2k, gak, w_k = x
 
     def f(xx, vv):
-        # Clamp BEFORE kernel eval; same reasoning as _rk4_core_factory.f.
-        xx_c = BX * torch.tanh(xx / BX)
-        vv_c = BXP * torch.tanh(vv / BXP)
-        xpw = xx_c.unsqueeze(1) ** powers
-        xvw = vv_c.unsqueeze(1) ** powers
+        # See _rk4_core_factory.f re. why substep-clamp is not applied in training.
+        xpw = xx.unsqueeze(1) ** powers
+        xvw = vv.unsqueeze(1) ** powers
         kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
         return vv, -om2k * xx - gak * vv - kern
 
@@ -230,11 +228,9 @@ class _GraphedRK4Step:
 
         def step(om2k, gak, w_k, xc, xp):
             def f(xx, vv):
-                # Clamp BEFORE kernel eval; same reasoning as _rk4_core_factory.f.
-                xx_c = BX * torch.tanh(xx / BX)
-                vv_c = BXP * torch.tanh(vv / BXP)
-                xpw = xx_c.unsqueeze(1) ** powers
-                xvw = vv_c.unsqueeze(1) ** powers
+                # See _rk4_core_factory.f re. why substep-clamp is not applied in training.
+                xpw = xx.unsqueeze(1) ** powers
+                xvw = vv.unsqueeze(1) ** powers
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 return vv, -om2k * xx - gak * vv - kern
             k1x, k1v = f(xc, xp)
