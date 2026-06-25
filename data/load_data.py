@@ -218,6 +218,7 @@ def get_audio_training_edge_weighted(
     max_segs: int = 5000,
     seed: int = 0,
     int16_norm: bool = True,
+    silence_ratio: float = 1.0,
 ):
     """
     Categorized segment sampler that heavily oversamples syllable onsets and offsets.
@@ -238,6 +239,15 @@ def get_audio_training_edge_weighted(
     The cold-start training step gets the cold-start noise IC only on ONSET examples
     (categories == ONSET); OFFSET/MID examples use the data IC. See
     train/spectral_rollout.py.
+
+    `silence_ratio` (default 1.0 = no filter, legacy) controls a quietness check for
+    candidate ONSET windows: an ONSET candidate is kept only if
+        RMS(pre-onset region) <= silence_ratio * RMS(syllable body).
+    Otherwise the same window is reclassified into MID (the prefix isn't really a
+    silence-to-onset transition; it's mid-song activity from other syllables). Same
+    rule mirrored on OFFSET (RMS(post-offset region) vs syllable body). Useful for
+    continuous-song datasets where the annotated onset is often surrounded by other
+    annotated/unannotated syllable activity.
     """
     rng = np.random.default_rng(seed)
     pools = {ONSET: [], OFFSET: [], MID: []}
@@ -272,13 +282,43 @@ def get_audio_training_edge_weighted(
             start = on_i - pre
             end = start + L_seg
             if start >= 0 and end <= len(aud) and end > on_i:
-                pools[ONSET].append(aud[start:end])
+                win = aud[start:end]
+                # Quietness check: pre-onset region must be silence_ratio*body or quieter.
+                # body = annotated syllable interval inside the window. Skip the check
+                # (and accept as ONSET) when silence_ratio >= 1.0 (legacy behaviour) or
+                # when the body has too few samples to measure RMS reliably.
+                if silence_ratio < 1.0:
+                    prefix = aud[start:on_i]
+                    body_end = min(off_i, end)
+                    body = aud[on_i:body_end]
+                    pref_rms = float(np.sqrt(np.mean(prefix.astype(np.float64) ** 2))) if len(prefix) > 0 else 0.0
+                    body_rms = float(np.sqrt(np.mean(body.astype(np.float64) ** 2))) if len(body) > 32 else 0.0
+                    is_silent_prefix = body_rms > 0 and pref_rms <= silence_ratio * body_rms
+                else:
+                    is_silent_prefix = True
+                if is_silent_prefix:
+                    pools[ONSET].append(win)
+                else:
+                    pools[MID].append(win)
 
             # OFFSET: window ends suff samples after offset
             end = off_i + suff
             start = end - L_seg
             if start >= 0 and end <= len(aud) and start < off_i:
-                pools[OFFSET].append(aud[start:end])
+                win = aud[start:end]
+                if silence_ratio < 1.0:
+                    suffix = aud[off_i:end]
+                    body_start = max(on_i, start)
+                    body = aud[body_start:off_i]
+                    suff_rms = float(np.sqrt(np.mean(suffix.astype(np.float64) ** 2))) if len(suffix) > 0 else 0.0
+                    body_rms = float(np.sqrt(np.mean(body.astype(np.float64) ** 2))) if len(body) > 32 else 0.0
+                    is_silent_suffix = body_rms > 0 and suff_rms <= silence_ratio * body_rms
+                else:
+                    is_silent_suffix = True
+                if is_silent_suffix:
+                    pools[OFFSET].append(win)
+                else:
+                    pools[MID].append(win)
 
             # MID: non-overlapping windows strictly inside (on+edge, off-edge)
             mid_start = on_i + edge

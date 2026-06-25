@@ -160,6 +160,11 @@ def main():
                    help="extend each val/test voc to cover multiple consecutive syllable "
                         "annotations spanning at least this many ms from the first onset. "
                         "0 = single-syllable (legacy). Recommended ~500 for org545.")
+    p.add_argument("--silence-ratio", type=float, default=1.0,
+                   help="ONSET/OFFSET silence filter: only keep edge windows where the "
+                        "pre-onset (or post-offset) region is at most this fraction of the "
+                        "syllable body's RMS. Rejected windows fall back to MID. "
+                        "1.0 = no filter (legacy); 0.1 = 20 dB quieter than body.")
     p.add_argument("--stratify-sep", default=None,
                    help="If set, file-level split and cold-start voc picker stratify by the "
                         "prefix before the FIRST occurrence of this separator in the stem. "
@@ -350,6 +355,7 @@ def main():
         ratio=ratio,
         max_segs=args.max_segs,
         seed=args.seed,
+        silence_ratio=args.silence_ratio,
     )
     if not segs:
         raise SystemExit("edge-biased sampler returned 0 segments; check the data layout.")
