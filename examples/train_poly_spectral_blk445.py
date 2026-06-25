@@ -165,6 +165,10 @@ def main():
                         "pre-onset (or post-offset) region is at most this fraction of the "
                         "syllable body's RMS. Rejected windows fall back to MID. "
                         "1.0 = no filter (legacy); 0.1 = 20 dB quieter than body.")
+    p.add_argument("--log-K-init-from-data", action=argparse.BooleanOptionalAction, default=True,
+                   help="initialize tract.log_K from a median-RMS scan of training segments "
+                        "so audio amplitude starts near target scale at epoch 0. "
+                        "No-op when --no-use-tract.")
     p.add_argument("--stratify-sep", default=None,
                    help="If set, file-level split and cold-start voc picker stratify by the "
                         "prefix before the FIRST occurrence of this separator in the stem. "
@@ -365,6 +369,26 @@ def main():
     print(f"sampler: {len(segs)} segs (ONSET={counts[0]}, OFFSET={counts[1]}, MID={counts[2]}) "
           f"L_seg={data.shape[1]} sr={sr}", flush=True)
 
+    # log_K_init from data: median RMS of a sample of training segments, mapped to
+    # log_K so audio amplitude starts near target RMS at epoch 0. When --osc-init
+    # is on, the polynomial limit cycle sits near A* ~ sqrt(-gamma_init/vdp_init);
+    # its RMS ≈ A*/sqrt(2) (close to sinusoidal). log_K_init = log(data_rms / src_rms).
+    # CLI --log-K-init-from-data toggles this (default on when osc-init is on).
+    log_K_init = None
+    if args.log_K_init_from_data and args.use_tract:
+        rng_seg = np.random.default_rng(args.seed)
+        n_probe = min(512, len(data))
+        idx = rng_seg.choice(len(data), n_probe, replace=False)
+        rms_per_seg = np.sqrt((data[idx] ** 2).mean(axis=(1, 2)))
+        data_rms = float(np.median(rms_per_seg))
+        # Default-init source RMS estimate for osc_init: A* ≈ sqrt(-gamma_init/vdp_init)
+        # ≈ sqrt(0.5) ≈ 0.71 with the model.py defaults; sinusoidal RMS = A*/sqrt(2) ≈ 0.5.
+        # (Non-osc_init runs effectively damp to 0 at start, so log_K_init is moot.)
+        src_rms = 0.5
+        log_K_init = float(np.log(max(data_rms, 1e-12) / src_rms))
+        print(f"log_K init: data_rms={data_rms:.4g} src_rms={src_rms:.4g} "
+              f"-> log_K_init={log_K_init:+.3f} (K={np.exp(log_K_init):.4g})", flush=True)
+
     dt = 1.0 / sr
     dls = get_loaders_edge(
         data, cats, num_workers=args.n_jobs, batch_size=args.batch_size,
@@ -412,6 +436,7 @@ def main():
         rollout_backend=args.rollout_backend,
         lr_end=args.lr_end, lr_ramp_epochs=args.lr_ramp_epochs,
         save_minutes=args.save_minutes,
+        log_K_init=log_K_init,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
 

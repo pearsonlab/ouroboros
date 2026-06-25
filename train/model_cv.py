@@ -275,6 +275,10 @@ def model_seed_cv_spectral(
     lr_ramp_epochs: int = 5,
     # intra-epoch save cadence in minutes; 0 disables
     save_minutes: float = 0.0,
+    # tract.log_K initial value (None = leave at 0); when set, the entry script
+    # picks this from a quick RMS scan of the training audio so audio scale matches
+    # target from epoch 0 (skips the ~3-unit amp_pen descent at the start).
+    log_K_init: float = None,
     # selection
     rescale_autonomy: bool = False,
     cold_start_autonomy: bool = True,
@@ -316,6 +320,12 @@ def model_seed_cv_spectral(
                           checkpoint_encoder=checkpoint_encoder,
                           use_tract=use_tract, tract_n_sec=tract_n_sec,
                           use_envelope=use_envelope, env_lowpass_ms=env_lowpass_ms)
+        # log_K_init: set the tract gain so audio amplitude starts near target RMS
+        # at epoch 0, instead of relying on it to descend from log_K=0 during training.
+        # Only applies on fresh start; resume restores the trained value.
+        if use_tract and log_K_init is not None:
+            with torch.no_grad():
+                model.tract.log_K.data.fill_(float(log_K_init))
         opt = Adam(model.parameters(), lr=lr)
         sched = ReduceLROnPlateau(opt, factor=0.5, patience=max(n_epochs // 25, 2),
                                   min_lr=1e-10)
