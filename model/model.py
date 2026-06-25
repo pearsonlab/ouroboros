@@ -81,8 +81,15 @@ class Tract(nn.Module):
         # zero parameters -- initialized EQUAL to the poles so each section == 1 (identity).
         self.fz_raw = nn.Parameter(self.f0_raw.detach().clone())
         self.zeta_z_raw = nn.Parameter(self.zeta_p_raw.detach().clone())
-        # global gain K = exp(log_K); init 0 -> 1.
-        self.log_K = nn.Parameter(torch.zeros((), device=device))
+        # Global tract gain K = softplus(K_raw). Softplus has bounded gradient
+        # (= sigmoid(K_raw) in (0, 1)), so once training pushes K_raw moderately
+        # positive the rate of K change saturates at 1 — unlike exp() where K
+        # grew exponentially in K_raw and amplitude could runaway. In the small-K
+        # regime (K << 1) softplus(K_raw) ≈ exp(K_raw), so init in this corner
+        # behaves like the old log_K parameterization. Init K_raw=0 → K=log(2)≈0.69
+        # (vs the old K=1 at log_K=0); the entry script's data-driven init
+        # picks K_raw = softplus_inv(target_K) so the absolute gain is correct.
+        self.K_raw = nn.Parameter(torch.zeros((), device=device))
         # trachea comb: reflection r = r_max*tanh(r_raw) (init 0 -> no comb); delay tau samples.
         self.r_raw = nn.Parameter(torch.zeros((), device=device))
         self.tau_raw = nn.Parameter(
@@ -101,7 +108,7 @@ class Tract(nn.Module):
         wz = 2 * math.pi * (0.5 * torch.sigmoid(self.fz_raw))   # (n_sec,) zero freqs
         zz = F.softplus(self.zeta_z_raw)                        # (n_sec,) zero dampings > 0
 
-        H = torch.ones_like(jw) * torch.exp(self.log_K)
+        H = torch.ones_like(jw) * F.softplus(self.K_raw)
         for k in range(self.n_sec):
             num = jw2 + (2 * zz[k] * wz[k]) * jw + wz[k] ** 2
             den = jw2 + (2 * zp[k] * wp[k]) * jw + wp[k] ** 2
