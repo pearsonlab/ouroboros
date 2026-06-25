@@ -88,7 +88,8 @@ def _file_level_split(wavs, val_frac=0.1, test_frac=0.1, seed=1234, stratify_sep
     return train, val, test
 
 
-def _coldstart_from_files(wav_files, silence_pad_samples, n_vocs, stratify_sep=None):
+def _coldstart_from_files(wav_files, silence_pad_samples, n_vocs, stratify_sep=None,
+                          target_duration_ms=0.0):
     """Held-out cold-start vocs from an explicit list of WAV files (parallel to
     examples/_voc_windows.load_voc_windows_coldstart, but file-list-based so we can
     do file-level train/val/test holdout inside a single data directory).
@@ -96,7 +97,12 @@ def _coldstart_from_files(wav_files, silence_pad_samples, n_vocs, stratify_sep=N
     When stratify_sep is given, the selection is round-robin across groups so each
     (bird, syllable) prefix contributes ~n_vocs/N_groups vocs. n_vocs is the TOTAL
     number of returned vocs; groups with fewer than ceil(n_vocs/N) usable files
-    contribute what they have."""
+    contribute what they have.
+
+    target_duration_ms>0 extends each voc to cover multiple consecutive
+    annotations: each voc spans from (first-onset - silence_pad) to the offset
+    of the LAST annotation whose end is within `target_duration_ms` of the
+    first onset. Default 0 = single-syllable (legacy behaviour)."""
     if stratify_sep:
         by_group = {}
         for w in wav_files:
@@ -121,7 +127,17 @@ def _coldstart_from_files(wav_files, silence_pad_samples, n_vocs, stratify_sep=N
             warnings.simplefilter("ignore")
             onoffs = np.atleast_2d(np.loadtxt(wav.replace(".wav", ".txt")))
         on_i = int(round(onoffs[0][0] * sr))
-        off_i = int(round(onoffs[0][1] * sr))
+        if target_duration_ms > 0:
+            target_end_s = onoffs[0][0] + target_duration_ms / 1e3
+            last_idx = 0
+            for k in range(len(onoffs)):
+                if onoffs[k][1] <= target_end_s:
+                    last_idx = k
+                else:
+                    break
+            off_i = int(round(onoffs[last_idx][1] * sr))
+        else:
+            off_i = int(round(onoffs[0][1] * sr))
         start = max(0, on_i - silence_pad_samples)
         raw.append(af[start:off_i])
     if not raw:
@@ -143,6 +159,10 @@ def main():
     p.add_argument("--test-frac", type=float, default=0.1)
     p.add_argument("--n-val-vocs", type=int, default=8)
     p.add_argument("--n-test-vocs", type=int, default=8)
+    p.add_argument("--coldstart-duration-ms", type=float, default=0.0,
+                   help="extend each val/test voc to cover multiple consecutive syllable "
+                        "annotations spanning at least this many ms from the first onset. "
+                        "0 = single-syllable (legacy). Recommended ~500 for org545.")
     p.add_argument("--stratify-sep", default=None,
                    help="If set, file-level split and cold-start voc picker stratify by the "
                         "prefix before the FIRST occurrence of this separator in the stem. "
@@ -352,9 +372,11 @@ def main():
     # inside the sampler pool, which would mix recordings across the split).
 
     val_vocs, _ = _coldstart_from_files(val_wavs, args.silence_pad_samples, args.n_val_vocs,
-                                        stratify_sep=args.stratify_sep)
+                                        stratify_sep=args.stratify_sep,
+                                        target_duration_ms=args.coldstart_duration_ms)
     test_vocs, _ = _coldstart_from_files(test_wavs, args.silence_pad_samples, args.n_test_vocs,
-                                         stratify_sep=args.stratify_sep)
+                                         stratify_sep=args.stratify_sep,
+                                         target_duration_ms=args.coldstart_duration_ms)
     voc_L = len(val_vocs[0]) if val_vocs else 0
     print(f"val_vocs={len(val_vocs)} test_vocs={len(test_vocs)} (cold-start L={voc_L})",
           flush=True)
