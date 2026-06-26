@@ -279,6 +279,10 @@ def model_seed_cv_spectral(
     # When set, the entry script picks this from a quick RMS scan of the training
     # audio so K = softplus(K_raw) matches target audio scale from epoch 0.
     K_raw_init: float = None,
+    # Drop saved Adam state on resume and rebuild a fresh optimizer; lets resume
+    # use the same batch size the fresh run trained at (otherwise the saved Adam
+    # buffers bloat the allocator past the GPU's headroom).
+    reset_optimizer_on_resume: bool = False,
     # selection
     rescale_autonomy: bool = False,
     cold_start_autonomy: bool = True,
@@ -341,6 +345,18 @@ def model_seed_cv_spectral(
             # an --lr passed at resume time actually takes effect.
             for g in opt.param_groups:
                 g['lr'] = lr
+            # When reset_optimizer_on_resume is set, drop the loaded Adam state
+            # and build a fresh optimizer. Used when the saved Adam buffers are
+            # bloating the CUDA allocator past the GPU's headroom (resume OOM at
+            # the same B that the fresh run trained at). Costs a few epochs of
+            # momentum/variance warmup; recovers all of B=96's headroom.
+            if reset_optimizer_on_resume:
+                del opt
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                opt = Adam(model.parameters(), lr=lr)
+                print(f"resume: reset_optimizer_on_resume=True, fresh Adam at lr={lr}",
+                      flush=True)
         else:
             model, opt, sched = _build(seed)
             start_epoch = 0

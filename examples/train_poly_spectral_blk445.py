@@ -170,6 +170,10 @@ def main():
                         "so audio amplitude (K = softplus(K_raw)) starts near target scale "
                         "at epoch 0. No-op when --no-use-tract. (Name kept for backwards "
                         "compatibility; the parameter is now K_raw under softplus.)")
+    p.add_argument("--reset-optimizer-on-resume", action=argparse.BooleanOptionalAction, default=False,
+                   help="Drop the loaded Adam state and rebuild a fresh optimizer on "
+                        "resume. Use when resume-time CUDA OOMs at the same B the fresh "
+                        "run trained at; costs a few epochs of momentum/variance warmup.")
     p.add_argument("--log-K-init-overshoot", type=float, default=100.0,
                    help="multiply the data-matched K target by this factor so the model "
                         "starts audibly too loud. The amp_pen gradient then flows into "
@@ -450,6 +454,7 @@ def main():
         lr_end=args.lr_end, lr_ramp_epochs=args.lr_ramp_epochs,
         save_minutes=args.save_minutes,
         K_raw_init=K_raw_init,
+        reset_optimizer_on_resume=args.reset_optimizer_on_resume,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
 
