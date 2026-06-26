@@ -170,6 +170,13 @@ def main():
                         "so audio amplitude (K = softplus(K_raw)) starts near target scale "
                         "at epoch 0. No-op when --no-use-tract. (Name kept for backwards "
                         "compatibility; the parameter is now K_raw under softplus.)")
+    p.add_argument("--log-K-init-overshoot", type=float, default=100.0,
+                   help="multiply the data-matched K target by this factor so the model "
+                        "starts audibly too loud. The amp_pen gradient then flows into "
+                        "K during early training (which descends cleanly), buffering the "
+                        "structural parameters from harsh updates while shape learning "
+                        "ramps up. 1.0 = match data exactly (cascaded in our trials); "
+                        "100 = ~40 dB too loud (gives K~0.3 for org545).")
     p.add_argument("--stratify-sep", default=None,
                    help="If set, file-level split and cold-start voc picker stratify by the "
                         "prefix before the FIRST occurrence of this separator in the stem. "
@@ -386,10 +393,12 @@ def main():
         # Default-init source RMS estimate for osc_init: A* ≈ sqrt(-gamma_init/vdp_init)
         # ≈ sqrt(0.5) ≈ 0.71 with the model.py defaults; sinusoidal RMS = A*/sqrt(2) ≈ 0.5.
         src_rms = 0.5
-        K_target = max(data_rms, 1e-12) / src_rms
+        K_match = max(data_rms, 1e-12) / src_rms
+        K_target = K_match * args.log_K_init_overshoot
         # softplus_inv(K) = log(expm1(K)); for K << 1, ≈ log(K).
         K_raw_init = float(np.log(np.expm1(K_target)))
         print(f"K_raw init: data_rms={data_rms:.4g} src_rms={src_rms:.4g} "
+              f"K_match={K_match:.4g} overshoot={args.log_K_init_overshoot:g} "
               f"K_target={K_target:.4g} -> K_raw_init={K_raw_init:+.3f} "
               f"(K=softplus(K_raw)={float(np.log1p(np.exp(K_raw_init))):.4g})", flush=True)
 
