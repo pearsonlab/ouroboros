@@ -511,6 +511,16 @@ def spectral_rollout_step(
         drives=(omega, gamma, weights, z2),
         rollout_backend=rollout_backend,
     )
+    # NON-TRAINABLE STABILIZER on the raw RK4 source: subtract the per-segment mean
+    # so any DC drift the integrator accumulated is gone BEFORE env(t) multiplies it.
+    # Without this, env*DC becomes an additive DC modulated by env(t), which gets
+    # fed into the (trainable) tract's frequency response at f=0 and can interact
+    # badly with the formant filter. Differentiable, identity-on-AC. Mirrors the
+    # eval-side detrend placement in train.eval.integrate_poly_autonomous._finish
+    # (which uses the scipy butter HPF for stronger low-frequency rolloff; here
+    # DC subtraction is enough because the STFT loss ignores the 0-frequency bin).
+    xg = xg - xg.mean(dim=1, keepdim=True)
+
     # Apply the learnable amplitude envelope e(t) and the linear vocal tract H to the rolled-
     # out source BEFORE comparing to audio. e(t) multiplies the waveform per-timestep -- a
     # plain positive gain (no kernel reciprocal-e terms; a small e just makes the output

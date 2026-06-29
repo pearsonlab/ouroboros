@@ -275,6 +275,20 @@ def model_seed_cv_spectral(
     lr_ramp_epochs: int = 5,
     # intra-epoch save cadence in minutes; 0 disables
     save_minutes: float = 0.0,
+    # Drive freeze warmup: number of initial epochs during which the
+    # omega/gamma/kernel Mamba encoders + linear heads are held frozen so the
+    # envelope head + vocal-tract filter can settle the amplitude and spectral
+    # envelope first. 0 disables (legacy: all params train from epoch 0).
+    freeze_drives_epochs: int = 0,
+    # Tract freeze warmup: number of initial epochs during which the rational
+    # vocal-tract filter (pole/zero sections + K_raw + comb) is held frozen so
+    # drive+envelope gradients don't pull on the filter during random-init
+    # training. 0 disables.
+    freeze_tract_epochs: int = 0,
+    # Envelope freeze: number of initial epochs during which env_mamba + env_net
+    # are held frozen. With env_net zero-init, e(t)=1.0 stays identity during
+    # the freeze. 0 disables.
+    freeze_envelope_epochs: int = 0,
     # tract.K_raw initial value (None = leave at 0 → K = softplus(0) = log(2)).
     # When set, the entry script picks this from a quick RMS scan of the training
     # audio so K = softplus(K_raw) matches target audio scale from epoch 0.
@@ -385,6 +399,9 @@ def model_seed_cv_spectral(
                 grad_clip=grad_clip, rollout_backend=rollout_backend,
                 lr_end=lr_end, lr_ramp_epochs=lr_ramp_epochs,
                 save_minutes=save_minutes,
+                freeze_drives_epochs=freeze_drives_epochs,
+                freeze_tract_epochs=freeze_tract_epochs,
+                freeze_envelope_epochs=freeze_envelope_epochs,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

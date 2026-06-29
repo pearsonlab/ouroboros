@@ -318,6 +318,23 @@ def main():
     p.add_argument("--save-minutes", type=float, default=0.0,
                    help="intra-epoch save cadence (minutes wall-clock). 0 disables. "
                         "Saved as inflight_latest.tar (separate from per-epoch ckpts).")
+    p.add_argument("--freeze-drives-epochs", type=int, default=0,
+                   help="Freeze the omega/gamma/kernel Mamba encoders + their linear heads "
+                        "(including kernel.weights) for the first N epochs so the envelope head "
+                        "and vocal-tract filter can settle the audio amplitude / spectral envelope "
+                        "before the polynomial dynamics start tracking. 0 disables.")
+    p.add_argument("--freeze-tract-epochs", type=int, default=0,
+                   help="Freeze the tract SHAPE (poles + zeros + trachea comb -- 6 tensors: "
+                        "f0_raw, zeta_p_raw, fz_raw, zeta_z_raw, r_raw, tau_raw) for the "
+                        "first N epochs. K_raw stays trainable so amplitude has a descent "
+                        "direction. Idea: spec/drive gradients shouldn't reshape the filter "
+                        "while the dynamics are still random. 0 disables.")
+    p.add_argument("--freeze-envelope-epochs", type=int, default=0,
+                   help="Freeze env_mamba + env_net for the first N epochs. With env_net "
+                        "zero-init, e(t)=1.0 stays identity during the freeze -- amplitude "
+                        "lives entirely in K_raw + drives. Use when envelope is roaming "
+                        "uncontrollably. Pass a value >= --n-epochs to keep envelope frozen "
+                        "for the whole run.")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -455,6 +472,9 @@ def main():
         save_minutes=args.save_minutes,
         K_raw_init=K_raw_init,
         reset_optimizer_on_resume=args.reset_optimizer_on_resume,
+        freeze_drives_epochs=args.freeze_drives_epochs,
+        freeze_tract_epochs=args.freeze_tract_epochs,
+        freeze_envelope_epochs=args.freeze_envelope_epochs,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
 
@@ -501,6 +521,9 @@ def main():
         "env_warmup_steps": args.env_warmup_steps,
         "H_total_steps": args.H_total_steps,
         "ic_noise_rms": args.ic_noise_rms,
+        "freeze_drives_epochs": int(args.freeze_drives_epochs),
+        "freeze_tract_epochs": int(args.freeze_tract_epochs),
+        "freeze_envelope_epochs": int(args.freeze_envelope_epochs),
         "sr": int(sr),
     }
     if test_vocs:

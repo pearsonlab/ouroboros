@@ -371,6 +371,8 @@ def integrate_poly_autonomous(
     seed: int = 0,
     verbose: bool = True,
     return_envelope: bool = False,
+    return_source: bool = False,
+    return_drives: bool = False,
 ) -> np.ndarray:
     """
     Fully autonomous (closed-loop) integration of a polynomial `Ouroboros`.
@@ -428,13 +430,20 @@ def integrate_poly_autonomous(
         )
 
     def _finish(x_src: np.ndarray) -> np.ndarray:
-        """envelope-scale the generated source, filter through the tract, then detrend."""
-        x_src = np.asarray(x_src) * e_seq[: len(x_src)]
+        """detrend the raw RK4 source FIRST (non-trainable HPF stabilizes the
+        integrator output before any downstream scaling), then envelope-scale,
+        then filter through the trainable tract. Order matters: env(t) only
+        modulates the AC content of the source, and the tract sees a stable
+        signal -- no DC ride-through into the formant filter."""
+        x_src = np.asarray(x_src, dtype=np.float64)
+        if detrend:
+            x_src = correct(x_src)
+        x_src = x_src * e_seq[: len(x_src)]
         if use_tract:
             xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to(dev)
             with torch.no_grad():
                 x_src = model.tract.apply(xt).detach().cpu().numpy().squeeze()
-        return correct(x_src) if detrend else x_src
+        return x_src
 
     if noise_sd > 0:
         # stochastic forcing (Euler-Maruyama on the velocity) to sustain a noise-driven
@@ -458,10 +467,21 @@ def integrate_poly_autonomous(
             x = x + (k1x + 2 * k2x + 2 * k3x + k4x) / 6
             xp = xp + (k1v + 2 * k2v + 2 * k3v + k4v) / 6 + noise_sd * rng.standard_normal()
             xs.append(x)
-        out = _finish(np.array(xs))
+        src_pre = np.array(xs)
+        out = _finish(src_pre)
+        rv = (out,)
         if return_envelope:
-            return out, e_seq[: len(out)].copy()
-        return out
+            rv = rv + (e_seq[: len(out)].copy(),)
+        if return_source:
+            rv = rv + (src_pre[: len(out)].copy(),)
+        if return_drives:
+            # omega/gamma already extracted at top of fn; alpha is the (0,0)
+            # polynomial weight that becomes a constant forcing per timestep.
+            alpha = weights[0, :, 0, 0].astype(np.float64).copy()
+            rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
+                        "gamma": gamma[: len(out)].astype(np.float64).copy(),
+                        "alpha": alpha[: len(out)]},)
+        return rv if len(rv) > 1 else rv[0]
 
     # Manual RK4 with the same soft-tanh state saturation as train/spectral_rollout.py
     # (BX, BXP). The previous odeint_adjoint path ran the bare polynomial ODE with no
@@ -501,10 +521,19 @@ def integrate_poly_autonomous(
         x = BX * np.tanh(x / BX)
         xp = BXP * np.tanh(xp / BXP)
         xs.append(x)
-    out = _finish(np.array(xs))
+    src_pre = np.array(xs)
+    out = _finish(src_pre)
+    rv = (out,)
     if return_envelope:
-        return out, e_seq[: len(out)].copy()
-    return out
+        rv = rv + (e_seq[: len(out)].copy(),)
+    if return_source:
+        rv = rv + (src_pre[: len(out)].copy(),)
+    if return_drives:
+        alpha = weights[0, :, 0, 0].astype(np.float64).copy()
+        rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
+                    "gamma": gamma[: len(out)].astype(np.float64).copy(),
+                    "alpha": alpha[: len(out)]},)
+    return rv if len(rv) > 1 else rv[0]
 
 
 def autonomy_score(
@@ -580,18 +609,22 @@ def autonomy_score(
         seg = np.asarray(seg, dtype=np.float64)
         tgt = correct(seg)
         if return_trajectories:
-            auto, env = integrate_poly_autonomous(
+            auto, env, src, drives = integrate_poly_autonomous(
                 model, seg, dt, method=method, noise_sd=0.0,
-                detrend=True, verbose=False, return_envelope=True)
+                detrend=True, verbose=False, return_envelope=True,
+                return_source=True, return_drives=True)
         else:
             auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
                                              detrend=True, verbose=False)
-            env = None
+            env = src = drives = None
         n = min(len(tgt), len(auto))
         tgt_n, auto_n = tgt[:n], auto[:n]
         if return_trajectories:
             env_n = env[:n] if env is not None else np.ones(n)
-            trajectories.append((tgt_n.copy(), auto_n.copy(), env_n.copy()))
+            src_n = src[:n] if src is not None else auto_n.copy()
+            drives_n = {k: v[:n].copy() for k, v in drives.items()} if drives is not None else None
+            trajectories.append((tgt_n.copy(), auto_n.copy(), env_n.copy(),
+                                 src_n.copy(), drives_n))
         if (not np.isfinite(auto_n).all()) or np.nanstd(auto_n) < 1e-9:
             scores.append(diverge_score)
             bounded.append(0.0)

@@ -229,6 +229,22 @@ def train(
     # loader uses, so resume still picks the latest per-epoch save and the
     # sidecar's epoch-keyed bookkeeping is unaffected.
     save_minutes: float = 0.0,
+    # Freeze the drive encoders (omega/gamma/kernel Mambas + linear heads) for the
+    # first `freeze_drives_epochs` epochs so envelope+tract can settle the audio
+    # amplitude/spectral shape before the polynomial dynamics start tracking. 0
+    # disables (legacy: all params trainable from epoch 0).
+    freeze_drives_epochs: int = 0,
+    # Freeze the vocal-tract filter (pole/zero sections + K_raw + comb) for the
+    # first `freeze_tract_epochs` epochs so drive+envelope gradients don't pull on
+    # the filter while the dynamics are still random. Tract stays at its init
+    # (zeros=poles=identity shape, K_raw at the data-matched gain or whatever the
+    # entry script sets) during the freeze. 0 disables.
+    freeze_tract_epochs: int = 0,
+    # Freeze the envelope head (env_mamba + env_net) for the first
+    # `freeze_envelope_epochs` epochs. With env_net zero-init, e(t) stays at 1.0
+    # (identity) during the freeze -- amplitude lives entirely in K_raw + drives
+    # while the envelope can't roam. 0 disables.
+    freeze_envelope_epochs: int = 0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -328,8 +344,84 @@ def train(
     lr_start_per_group = [g['lr'] for g in optimizer.param_groups]
     import time as _time
     _last_save_t = _time.time()
+
+    # Drive params (omega/gamma/kernel Mambas + their linear heads). Captured once
+    # so the per-epoch toggle is a quick walk over the list, not a name match each
+    # time. kernel.weights is the polynomial-coefficient linear head; tract.* and
+    # env_mamba/env_net are NOT in this list (they keep training during the freeze).
+    drive_modules = []
+    for attr in ("omega_mamba", "gamma_mamba", "kernel_mamba", "omega_net", "gamma_net"):
+        m = getattr(model, attr, None)
+        if m is not None:
+            drive_modules.append(m)
+    if hasattr(model, "kernel") and hasattr(model.kernel, "weights"):
+        drive_modules.append(model.kernel.weights)
+    drive_params = [p for m in drive_modules for p in m.parameters()]
+    drives_frozen_now = False
+    if freeze_drives_epochs > 0:
+        print(f"freeze_drives_epochs={freeze_drives_epochs}: drives "
+              f"(omega/gamma/kernel Mambas + heads + kernel.weights, {len(drive_params)} tensors) "
+              f"frozen for the first {freeze_drives_epochs} epochs; envelope+tract still train.",
+              flush=True)
+    # Freeze the SHAPE filter (poles + zeros + trachea comb). Comb adds spectral
+    # notches at multiples of 1/tau, which is the same kind of filter-shape
+    # mechanism the pole/zero sections are. K_raw stays trainable -- it's just a
+    # scalar gain, not a shape, so amplitude has a descent direction.
+    tract_params = []
+    if hasattr(model, "tract"):
+        for attr in ("f0_raw", "zeta_p_raw", "fz_raw", "zeta_z_raw", "r_raw", "tau_raw"):
+            if hasattr(model.tract, attr):
+                tract_params.append(getattr(model.tract, attr))
+    tract_frozen_now = False
+    if freeze_tract_epochs > 0:
+        print(f"freeze_tract_epochs={freeze_tract_epochs}: tract shape "
+              f"(poles + zeros + comb -- {len(tract_params)} tensors) "
+              f"frozen for the first {freeze_tract_epochs} epochs; "
+              f"K_raw + drives + envelope still train.",
+              flush=True)
+    envelope_params = []
+    for attr in ("env_mamba", "env_net"):
+        m = getattr(model, attr, None)
+        if m is not None:
+            envelope_params.extend(list(m.parameters()))
+    envelope_frozen_now = False
+    if freeze_envelope_epochs > 0:
+        print(f"freeze_envelope_epochs={freeze_envelope_epochs}: envelope "
+              f"(env_mamba + env_net, {len(envelope_params)} tensors) frozen for the "
+              f"first {freeze_envelope_epochs} epochs; e(t)=1.0 (identity) during freeze.",
+              flush=True)
+
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
         model.train()
+        # Drive freeze schedule: zero requires_grad on the drive params for the first
+        # `freeze_drives_epochs` epochs, then unfreeze. Setting requires_grad=False
+        # leaves .grad as None so Adam.step() skips those params (no momentum drift).
+        # Idempotent — toggling on already-False params is cheap.
+        want_frozen = epoch < freeze_drives_epochs
+        if want_frozen != drives_frozen_now:
+            for p in drive_params:
+                p.requires_grad_(not want_frozen)
+            drives_frozen_now = want_frozen
+            print(f"  epoch {epoch}: drives {'FROZEN' if want_frozen else 'UNFROZEN'}",
+                  flush=True)
+        # Same gating for the vocal-tract filter -- mirrored so drive and tract
+        # freeze windows can be set independently.
+        want_tract_frozen = epoch < freeze_tract_epochs
+        if want_tract_frozen != tract_frozen_now:
+            for p in tract_params:
+                p.requires_grad_(not want_tract_frozen)
+            tract_frozen_now = want_tract_frozen
+            print(f"  epoch {epoch}: tract {'FROZEN' if want_tract_frozen else 'UNFROZEN'}",
+                  flush=True)
+        # Envelope freeze schedule (env_mamba + env_net): with env_net zero-init
+        # the envelope head outputs e(t)=1 identically, so freezing keeps it there.
+        want_env_frozen = epoch < freeze_envelope_epochs
+        if want_env_frozen != envelope_frozen_now:
+            for p in envelope_params:
+                p.requires_grad_(not want_env_frozen)
+            envelope_frozen_now = want_env_frozen
+            print(f"  epoch {epoch}: envelope {'FROZEN' if want_env_frozen else 'UNFROZEN'}",
+                  flush=True)
         # Per-epoch LR ramp: linear from lr_start (epoch 0) to lr_end (epoch lr_ramp_epochs),
         # then hold. No-op if lr_end is None (constant LR).
         if lr_end is not None and lr_ramp_epochs > 0:

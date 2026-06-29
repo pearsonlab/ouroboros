@@ -25,6 +25,7 @@ import glob
 import json
 import argparse
 import os
+import signal
 import subprocess
 import sys
 
@@ -75,8 +76,23 @@ def process_alive():
 
 
 def latest_event_file():
+    """Find the trainer's events file. Multiple events files can live under SEED_DIR
+    (the monitor itself opens a SummaryWriter to write audio/figures/Val scalars per
+    ckpt). We want the file with the training scalar curves -- iterate newest to
+    oldest and pick the first one whose tag list includes 'Loss/spec'."""
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
     evs = sorted(glob.glob(os.path.join(SEED_DIR, "events.out.tfevents.*")))
-    return evs[-1] if evs else None
+    if not evs:
+        return None
+    for ev_path in reversed(evs):
+        try:
+            ea = EventAccumulator(ev_path, size_guidance={"scalars": 1})
+            ea.Reload()
+            if "Loss/spec" in ea.Tags().get("scalars", []):
+                return ev_path
+        except Exception:
+            continue
+    return evs[-1]
 
 
 _BPE_CACHE = {}
@@ -139,32 +155,51 @@ def window_means(vals, w=100, n_windows=20):
     return np.array(list(reversed(means)))
 
 
+def _ckpt_epoch(p):
+    return int(os.path.basename(p).split("_")[1].split(".")[0])
+
+
 def latest_checkpoint():
     # Sort by parsed epoch number, NOT lexicographically -- checkpoint_9.tar would
     # otherwise sort after checkpoint_10.tar and silently mask all double-digit ckpts.
     ckpts = glob.glob(os.path.join(SEED_DIR, "checkpoint_*.tar"))
     if not ckpts:
         return None, -1
-    def _ep(p):
-        return int(os.path.basename(p).split("_")[1].split(".")[0])
-    ckpts.sort(key=_ep)
+    ckpts.sort(key=_ckpt_epoch)
     latest = ckpts[-1]
-    return latest, _ep(latest)
+    return latest, _ckpt_epoch(latest)
+
+
+def unscored_checkpoints(last_scored_epoch):
+    """Return [(path, epoch), ...] for ckpts whose epoch > last_scored_epoch,
+    sorted oldest-first. Used so that if multiple ckpts arrived between polls,
+    each one gets its own val score and spectrogram figure on TB."""
+    ckpts = glob.glob(os.path.join(SEED_DIR, "checkpoint_*.tar"))
+    eps = sorted({_ckpt_epoch(p) for p in ckpts})
+    eps = [e for e in eps if e > last_scored_epoch]
+    return [(os.path.join(SEED_DIR, f"checkpoint_{e}.tar"), e) for e in eps]
 
 
 AUTONOMY_SNIPPET = r"""
 import sys, os, glob, json, warnings
 import numpy as np
-sys.path.insert(0, '/home/pearson/code/ouroboros-spectral')
+sys.path.insert(0, '/home/pearson/code/ouroboros/.claude/worktrees/tract-on-spectral')
 import torch
 from scipy.io import wavfile
 from train.train import load_model
 from train.eval import autonomy_score
 
-DATA = os.path.expanduser('~/ouroboros_data/blk445_syllC/day85')
+DATA = os.environ.get('MONITOR_DATA',
+                      os.path.expanduser('~/ouroboros_data/blk445_syllC/day85'))
+STRATIFY_SEP = os.environ.get('MONITOR_STRATIFY_SEP', '')
 SR = 44100
 DT = 1.0 / SR
-N_VAL = 8
+N_VAL = int(os.environ.get('MONITOR_N_VAL', '8'))
+# Number of vocs we render full spectrograms+audio for in TB. Bump via env when
+# val coverage grows (e.g. multi-syllable runs want ~1 per (bird, syllable)).
+N_TB_VOCS = int(os.environ.get('MONITOR_N_TB_VOCS', '4'))
+TB_BATCHES_PER_EPOCH = None  # set from env so the step on the audio/figure aligns
+                              # with the train scalars' x-axis (which is global batch idx)
 
 wavs = sorted(glob.glob(os.path.join(DATA, '*.wav')))
 rng = np.random.default_rng(1234)
@@ -174,7 +209,27 @@ n_test = max(1, int(round(0.1 * len(wavs))))
 n_val = max(1, int(round(0.1 * len(wavs))))
 val_i = idx[n_test:n_test + n_val]
 val_wavs = [wavs[i] for i in val_i]
+# Stratify val selection by `{prefix}<sep>` so the scored vocs cover every group
+# (e.g. each (bird, syllable) prefix in the multi-syllable run).
+if STRATIFY_SEP:
+    by_g = {}
+    for w in val_wavs:
+        stem = os.path.basename(w)
+        g = stem.split(STRATIFY_SEP, 1)[0] if STRATIFY_SEP in stem else '__none__'
+        by_g.setdefault(g, []).append(w)
+    groups = sorted(by_g)
+    per = max(1, N_VAL // max(1, len(groups)))
+    picked = []
+    for g in groups:
+        picked.extend(by_g[g][:per])
+    val_wavs = picked[:N_VAL]
 
+# Coldstart voc span: MONITOR_COLDSTART_DURATION_MS extends each voc to cover
+# the SECOND/THIRD/... annotation rather than stopping at the first offset, so
+# the val task includes multi-syllable continuation. Each voc spans from
+# (first-onset - 2000) to the offset of the LAST annotation whose end is within
+# `target_ms` of the first onset. Defaults to 0 (legacy: single-syllable).
+TARGET_MS = float(os.environ.get('MONITOR_COLDSTART_DURATION_MS', '0'))
 raw, sr = [], None
 for wav in val_wavs[:N_VAL]:
     sr, af = wavfile.read(wav)
@@ -185,17 +240,34 @@ for wav in val_wavs[:N_VAL]:
         warnings.simplefilter('ignore')
         onoffs = np.atleast_2d(np.loadtxt(wav.replace('.wav', '.txt')))
     on_i = int(round(onoffs[0][0] * sr))
-    off_i = int(round(onoffs[0][1] * sr))
-    raw.append(af[max(0, on_i - 2000):off_i])
-L = min(len(s) for s in raw)
-val_vocs = [s[:L] for s in raw]
+    if TARGET_MS > 0:
+        # Fixed-length window from (first_onset - 2000) through target_ms past
+        # first_onset, so all vocs end up the same length regardless of how
+        # densely syllables are packed in the source recording. Silence/song-
+        # structure within the window is part of what the model should produce.
+        target_len = 2000 + int(round(TARGET_MS / 1e3 * sr))
+        start = max(0, on_i - 2000)
+        raw.append(af[start:start + target_len])
+    else:
+        off_i = int(round(onoffs[0][1] * sr))
+        raw.append(af[max(0, on_i - 2000):off_i])
+# Keep each voc at its natural length (different syllables have different
+# durations); autonomy_score handles per-voc lengths via min(len(tgt), len(auto))
+# per integration. The plot code below uses max(len) across vocs to set a
+# common x-axis so short syllables aren't visually stretched.
+val_vocs = list(raw)
 
 ckpt_path = sys.argv[1]
 ckpt_dir = os.path.dirname(ckpt_path)
-model, _, _, _ = load_model(ckpt_dir)
+# Honor MONITOR_DEVICE env var so the polling loop can ask for CPU evaluation when
+# the trainer is holding all of GPU memory and the monitor would otherwise OOM.
+_dev = os.environ.get("MONITOR_DEVICE", "cuda")
+model, _, _, _ = load_model(ckpt_dir, device=_dev)
 model.eval()
 with torch.no_grad():
-    score, _, bd = autonomy_score(model, val_vocs, DT, rescale=False, cold_start=True)
+    score, _, bd, trajs = autonomy_score(
+        model, val_vocs, DT, rescale=False, cold_start=True, return_trajectories=True,
+    )
 
 # Persist signed amp_pen alongside the offline cache the loss panels reads.
 # autonomy_score now puts signed_amp_per_voc + signed_amp_mean in the breakdown so this
@@ -216,6 +288,172 @@ cache[str(ep)] = {
 with open(cache_path, 'w') as f:
     json.dump(cache, f, indent=2)
 
+# Log val audio + spectrogram figures to the run's TB events file. We open a SECOND
+# SummaryWriter pointed at ckpt_dir (the trainer's writer is the first); TB merges
+# the events files in a logdir, so audio and scalars appear under the same run.
+# Step value uses an estimated global-batch index so audio/figures align with the
+# train-loop scalar curves on the x-axis (rather than landing at step=0 every poll).
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    bpe_env = os.environ.get('MONITOR_BPE')
+    bpe = int(bpe_env) if (bpe_env and bpe_env.isdigit()) else 1
+    # epoch -> step alignment: trainer's writer.add_scalar uses idx = global batch index,
+    # so the audio/figure step at end-of-epoch N should be (N + 1) * bpe - 1. Resume runs
+    # complicate this (idx resets to 0 even though epoch counter starts at start_epoch);
+    # for now use epoch_in_loop * bpe which is good enough for x-axis alignment when the
+    # run is from-scratch. Resumed runs will land at the resumed-epoch index in TB.
+    # MONITOR_LOG_DIR overrides where Val/* scalars + spectrograms are written. Needed
+    # when the sidecar stages an inflight save into a temp dir (ckpt_dir then points at
+    # the temp dir that gets cleaned up after subprocess exit, taking the SummaryWriter
+    # output with it). For per-epoch saves the override is omitted and TB lands in the
+    # ckpt's own seed dir as before.
+    _log_dir = os.environ.get("MONITOR_LOG_DIR", ckpt_dir)
+    sw = SummaryWriter(log_dir=_log_dir)
+    # MONITOR_STEP_OVERRIDE lets the sidecar set an arbitrary TB step (used for the
+    # inflight ckpts which don't have a clean epoch number — the sidecar reads the
+    # trainer's latest Loss/spec step and passes it here so the Val/ curves align).
+    _step_override = os.environ.get("MONITOR_STEP_OVERRIDE")
+    step = int(_step_override) if _step_override else ep * bpe
+    # Val metrics (cold-start, rescale=False -- the same numbers the seed-CV uses).
+    # Putting them on the same x-axis as the train scalars lets you compare e.g.
+    # LossW/logm directly to Val/signed_amp_mean.
+    sw.add_scalar("Val/autonomy",        float(score),                          step)
+    sw.add_scalar("Val/spec_corr",       float(bd.get('spec_corr', float('nan'))),     step)
+    sw.add_scalar("Val/amp_pen",         float(bd.get('amp_pen', float('nan'))),       step)
+    sw.add_scalar("Val/pitch_pen",       float(bd.get('pitch_pen', float('nan'))),     step)
+    sw.add_scalar("Val/bounded_frac",    float(bd.get('bounded_frac', float('nan'))),  step)
+    sw.add_scalar("Val/signed_amp_mean", float(bd.get('signed_amp_mean', float('nan'))), step)
+    # Shared x-axis upper limit (max voc duration across the rendered set) so
+    # short syllables aren't visually stretched to fill the same plot width as
+    # long ones. Each per-voc panel still shows its own content; the extra space
+    # on the right of short ones is intentional.
+    _max_ms = max((len(t[0]) for t in trajs[:N_TB_VOCS] if len(t) >= 1), default=1) / SR * 1000
+    for i in range(min(N_TB_VOCS, len(trajs))):
+        # autonomy_score returns (tgt, auto, env, src, drives) when return_trajectories=True;
+        # tolerate older 2/3/4-tuple shapes so this script works against in-flight runs
+        # that haven't restarted yet. src = pre-tract, pre-envelope RK4 oscillator output.
+        # drives = {omega, gamma, alpha} per timestep (alpha = constant forcing term).
+        traj = trajs[i]
+        if len(traj) == 5:
+            tgt_n, auto_n, env_n, src_n, drives = traj
+        elif len(traj) == 4:
+            tgt_n, auto_n, env_n, src_n = traj
+            drives = None
+        elif len(traj) == 3:
+            tgt_n, auto_n, env_n = traj
+            src_n = drives = None
+        else:
+            tgt_n, auto_n = traj
+            env_n = src_n = drives = None
+        s_tgt = float(np.nanstd(tgt_n) + 1e-12)
+        s_auto = float(np.nanstd(auto_n) + 1e-12)
+        auto_rescaled = auto_n * (s_tgt / s_auto)  # match target RMS for listening / display
+        # Same gauge factor for the envelope so it sits on the rescaled-auto axis.
+        env_rescaled = env_n * (s_tgt / s_auto) if env_n is not None else None
+        # Audio (TB SummaryWriter expects (N,) or (1, T) float in [-1, 1])
+        sw.add_audio(f"audio/voc{i}_target", torch.tensor(tgt_n / (np.max(np.abs(tgt_n)) + 1e-12),
+                                                          dtype=torch.float32), step, sample_rate=SR)
+        sw.add_audio(f"audio/voc{i}_auto",   torch.tensor(auto_rescaled / (np.max(np.abs(auto_rescaled)) + 1e-12),
+                                                          dtype=torch.float32), step, sample_rate=SR)
+        # Specgram figure rows:
+        #   row 0: target waveform | target spectrogram
+        #   row 1: auto (post-tract) waveform | auto spectrogram
+        #   row 2: source (pre-tract, pre-env) waveform | source spectrogram (if src_n)
+        #   row 3: drives panel -- omega^2 / gamma / alpha time series (if drives)
+        n_rows = 2 + (1 if src_n is not None else 0) + (1 if drives is not None else 0)
+        fig, axes = plt.subplots(n_rows, 2, figsize=(11, 2 * n_rows),
+                                 gridspec_kw={'width_ratios': [1, 2]})
+        n_fft, hop = 512, 128
+        # Lock all waveform panels to the target's y-range so each panel is
+        # directly comparable in scale. The envelope shape (positive) is rescaled
+        # to fit the same range so its time-course is visible against the carrier.
+        tgt_peak = float(np.nanmax(np.abs(tgt_n)) + 1e-12)
+        wf_ylim = (-1.05 * tgt_peak, 1.05 * tgt_peak)
+        # Panels show RAW signals. The y-axis is locked to the target's peak so
+        # the auto waveform's quietness vs the target is directly visible; the
+        # spectrogram colormap is fixed (vmin=-8, vmax=-2) so quiet auto rollouts
+        # also dim in the spectrogram. No rescaling anywhere -- you read the real
+        # amplitude gap directly. Source row is locked to the same target y-range
+        # too; that lets you see immediately how much amplitude the tract+envelope
+        # add or subtract.
+        row_specs = [("target", tgt_n,  tgt_n,  "tab:orange"),
+                     ("auto",   auto_n, auto_n, "tab:green")]
+        if src_n is not None:
+            row_specs.append(("source", src_n, src_n, "tab:purple"))
+        for row, (label, wf_x, spec_x, color) in enumerate(row_specs):
+            t_ms = np.arange(len(wf_x)) / SR * 1000
+            axes[row, 0].plot(t_ms, wf_x, color=color, lw=0.6); axes[row, 0].set_ylabel(label)
+            axes[row, 0].set_xlim([0, _max_ms])
+            axes[row, 0].set_ylim(wf_ylim)
+            # Overlay the envelope on the auto panel as +/- bounds. Rescale env_n to
+            # peak at the target waveform's peak so its shape is visible in the
+            # target-locked y-axis (just a visual gauge — the absolute envelope value
+            # is meaningless here; only shape matters).
+            if row == 1 and env_n is not None and len(env_n) == len(wf_x):
+                env_peak = float(np.nanmax(np.abs(env_n)) + 1e-12)
+                env_shape = env_n * (tgt_peak / env_peak)
+                axes[row, 0].plot(t_ms,  env_shape, color="k", lw=0.6, linestyle="--", label="env (shape only)")
+                axes[row, 0].plot(t_ms, -env_shape, color="k", lw=0.6, linestyle="--")
+                axes[row, 0].legend(loc="upper right", fontsize=7, framealpha=0.6)
+            S = np.abs(np.fft.rfft(np.lib.stride_tricks.sliding_window_view(spec_x, n_fft)[::hop]
+                                    * np.hanning(n_fft), axis=-1)).T
+            axes[row, 1].imshow(np.log10(S + 1e-8), aspect='auto', origin='lower',
+                                 extent=[0, t_ms[-1] if len(t_ms) else 1, 0, SR / 2],
+                                 vmin=-8, vmax=-2, cmap='viridis')
+            axes[row, 1].set_xlim([0, _max_ms])
+            axes[row, 1].set_ylim([0, 16000])
+        # Drives panel: time series of omega^2, gamma, alpha drawn across BOTH
+        # columns of the next row, with the constant terms ALPHA and GAMMA on the
+        # left y-axis and OMEGA^2 on a twin right axis (it's on a very different
+        # scale). Helps see what the encoded dynamics are doing at each timestep.
+        if drives is not None:
+            drives_row = len(row_specs)
+            ax_d = axes[drives_row, 0]
+            ax_d2 = axes[drives_row, 1]
+            ms_axis = np.arange(len(drives['omega'])) / SR * 1000
+            # Left panel: gamma, alpha share an axis; omega^2 on twin
+            ax_d.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
+            ax_d.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
+            ax_d.set_ylabel(r'$\gamma$, $\alpha$', color='black')
+            ax_d.set_xlim([0, _max_ms])
+            ax_dt = ax_d.twinx()
+            ax_dt.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
+                       label=r'$\omega^2$', alpha=0.7)
+            ax_dt.set_ylabel(r'$\omega^2$', color='tab:blue')
+            ax_dt.tick_params(axis='y', labelcolor='tab:blue')
+            ax_d.legend(loc='upper left', fontsize=7, framealpha=0.6)
+            # Right panel: same data, just on the wider 2-column width for readability.
+            ax_d2.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
+            ax_d2.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
+            ax_d2.set_xlim([0, _max_ms])
+            ax_d2.set_ylabel(r'$\gamma$, $\alpha$')
+            ax_d2t = ax_d2.twinx()
+            ax_d2t.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
+                        label=r'$\omega^2$', alpha=0.7)
+            ax_d2t.set_ylabel(r'$\omega^2$', color='tab:blue')
+            ax_d2t.tick_params(axis='y', labelcolor='tab:blue')
+            ax_d2.legend(loc='upper left', fontsize=7, framealpha=0.6)
+        bottom = n_rows - 1
+        axes[bottom, 0].set_xlabel('ms'); axes[bottom, 1].set_xlabel('ms')
+        # spec-row right-column labels (skip the drives row which has its own ylabel)
+        last_spec_row = len(row_specs) - 1
+        for r in range(last_spec_row + 1):
+            axes[r, 1].set_ylabel('Hz')
+        # MONITOR_CKPT_LABEL overrides the title's epoch tag — used by the inflight
+        # scorer to display the real epoch / step rather than the temp-dir stub of "0".
+        _label = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
+        fig.suptitle(f"voc{i}  ckpt {_label}", fontsize=10)
+        plt.tight_layout()
+        sw.add_figure(f"specgram/voc{i}", fig, step)
+        plt.close(fig)
+    sw.close()
+except Exception as _tb_e:
+    # Don't let TB rendering errors fail the autonomy score itself.
+    print(f"# TB log failed: {type(_tb_e).__name__}: {_tb_e}", file=sys.stderr)
+
 # JSON-safe breakdown: drop the list, keep the scalar mean alongside everything else.
 safe_bd = {}
 for k, v in bd.items():
@@ -229,14 +467,80 @@ print(json.dumps({'autonomy': float(score), 'breakdown': safe_bd}))
 """
 
 
-def run_autonomy_on_checkpoint(ckpt_path):
+def _trainer_gpu_pid():
+    """PID of the live trainer's python process on the GPU, or None. nvidia-smi gives
+    the GPU-using PIDs; filter to ones whose /proc cmdline matches the train pattern."""
     try:
         r = subprocess.run(
-            ["/home/pearson/code/ouroboros/.venv/bin/python", "-c", AUTONOMY_SNIPPET, ckpt_path],
-            capture_output=True, text=True, timeout=180,
+            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
         )
-    except subprocess.TimeoutExpired:
-        return None, {"error": "scoring subprocess timed out (GPU contention?)"}
+        pids = [int(p) for p in r.stdout.split() if p.strip().isdigit()]
+        for pid in pids:
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    cmd = f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+                if TRAIN_PATTERN in cmd:
+                    return pid
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def run_autonomy_on_checkpoint(ckpt_path, step_override=None, log_dir=None, label=None):
+    # Pass bpe through env so the snippet writes audio/figures at the same global-batch
+    # index the trainer used for its scalar curves -- aligns the x-axis in TB.
+    env = os.environ.copy()
+    env["MONITOR_BPE"] = str(detect_batches_per_epoch())
+    if step_override is not None:
+        env["MONITOR_STEP_OVERRIDE"] = str(int(step_override))
+    if log_dir is not None:
+        env["MONITOR_LOG_DIR"] = str(log_dir)
+    if label is not None:
+        env["MONITOR_CKPT_LABEL"] = str(label)
+    # Stage the specific ckpt into a temp dir as checkpoint_0.tar so the snippet's
+    # load_model() (which globs the dir and picks the highest epoch number) actually
+    # loads the ckpt we requested. Without this, re-scoring an older ckpt in a dir
+    # containing newer ones silently scored the newest. The default log_dir falls
+    # back to the original ckpt's dir so per-epoch TB scalars/figures still land
+    # alongside the real run output.
+    import shutil
+    import tempfile
+    real_dir = os.path.dirname(ckpt_path)
+    stage_dir = tempfile.mkdtemp(prefix="score_ckpt_")
+    shutil.copy(ckpt_path, os.path.join(stage_dir, "checkpoint_0.tar"))
+    staged_path = os.path.join(stage_dir, "checkpoint_0.tar")
+    if log_dir is None:
+        env["MONITOR_LOG_DIR"] = str(real_dir)
+    # Briefly SIGSTOP the trainer so scoring gets the GPU without contention. Without this
+    # the autonomy subprocess queues behind every training batch and times out at the 180s
+    # cap. SIGCONT in finally so a crash inside subprocess.run can't leave the trainer
+    # frozen. Cost: ~80s of paused training per scored checkpoint (= one epoch save), or
+    # roughly 5% wall-clock on a 30-min-epoch run.
+    trainer_pid = _trainer_gpu_pid()
+    if trainer_pid is not None:
+        try:
+            os.kill(trainer_pid, signal.SIGSTOP)
+        except (ProcessLookupError, PermissionError):
+            trainer_pid = None
+    try:
+        try:
+            r = subprocess.run(
+                ["/home/pearson/code/ouroboros/.venv/bin/python", "-c", AUTONOMY_SNIPPET, staged_path],
+                capture_output=True, text=True, timeout=180, env=env,
+            )
+        except subprocess.TimeoutExpired:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+            return None, {"error": "scoring subprocess timed out (even with trainer paused)"}
+        shutil.rmtree(stage_dir, ignore_errors=True)
+    finally:
+        if trainer_pid is not None:
+            try:
+                os.kill(trainer_pid, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
     if r.returncode != 0:
         last_err = r.stderr.strip().splitlines()[-1] if r.stderr else "unknown"
         return None, {"error": last_err}
@@ -317,19 +621,32 @@ def main():
         emit({"status": "LOSS_SPIKE", **base})
         save_state(state); return
 
-    # 4. New checkpoint -> run autonomy_score
-    ckpt_path, ckpt_epoch = latest_checkpoint()
-    if ckpt_path is not None and ckpt_epoch > state.get("last_ckpt_epoch", -1):
-        score, bd = run_autonomy_on_checkpoint(ckpt_path)
+    # 4. New checkpoints -> run autonomy_score on EACH unscored ckpt in epoch order
+    # so every ckpt lands its own spectrogram + Val/* scalar on TB. If multiple ckpts
+    # have arrived since the last poll, this loop processes them all (oldest first).
+    pending = unscored_checkpoints(state.get("last_ckpt_epoch", -1))
+    autonomy_line = None
+    status = None
+    _bpe = detect_batches_per_epoch()
+    for ckpt_path, ckpt_epoch in pending:
+        # Stage-into-temp-as-checkpoint_0 makes the snippet always parse ep=0,
+        # so the snippet's default step = 0*bpe = 0 stacks every per-epoch
+        # Val/* scalar at x=0. Pass the real ckpt_epoch through step_override
+        # + label so the scalars land at the right global-batch index on TB
+        # and the spectrogram title shows the actual epoch number.
+        score, bd = run_autonomy_on_checkpoint(
+            ckpt_path,
+            step_override=ckpt_epoch * _bpe,
+            label=str(ckpt_epoch),
+        )
         if score is None:
             emit({"status": "CKPT_ERR", "ckpt_epoch": ckpt_epoch,
                   "err": bd.get("error", "?"), **base})
-            # Mark this ckpt as attempted so we don't burn GPU/wall on the same one
-            # every poll. Re-tried only when a NEW-numbered ckpt arrives.
+            # Mark this ckpt as attempted so we don't retry on subsequent polls.
             state["last_ckpt_epoch"] = ckpt_epoch
-            save_state(state); return
+            save_state(state)
+            continue
 
-        prev_val = state.get("last_val_autonomy")
         prev_best_val = state.get("best_val_autonomy")
         if prev_best_val is None or score > prev_best_val + AUTONOMY_IMPROVE_MARGIN:
             state["best_val_autonomy"] = score
@@ -338,6 +655,7 @@ def main():
             state["ckpts_since_best_autonomy"] = state.get("ckpts_since_best_autonomy", 0) + 1
         state["last_val_autonomy"] = score
         state["last_ckpt_epoch"] = ckpt_epoch
+        save_state(state)  # persist progress between ckpts so a mid-loop crash doesn't redo work
 
         autonomy_line = {
             "ckpt_epoch": ckpt_epoch,
@@ -350,7 +668,58 @@ def main():
             "ckpts_since_best": state["ckpts_since_best_autonomy"],
         }
         status = "PLATEAU" if state["ckpts_since_best_autonomy"] >= AUTONOMY_PLATEAU_CKPTS else "NEW_CKPT"
+        # Emit per-ckpt so the user sees each one land
         emit({"status": status, **autonomy_line, **base})
+    # 4b. Intra-epoch save (--save-minutes): inflight_latest.tar is overwritten by the
+    # trainer every N minutes. Score it on a separate cadence keyed on its mtime so the
+    # user gets val curves every half hour instead of every 2-hour-epoch. Staged into a
+    # temp dir as `checkpoint_0.tar` because load_model accepts a directory of those.
+    inflight_path = os.path.join(SEED_DIR, "inflight_latest.tar")
+    if os.path.exists(inflight_path):
+        cur_mtime = int(os.path.getmtime(inflight_path))
+        # +30s slack so identical-mtime polls don't re-score the same file
+        if cur_mtime > state.get("last_inflight_mtime", 0) + 30:
+            import shutil
+            import tempfile
+            tmp = tempfile.mkdtemp(prefix="inflight_score_")
+            try:
+                shutil.copy(inflight_path, os.path.join(tmp, "checkpoint_0.tar"))
+                # Synthetic step = latest train scalar step (so Val/ curves align with
+                # the train scalars' x-axis). Falls back to spec.size if Loss/spec wasn't
+                # logged yet (very early in training).
+                if len(spec):
+                    # spec_w / read_loss read by-step; the underlying spec array is indexed
+                    # by event order. The trainer logs at step = epoch*bpe + batch, so the
+                    # length of `spec` IS the latest logged step + 1.
+                    step_override = len(spec) - 1
+                else:
+                    step_override = 0
+                score, bd = run_autonomy_on_checkpoint(
+                    os.path.join(tmp, "checkpoint_0.tar"),
+                    step_override=step_override,
+                    log_dir=SEED_DIR,  # write Val/* + specgrams to the real run dir
+                    label=f"inflight-step-{step_override}",
+                )
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            if score is not None:
+                state["last_inflight_mtime"] = cur_mtime
+                save_state(state)
+                emit({
+                    "status": "INFLIGHT",
+                    "inflight_step": step_override,
+                    "val_autonomy": f"{score:+.3f}",
+                    "val_spec_corr": f"{bd.get('spec_corr', float('nan')):+.3f}",
+                    "val_amp_pen": f"{bd.get('amp_pen', float('nan')):.2f}",
+                    "val_pitch_pen": f"{bd.get('pitch_pen', float('nan')):.2f}",
+                    "val_bounded": f"{bd.get('bounded_frac', float('nan')):.2f}",
+                    **base,
+                })
+                return
+
+    if pending:
+        # Already emitted per-ckpt in the loop above; the loss-side plateau / heartbeat
+        # checks below would be redundant noise in the same poll.
         save_state(state); return
 
     # 5. Loss-side plateau (before any ckpt exists, or as a fallback)
