@@ -369,6 +369,17 @@ try:
         fig, axes = plt.subplots(n_rows, 2, figsize=(11, 2 * n_rows),
                                  gridspec_kw={'width_ratios': [1, 2]})
         n_fft, hop = 512, 128
+        def _stft_mag(x):
+            return np.abs(np.fft.rfft(np.lib.stride_tricks.sliding_window_view(x, n_fft)[::hop]
+                                       * np.hanning(n_fft), axis=-1)).T
+        # Spectrogram colour is dB relative to the TARGET's peak |STFT| (one shared reference
+        # for all rows), so the target peaks at 0 dB and its structure fills the [-80, 0] dB
+        # range instead of saturating, while quieter rows (e.g. a ~100x-quiet auto rollout,
+        # ~-40 dB) sit visibly lower on the SAME amplitude-faithful scale. The old code used
+        # un-normalized log10|STFT| with vmax=-2, which saturated for any content above
+        # ~1e-4 amplitude -- so the target washed out and a silent rollout could look bright.
+        _spec_ref = float(np.nanmax(_stft_mag(tgt_n)) + 1e-12)
+        _spec_db_floor = -80.0
         # Lock all waveform panels to the target's y-range so each panel is
         # directly comparable in scale. The envelope shape (positive) is rescaled
         # to fit the same range so its time-course is visible against the carrier.
@@ -400,11 +411,11 @@ try:
                 axes[row, 0].plot(t_ms,  env_shape, color="k", lw=0.6, linestyle="--", label="env (shape only)")
                 axes[row, 0].plot(t_ms, -env_shape, color="k", lw=0.6, linestyle="--")
                 axes[row, 0].legend(loc="upper right", fontsize=7, framealpha=0.6)
-            S = np.abs(np.fft.rfft(np.lib.stride_tricks.sliding_window_view(spec_x, n_fft)[::hop]
-                                    * np.hanning(n_fft), axis=-1)).T
-            axes[row, 1].imshow(np.log10(S + 1e-8), aspect='auto', origin='lower',
+            S = _stft_mag(spec_x)
+            S_db = 20.0 * np.log10(np.maximum(S / _spec_ref, 1e-5))  # dB re target peak
+            axes[row, 1].imshow(S_db, aspect='auto', origin='lower',
                                  extent=[0, t_ms[-1] if len(t_ms) else 1, 0, SR / 2],
-                                 vmin=-8, vmax=-2, cmap='viridis')
+                                 vmin=_spec_db_floor, vmax=0.0, cmap='magma')
             axes[row, 1].set_xlim([0, _max_ms])
             axes[row, 1].set_ylim([0, 16000])
         # Drives panel: time series of omega^2, gamma, alpha drawn across BOTH
@@ -447,7 +458,7 @@ try:
         # MONITOR_CKPT_LABEL overrides the title's epoch tag — used by the inflight
         # scorer to display the real epoch / step rather than the temp-dir stub of "0".
         _label = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
-        fig.suptitle(f"voc{i}  ckpt {_label}", fontsize=10)
+        fig.suptitle(f"voc{i}  ckpt {_label}   (spec: dB re target peak, [-80, 0])", fontsize=10)
         plt.tight_layout()
         sw.add_figure(f"specgram/voc{i}", fig, step)
         plt.close(fig)
