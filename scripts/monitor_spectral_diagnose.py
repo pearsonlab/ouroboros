@@ -183,7 +183,9 @@ def unscored_checkpoints(last_scored_epoch):
 AUTONOMY_SNIPPET = r"""
 import sys, os, glob, json, warnings
 import numpy as np
-sys.path.insert(0, '/home/pearson/code/ouroboros/.claude/worktrees/tract-on-spectral')
+# train.* / model.* resolve from PYTHONPATH (the sidecar driver sets it to THIS branch's
+# root) so the monitor scores with this branch's drive_noise-aware load_model + tract/
+# envelope model, rather than a sibling worktree's pre-drive_noise code.
 import torch
 from scipy.io import wavfile
 from train.train import load_model
