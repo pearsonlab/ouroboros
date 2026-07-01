@@ -266,9 +266,31 @@ ckpt_dir = os.path.dirname(ckpt_path)
 _dev = os.environ.get("MONITOR_DEVICE", "cuda")
 model, _, _, _ = load_model(ckpt_dir, device=_dev)
 model.eval()
+# Noise-forcing models make sound only WITH the OU forcing on; the deterministic (noise-off)
+# reconstruction is the dead backbone. So render/score at a noise_gain that matches what the
+# trainer used at this checkpoint. MONITOR_NOISE_GAIN overrides (float); "auto" (default)
+# derives the per-checkpoint gain from the ramp schedule + this checkpoint's global step, so
+# each epoch's spectrogram shows the actual training-time output. No-op for non-noise models.
+_ng_env = os.environ.get("MONITOR_NOISE_GAIN", "auto")
+if _ng_env != "auto":
+    _noise_gain = float(_ng_env)
+else:
+    try:
+        # step_override is ckpt_epoch*bpe (START of the epoch); the checkpoint is saved AFTER
+        # that epoch trained, so add one epoch of steps to get the gain the model was actually
+        # saved with (end of epoch). ckpt_4 -> step 3750 -> gain 0 (last deterministic epoch);
+        # ckpt_5 -> 4500 -> gain 0.2 (noise ramping); ckpt_10 -> gain 1.0.
+        _step = float(os.environ["MONITOR_STEP_OVERRIDE"]) + float(os.environ.get("MONITOR_BPE", "0"))
+        _nstart = float(os.environ.get("MONITOR_NOISE_START_STEP", "0"))
+        _nwarm = float(os.environ.get("MONITOR_NOISE_WARMUP_STEPS", "0"))
+        _noise_gain = 0.0 if _step < _nstart else (
+            min(1.0, (_step - _nstart) / _nwarm) if _nwarm > 0 else 1.0)
+    except (KeyError, ValueError, TypeError):
+        _noise_gain = 1.0
 with torch.no_grad():
     score, _, bd, trajs = autonomy_score(
         model, val_vocs, DT, rescale=False, cold_start=True, return_trajectories=True,
+        noise_gain=_noise_gain,
     )
 
 # Persist signed amp_pen alongside the offline cache the loss panels reads.
@@ -430,7 +452,11 @@ try:
             # Left panel: gamma, alpha share an axis; omega^2 on twin
             ax_d.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
             ax_d.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
-            ax_d.set_ylabel(r'$\gamma$, $\alpha$', color='black')
+            # sigma = the learned noise gate g(t)=ReLU(sigma head); same scale as gamma/alpha.
+            # None for models without the noise head (drives dict carries it only when present).
+            if drives.get('sigma') is not None:
+                ax_d.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
+            ax_d.set_ylabel(r'$\gamma$, $\alpha$, $g$', color='black')
             ax_d.set_xlim([0, _max_ms])
             ax_dt = ax_d.twinx()
             ax_dt.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
@@ -441,8 +467,10 @@ try:
             # Right panel: same data, just on the wider 2-column width for readability.
             ax_d2.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
             ax_d2.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
+            if drives.get('sigma') is not None:
+                ax_d2.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
             ax_d2.set_xlim([0, _max_ms])
-            ax_d2.set_ylabel(r'$\gamma$, $\alpha$')
+            ax_d2.set_ylabel(r'$\gamma$, $\alpha$, $g$')
             ax_d2t = ax_d2.twinx()
             ax_d2t.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
                         label=r'$\omega^2$', alpha=0.7)
@@ -458,7 +486,8 @@ try:
         # MONITOR_CKPT_LABEL overrides the title's epoch tag — used by the inflight
         # scorer to display the real epoch / step rather than the temp-dir stub of "0".
         _label = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
-        fig.suptitle(f"voc{i}  ckpt {_label}   (spec: dB re target peak, [-80, 0])", fontsize=10)
+        fig.suptitle(f"voc{i}  ckpt {_label}  noise_gain={_noise_gain:.2f}   "
+                     f"(spec: dB re target peak, [-80, 0])", fontsize=10)
         plt.tight_layout()
         sw.add_figure(f"specgram/voc{i}", fig, step)
         plt.close(fig)

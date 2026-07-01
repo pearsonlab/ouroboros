@@ -431,14 +431,19 @@ def integrate_poly_autonomous(
         )
 
     # Learned flow-gated colored-noise forcing (matches training's stochastic-Heun path).
-    # Active only when the model carries the sigma head AND noise_gain > 0 -- so seed
-    # selection / deterministic autonomy keep the plain RK4 path below. g_seq is the ReLU
-    # gate g(t) from the sigma head; noise_tau_c is the OU correlation time in samples.
-    use_learned_noise = getattr(model, "enable_noise_forcing", False) and noise_gain > 0
-    if use_learned_noise:
+    # g_gate = the ReLU gate g(t) from the sigma head. Computed whenever the model carries the
+    # noise head (independent of noise_gain) so it can be returned as a drive and plotted like
+    # omega/gamma even in deterministic eval. The OU forcing is only APPLIED when noise_gain > 0
+    # (use_learned_noise); noise_tau_c is the OU correlation time in samples.
+    noise_on = getattr(model, "enable_noise_forcing", False)
+    g_gate = None
+    if noise_on:
         with torch.no_grad():
-            g_seq = model.get_sigma(audio_t, dy_t.clone(), dt).detach().cpu().numpy().squeeze()
-        g_seq = np.atleast_1d(g_seq).astype(np.float64)
+            g_gate = model.get_sigma(audio_t, dy_t.clone(), dt).detach().cpu().numpy().squeeze()
+        g_gate = np.atleast_1d(g_gate).astype(np.float64)
+    use_learned_noise = noise_on and noise_gain > 0
+    if use_learned_noise:
+        g_seq = g_gate
         noise_tau_c = (model.noise_tau_ms / 1e3) / dt
 
     def _finish(x_src: np.ndarray) -> np.ndarray:
@@ -502,7 +507,8 @@ def integrate_poly_autonomous(
             alpha = weights[0, :, 0, 0].astype(np.float64).copy()
             rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
                         "gamma": gamma[: len(out)].astype(np.float64).copy(),
-                        "alpha": alpha[: len(out)]},)
+                        "alpha": alpha[: len(out)],
+                        "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None)},)
         return rv if len(rv) > 1 else rv[0]
 
     if noise_sd > 0:
@@ -540,7 +546,8 @@ def integrate_poly_autonomous(
             alpha = weights[0, :, 0, 0].astype(np.float64).copy()
             rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
                         "gamma": gamma[: len(out)].astype(np.float64).copy(),
-                        "alpha": alpha[: len(out)]},)
+                        "alpha": alpha[: len(out)],
+                        "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None)},)
         return rv if len(rv) > 1 else rv[0]
 
     # Manual RK4 with the same soft-tanh state saturation as train/spectral_rollout.py
@@ -592,7 +599,8 @@ def integrate_poly_autonomous(
         alpha = weights[0, :, 0, 0].astype(np.float64).copy()
         rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
                     "gamma": gamma[: len(out)].astype(np.float64).copy(),
-                    "alpha": alpha[: len(out)]},)
+                    "alpha": alpha[: len(out)],
+                    "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None)},)
     return rv if len(rv) > 1 else rv[0]
 
 
@@ -608,13 +616,20 @@ def autonomy_score(
     rescale: bool = False,
     cold_start: bool = False,
     return_trajectories: bool = False,
+    noise_gain: float = 0.0,
 ) -> tuple:
     """
     Validation metric for AUTONOMOUS reconstruction quality (model-selection criterion).
 
-    For each pre-windowed (sustained) vocalization segment, run the model's DETERMINISTIC
-    autonomous integration and score it against the target by phase-robust spectral (log-PSD)
+    For each pre-windowed (sustained) vocalization segment, run the model's autonomous
+    integration and score it against the target by phase-robust spectral (log-PSD)
     correlation, minus log-ratio penalties on amplitude and pitch:
+
+    `noise_gain` (default 0.0 = deterministic) is forwarded to integrate_poly_autonomous: when
+    >0 and the model has the flow-gated OU forcing (enable_noise_forcing), the reconstruction is
+    the NOISE-ON output (the model's actual generative signal), not the deterministic backbone.
+    Ignored for models without the noise head. Both the returned trajectories (for spectrograms)
+    and the score then reflect the noise-driven output.
 
         score = spectral_corr(autonomous, target)
                 - w_amp   * |log(std_auto   / std_target)|
@@ -670,11 +685,12 @@ def autonomy_score(
         tgt = correct(seg)
         if return_trajectories:
             auto, env, src, drives = integrate_poly_autonomous(
-                model, seg, dt, method=method, noise_sd=0.0,
+                model, seg, dt, method=method, noise_sd=0.0, noise_gain=noise_gain,
                 detrend=True, verbose=False, return_envelope=True,
                 return_source=True, return_drives=True)
         else:
             auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
+                                             noise_gain=noise_gain,
                                              detrend=True, verbose=False)
             env = src = drives = None
         n = min(len(tgt), len(auto))
