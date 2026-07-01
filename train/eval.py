@@ -368,6 +368,7 @@ def integrate_poly_autonomous(
     method: str = "rk4",
     detrend: bool = True,
     noise_sd: float = 0.0,
+    noise_gain: float = 0.0,
     seed: int = 0,
     verbose: bool = True,
     return_envelope: bool = False,
@@ -429,6 +430,17 @@ def integrate_poly_autonomous(
             else np.ones(L)
         )
 
+    # Learned flow-gated colored-noise forcing (matches training's stochastic-Heun path).
+    # Active only when the model carries the sigma head AND noise_gain > 0 -- so seed
+    # selection / deterministic autonomy keep the plain RK4 path below. g_seq is the ReLU
+    # gate g(t) from the sigma head; noise_tau_c is the OU correlation time in samples.
+    use_learned_noise = getattr(model, "enable_noise_forcing", False) and noise_gain > 0
+    if use_learned_noise:
+        with torch.no_grad():
+            g_seq = model.get_sigma(audio_t, dy_t.clone(), dt).detach().cpu().numpy().squeeze()
+        g_seq = np.atleast_1d(g_seq).astype(np.float64)
+        noise_tau_c = (model.noise_tau_ms / 1e3) / dt
+
     def _finish(x_src: np.ndarray) -> np.ndarray:
         """detrend the raw RK4 source FIRST (non-trainable HPF stabilizes the
         integrator output before any downstream scaling), then envelope-scale,
@@ -444,6 +456,54 @@ def integrate_poly_autonomous(
             with torch.no_grad():
                 x_src = model.tract.apply(xt).detach().cpu().numpy().squeeze()
         return x_src
+
+    if use_learned_noise:
+        # Learned flow-gated OU forcing, stochastic Heun on (x, v, eta) -- the numpy mirror of
+        # train.spectral_rollout._heun_core_factory, with the same soft-tanh clamps. eta is an
+        # OU process (correlation time noise_tau_c samples), gated by g_eff = noise_gain*g(t)
+        # and added to the momentum equation only. Additive noise => Heun is strong order 1.
+        from train.rollout_refine import BX, BXP
+        rng = np.random.default_rng(seed)
+        tau_c = float(noise_tau_c)
+        c2 = (2.0 / tau_c) ** 0.5
+        x, xp, eta = x0, xp0, 0.0
+        xs = [x]
+        ww = weights.reshape(L, 1, 1, P, P2)
+        for k in range(L - 1):
+            om, ga, wk = omega[k], gamma[k], ww[k]
+            g_eff = noise_gain * float(g_seq[k])
+            xi = rng.standard_normal()
+
+            def drift(xx, vv, ee):
+                xx_c = BX * np.tanh(xx / BX)
+                vv_c = BXP * np.tanh(vv / BXP)
+                kern = float(
+                    kernel.forward_given_weights_numpy(np.array([[[xx_c, vv_c]]]), wk).squeeze()
+                )
+                return vv, -(om ** 2) * xx - ga * vv - kern + g_eff * ee, -ee / tau_c
+
+            ax, av, ae = drift(x, xp, eta)
+            xt, vt, et = x + ax, xp + av, eta + ae + c2 * xi
+            axt, avt, aet = drift(xt, vt, et)
+            x = x + 0.5 * (ax + axt)
+            xp = xp + 0.5 * (av + avt)
+            eta = eta + 0.5 * (ae + aet) + c2 * xi
+            x = BX * np.tanh(x / BX)
+            xp = BXP * np.tanh(xp / BXP)
+            xs.append(x)
+        src_pre = np.array(xs)
+        out = _finish(src_pre)
+        rv = (out,)
+        if return_envelope:
+            rv = rv + (e_seq[: len(out)].copy(),)
+        if return_source:
+            rv = rv + (src_pre[: len(out)].copy(),)
+        if return_drives:
+            alpha = weights[0, :, 0, 0].astype(np.float64).copy()
+            rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
+                        "gamma": gamma[: len(out)].astype(np.float64).copy(),
+                        "alpha": alpha[: len(out)]},)
+        return rv if len(rv) > 1 else rv[0]
 
     if noise_sd > 0:
         # stochastic forcing (Euler-Maruyama on the velocity) to sustain a noise-driven

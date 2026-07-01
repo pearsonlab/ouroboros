@@ -335,6 +335,33 @@ def main():
                         "lives entirely in K_raw + drives. Use when envelope is roaming "
                         "uncontrollably. Pass a value >= --n-epochs to keep envelope frozen "
                         "for the whole run.")
+    # flow-gated colored-noise forcing (opt-in)
+    p.add_argument("--enable-noise-forcing", action=argparse.BooleanOptionalAction, default=False,
+                   help="Add an Ornstein-Uhlenbeck colored-noise term g(t)*eta to the momentum "
+                        "equation only (co-located with the DC/pressure drive). g(t)=relu of a new "
+                        "Mamba head (parallel to omega/gamma); eta is a per-oscillator OU state with "
+                        "fixed correlation time --noise-tau-ms. Integrated with stochastic Heun on "
+                        "(x,v,eta) ONLY when enabled; deterministic runs keep RK4 unchanged. Requires "
+                        "the spectral (MRSTFT magnitude) loss. Off by default.")
+    p.add_argument("--noise-tau-ms", type=float, default=5.0,
+                   help="OU noise correlation time in ms (spectral corner ~ 1/tau_c). Larger = more "
+                        "low-frequency (redder) noise; smaller = whiter. Fixed (not learned).")
+    p.add_argument("--noise-init-bias", type=float, default=0.1,
+                   help="Constant init for the sigma gate head bias. Small POSITIVE (default 0.1) "
+                        "keeps the ReLU gate live at init -- with a zero/random bias ~1/3 of seeds "
+                        "got an all-negative pre-activation (dead gate, zero gradient, never learns). "
+                        "'Near-off at init' is provided by the gain ramp, not by killing the gate. "
+                        "<=0 restores the dead-ReLU risk (ablation only).")
+    p.add_argument("--noise-start-step", type=int, default=0,
+                   help="Global step at which the noise forcing gain starts ramping from 0. Hold at 0 "
+                        "before this so the deterministic model settles first (esp. when resuming a "
+                        "trained checkpoint). 0 = ramp from the beginning.")
+    p.add_argument("--noise-warmup-steps", type=int, default=0,
+                   help="Global steps over which the noise gain ramps 0->1 after --noise-start-step. "
+                        "0 = turn on fully at --noise-start-step (no ramp).")
+    p.add_argument("--freeze-noise-epochs", type=int, default=0,
+                   help="Freeze the sigma gate head (sigma_mamba + sigma_net) for the first N epochs. "
+                        "0 disables (the gain ramp already holds the term off early).")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -475,6 +502,11 @@ def main():
         freeze_drives_epochs=args.freeze_drives_epochs,
         freeze_tract_epochs=args.freeze_tract_epochs,
         freeze_envelope_epochs=args.freeze_envelope_epochs,
+        enable_noise_forcing=args.enable_noise_forcing,
+        noise_tau_ms=args.noise_tau_ms, noise_init_bias=args.noise_init_bias,
+        noise_start_step=args.noise_start_step,
+        noise_warmup_steps=args.noise_warmup_steps,
+        freeze_noise_epochs=args.freeze_noise_epochs,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
 
@@ -524,6 +556,12 @@ def main():
         "freeze_drives_epochs": int(args.freeze_drives_epochs),
         "freeze_tract_epochs": int(args.freeze_tract_epochs),
         "freeze_envelope_epochs": int(args.freeze_envelope_epochs),
+        "enable_noise_forcing": bool(args.enable_noise_forcing),
+        "noise_tau_ms": float(args.noise_tau_ms),
+        "noise_init_bias": float(args.noise_init_bias),
+        "noise_start_step": int(args.noise_start_step),
+        "noise_warmup_steps": int(args.noise_warmup_steps),
+        "freeze_noise_epochs": int(args.freeze_noise_epochs),
         "sr": int(sr),
     }
     if test_vocs:

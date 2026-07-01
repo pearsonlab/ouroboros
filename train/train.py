@@ -74,6 +74,8 @@ def save_model(
         "tract_n_sec": getattr(model, "tract_n_sec", 3),
         "use_envelope": getattr(model, "use_envelope", False),
         "env_lowpass_ms": getattr(model, "env_lowpass_ms", 20.0),
+        "enable_noise_forcing": getattr(model, "enable_noise_forcing", False),
+        "noise_tau_ms": getattr(model, "noise_tau_ms", 5.0),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -152,6 +154,8 @@ def load_model(
             tract_n_sec=sd.get("tract_n_sec", 3),
             use_envelope=sd.get("use_envelope", False),
             env_lowpass_ms=sd.get("env_lowpass_ms", 20.0),
+            enable_noise_forcing=sd.get("enable_noise_forcing", False),
+            noise_tau_ms=sd.get("noise_tau_ms", 5.0),
         )
     except:
         print("no kernel in savefile!")
@@ -245,6 +249,15 @@ def train(
     # (identity) during the freeze -- amplitude lives entirely in K_raw + drives
     # while the envelope can't roam. 0 disables.
     freeze_envelope_epochs: int = 0,
+    # Flow-gated colored-noise forcing schedule (only consulted when the model was built
+    # with enable_noise_forcing). The forcing gain ramps 0 -> 1 linearly: it is held at 0
+    # until global step `noise_start_step`, then ramps over `noise_warmup_steps` steps.
+    # The sigma head (sigma_mamba + sigma_net) is also frozen for the first
+    # `freeze_noise_epochs` epochs. Recommended: resume a trained deterministic checkpoint
+    # and set noise_start_step so the deterministic model is settled before noise turns on.
+    noise_start_step: int = 0,
+    noise_warmup_steps: int = 0,
+    freeze_noise_epochs: int = 0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -280,6 +293,16 @@ def train(
     """
 
     writer = SummaryWriter(log_dir=runDir)
+
+    # Hard dependency: the OU noise term can only be supervised in distribution by the
+    # phase-discarding MRSTFT magnitude loss. A pointwise/time-domain loss would penalize
+    # every noise realization for not matching the specific training draw, which is incoherent.
+    if getattr(model, "enable_noise_forcing", False) and loss_mode != "spectral_rollout":
+        raise ValueError(
+            "enable_noise_forcing requires loss_mode='spectral_rollout' (MRSTFT magnitude "
+            f"loss); got loss_mode={loss_mode!r}. The noise realization is not a pathwise "
+            "target and cannot be supervised by a pointwise objective."
+        )
 
     train_losses, val_losses = [], []
 
@@ -390,6 +413,19 @@ def train(
               f"(env_mamba + env_net, {len(envelope_params)} tensors) frozen for the "
               f"first {freeze_envelope_epochs} epochs; e(t)=1.0 (identity) during freeze.",
               flush=True)
+    # Noise gate head (sigma_mamba + sigma_net). Frozen for the first freeze_noise_epochs
+    # epochs; also the noise_gain ramp keeps the forcing off until noise_start_step.
+    noise_params = []
+    for attr in ("sigma_mamba", "sigma_net"):
+        m = getattr(model, attr, None)
+        if m is not None:
+            noise_params.extend(list(m.parameters()))
+    noise_frozen_now = False
+    if getattr(model, "enable_noise_forcing", False):
+        print(f"enable_noise_forcing: sigma head ({len(noise_params)} tensors), "
+              f"noise_tau_ms={getattr(model, 'noise_tau_ms', None)}, "
+              f"noise_start_step={noise_start_step}, noise_warmup_steps={noise_warmup_steps}, "
+              f"freeze_noise_epochs={freeze_noise_epochs}.", flush=True)
 
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
         model.train()
@@ -421,6 +457,14 @@ def train(
                 p.requires_grad_(not want_env_frozen)
             envelope_frozen_now = want_env_frozen
             print(f"  epoch {epoch}: envelope {'FROZEN' if want_env_frozen else 'UNFROZEN'}",
+                  flush=True)
+        # Noise gate head freeze schedule (sigma_mamba + sigma_net).
+        want_noise_frozen = epoch < freeze_noise_epochs
+        if noise_params and want_noise_frozen != noise_frozen_now:
+            for p in noise_params:
+                p.requires_grad_(not want_noise_frozen)
+            noise_frozen_now = want_noise_frozen
+            print(f"  epoch {epoch}: noise gate {'FROZEN' if want_noise_frozen else 'UNFROZEN'}",
                   flush=True)
         # Per-epoch LR ramp: linear from lr_start (epoch 0) to lr_end (epoch lr_ramp_epochs),
         # then hold. No-op if lr_end is None (constant LR).
@@ -474,6 +518,17 @@ def train(
                 else:
                     lam_env_t = lam_env
                     lam_env_log_t = lam_env_log
+                # Noise forcing gain ramp: held at 0 until noise_start_step (so the
+                # deterministic model settles first), then linearly 0 -> 1 over
+                # noise_warmup_steps. 0 when the model has no noise head.
+                if not getattr(model, "enable_noise_forcing", False):
+                    noise_gain_t = 0.0
+                elif idx < noise_start_step:
+                    noise_gain_t = 0.0
+                elif noise_warmup_steps > 0:
+                    noise_gain_t = min(1.0, (idx - noise_start_step) / float(noise_warmup_steps))
+                else:
+                    noise_gain_t = 1.0
                 out = spectral_rollout_step(
                     model, x, dxdt, dx2, dt,
                     H=H, configs=spec_configs,
@@ -486,6 +541,7 @@ def train(
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
+                    noise_gain=noise_gain_t,
                 )
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):
@@ -547,6 +603,8 @@ def train(
                 if lam_env_anchor > 0:
                     writer.add_scalar("Loss/env_anchor", env_anchor_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
+                if getattr(model, "enable_noise_forcing", False):
+                    writer.add_scalar("Train/noise_gain", float(noise_gain_t), idx)
                 # Weighted (contribution to total) -- directly comparable across components
                 writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)
                 writer.add_scalar("LossW/sc",    float(lam_spec_t) * sc_v,    idx)

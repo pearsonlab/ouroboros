@@ -289,6 +289,16 @@ def model_seed_cv_spectral(
     # are held frozen. With env_net zero-init, e(t)=1.0 stays identity during
     # the freeze. 0 disables.
     freeze_envelope_epochs: int = 0,
+    # Flow-gated colored-noise forcing (opt-in). enable_noise_forcing builds the sigma
+    # gate head; noise_tau_ms is the fixed OU correlation time; the forcing gain ramps
+    # 0->1 starting at noise_start_step over noise_warmup_steps; the sigma head is frozen
+    # for freeze_noise_epochs. See model.Ouroboros / train.spectral_rollout.
+    enable_noise_forcing: bool = False,
+    noise_tau_ms: float = 5.0,
+    noise_init_bias: float = 0.1,
+    noise_start_step: int = 0,
+    noise_warmup_steps: int = 0,
+    freeze_noise_epochs: int = 0,
     # tract.K_raw initial value (None = leave at 0 → K = softplus(0) = log(2)).
     # When set, the entry script picks this from a quick RMS scan of the training
     # audio so K = softplus(K_raw) matches target audio scale from epoch 0.
@@ -337,7 +347,9 @@ def model_seed_cv_spectral(
                           keep_const=keep_const, osc_init=osc_init,
                           checkpoint_encoder=checkpoint_encoder,
                           use_tract=use_tract, tract_n_sec=tract_n_sec,
-                          use_envelope=use_envelope, env_lowpass_ms=env_lowpass_ms)
+                          use_envelope=use_envelope, env_lowpass_ms=env_lowpass_ms,
+                          enable_noise_forcing=enable_noise_forcing,
+                          noise_tau_ms=noise_tau_ms, noise_init_bias=noise_init_bias)
         # K_raw_init: set the tract gain so audio amplitude starts near target RMS
         # at epoch 0, instead of relying on it to descend from K_raw=0 during training.
         # Only applies on fresh start; resume restores the trained value.
@@ -402,6 +414,9 @@ def model_seed_cv_spectral(
                 freeze_drives_epochs=freeze_drives_epochs,
                 freeze_tract_epochs=freeze_tract_epochs,
                 freeze_envelope_epochs=freeze_envelope_epochs,
+                noise_start_step=noise_start_step,
+                noise_warmup_steps=noise_warmup_steps,
+                freeze_noise_epochs=freeze_noise_epochs,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

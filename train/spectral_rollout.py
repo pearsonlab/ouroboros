@@ -120,6 +120,51 @@ def _rk4_core_factory(H, powers):
     return core
 
 
+def _heun_core_factory(H, powers):
+    """Stochastic-Heun integrator over the AUGMENTED state (x, v, eta) for the noise-forcing
+    path. eta is a scalar Ornstein-Uhlenbeck process (correlation time tau_c samples, unit
+    stationary variance) that is added to the momentum equation via g_eff(t)*eta, where
+    g_eff = noise_gain * relu(sigma head) is the pre-scaled gate. Only the eta line carries
+    the Wiener increment dW, and there with a CONSTANT coefficient sqrt(2/tau_c) -> the SDE is
+    ADDITIVE, so Heun (stochastic trapezoidal) is strong order 1 with no Milstein/Ito-
+    Stratonovich correction. The dW tensor is pre-sampled once per rollout (reparameterized):
+    tau_c and the gate get gradients through this deterministic recurrence, dW does not.
+
+    Unit rescaled step (h=1), matching the RK4 core. Deterministic (x, v) drift is the same
+    f() as _rk4_core_factory plus the +g_eff*eta forcing; same soft-tanh state clamps."""
+    def core(om2, ga, w, xc, xp, eta, g_eff, dW, tau_c):
+        c1 = 1.0 - 1.0 / tau_c              # OU decay per unit step
+        c2 = (2.0 / tau_c) ** 0.5           # OU diffusion coefficient (unit stationary var)
+        xs = [xc]
+        for k in range(H - 1):
+            om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
+            g_k = g_eff[:, k]
+            xi = dW[:, k]
+
+            def drift(xx, vv, ee):
+                xpw = xx.unsqueeze(1) ** powers
+                xvw = vv.unsqueeze(1) ** powers
+                kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
+                # dx/ds = v ; dv/ds = -om2*x - ga*v - kernel + g_eff*eta ; deta/ds = -eta/tau_c
+                return vv, -om2k * xx - gak * vv - kern + g_k * ee, -ee / tau_c
+
+            ax, av, ae = drift(xc, xp, eta)
+            # predictor (Euler), with the noise increment on the eta line
+            xt = xc + ax
+            vt = xp + av
+            et = eta + ae + c2 * xi
+            axt, avt, aet = drift(xt, vt, et)
+            # corrector (trapezoidal drift; same noise increment)
+            xc = xc + 0.5 * (ax + axt)
+            xp = xp + 0.5 * (av + avt)
+            eta = eta + 0.5 * (ae + aet) + c2 * xi
+            xc = BX * torch.tanh(xc / BX)
+            xp = BXP * torch.tanh(xp / BXP)
+            xs.append(xc)
+        return torch.stack(xs, dim=1)  # (B, H)
+    return core
+
+
 def _rk4_step(carry, x, powers):
     """One RK4 step as a scan combine_fn: carry=(xc, xp) each (B,); x=(om2k, gak, w_k)
     are the step's drives (om2k,gak: (B,); w_k: (B,P,P)). Returns ((xc', xp'), xc').
@@ -360,6 +405,129 @@ def _run_rk4(backend, om2, ga, w, xc, xp, powers, H):
     raise ValueError(f"unknown rollout_backend {backend!r}")
 
 
+class _GraphedHeunStep:
+    """One stochastic-Heun step over (x, v, eta) captured as two CUDA graphs, exposed as an
+    autograd.Function. The noise-forcing analogue of _GraphedRK4Step: same fwd-only + recompute
+    -fwd+bwd graph pair, same H-invariant capture, extended to carry the OU state `eta`, the
+    pre-scaled gate `g_k` (grad-carrying -> the sigma head learns), and the pre-sampled Wiener
+    increment `dW_k` (NO grad -> reparameterized external noise). tau_c is a fixed model config,
+    baked into the captured kernels (and into the cache key so distinct tau_c don't collide)."""
+    def __init__(self, B, P, powers, device, dtype, tau_c):
+        powers = powers.detach().clone()          # own the buffer (see _GraphedRK4Step)
+        self.powers = powers
+        self.tau_c = float(tau_c)
+        c2 = (2.0 / self.tau_c) ** 0.5
+        tau_c = self.tau_c
+        z = lambda *s: torch.zeros(*s, device=device, dtype=dtype)
+        # grad-carrying inputs (order fixed; backward returns grads in this order + None for dW)
+        self.s = [z(B).requires_grad_(True),        # om2k
+                  z(B).requires_grad_(True),        # gak
+                  z(B, P, P).requires_grad_(True),  # w_k
+                  z(B).requires_grad_(True),        # xc
+                  z(B).requires_grad_(True),        # xp
+                  z(B).requires_grad_(True),        # eta
+                  z(B).requires_grad_(True)]        # g_k (= noise_gain * gate)
+        self.dW = z(B)                              # external noise increment; no grad
+        self.s_gxc, self.s_gxp, self.s_geta = z(B), z(B), z(B)
+
+        def step(om2k, gak, w_k, xc, xp, eta, g_k):
+            def drift(xx, vv, ee):
+                xpw = xx.unsqueeze(1) ** powers
+                xvw = vv.unsqueeze(1) ** powers
+                kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
+                return vv, -om2k * xx - gak * vv - kern + g_k * ee, -ee / tau_c
+            ax, av, ae = drift(xc, xp, eta)
+            xt = xc + ax; vt = xp + av; et = eta + ae + c2 * self.dW
+            axt, avt, aet = drift(xt, vt, et)
+            xo = xc + 0.5 * (ax + axt)
+            vo = xp + 0.5 * (av + avt)
+            eo = eta + 0.5 * (ae + aet) + c2 * self.dW
+            return BX * torch.tanh(xo / BX), BXP * torch.tanh(vo / BXP), eo
+
+        # Warm up grad + no-grad paths on a side stream before capture (see _GraphedRK4Step).
+        stream = torch.cuda.Stream(); stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                oxc, oxp, oeta = step(*self.s)
+                torch.autograd.grad((oxc, oxp, oeta), self.s,
+                                    (self.s_gxc, self.s_gxp, self.s_geta))
+            with torch.no_grad():
+                for _ in range(3):
+                    step(*self.s)
+        torch.cuda.current_stream().wait_stream(stream)
+
+        self.g_fwd = torch.cuda.CUDAGraph()
+        with torch.no_grad():
+            with torch.cuda.graph(self.g_fwd):
+                self.f_oxc, self.f_oxp, self.f_oeta = step(*self.s)
+        self.g_bwd = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.g_bwd):
+            oxc, oxp, oeta = step(*self.s)
+            self.cg = torch.autograd.grad((oxc, oxp, oeta), self.s,
+                                          (self.s_gxc, self.s_gxp, self.s_geta))
+
+        gs = self
+
+        class _Fn(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, om2k, gak, w_k, xc, xp, eta, g_k, dW_k):
+                with torch.no_grad():
+                    for buf, val in zip(gs.s, (om2k, gak, w_k, xc, xp, eta, g_k)):
+                        buf.copy_(val)
+                    gs.dW.copy_(dW_k)
+                    gs.g_fwd.replay()
+                    out = (gs.f_oxc.clone(), gs.f_oxp.clone(), gs.f_oeta.clone())
+                ctx.save_for_backward(om2k.detach(), gak.detach(), w_k.detach(),
+                                      xc.detach(), xp.detach(), eta.detach(),
+                                      g_k.detach(), dW_k.detach())
+                return out
+
+            @staticmethod
+            def backward(ctx, g_oxc, g_oxp, g_oeta):
+                with torch.no_grad():
+                    om2k, gak, w_k, xc, xp, eta, g_k, dW_k = ctx.saved_tensors
+                    for buf, val in zip(gs.s, (om2k, gak, w_k, xc, xp, eta, g_k)):
+                        buf.copy_(val)
+                    gs.dW.copy_(dW_k)
+                    gs.s_gxc.copy_(g_oxc); gs.s_gxp.copy_(g_oxp); gs.s_geta.copy_(g_oeta)
+                    gs.g_bwd.replay()
+                    # 7 grads for the 7 grad-carrying inputs; dW_k gets None.
+                    return tuple(c.clone() for c in gs.cg) + (None,)
+
+        self.apply = _Fn.apply
+
+
+def _graphstep_heun_rollout(om2, ga, w, xc, xp, eta, g_eff, dW, powers, H, tau_c):
+    """Stochastic-Heun rollout replaying a per-step CUDA graph (see _GraphedHeunStep). Same
+    (B, H) output and gradients as _heun_core_factory, at graphstep speed. tau_c is part of the
+    cache key so a model with a different correlation time captures its own graph."""
+    B, P = xc.shape[0], int(powers.numel())
+    key = ("heun", B, P, om2.dtype, float(tau_c))
+    gstep = _ROLLOUT_CACHE.get(key)
+    if gstep is None:
+        gstep = _GraphedHeunStep(B, P, powers, om2.device, om2.dtype, tau_c)
+        _ROLLOUT_CACHE[key] = gstep
+    xs = [xc]
+    for k in range(H - 1):
+        xc, xp, eta = gstep.apply(om2[:, k], ga[:, k], w[:, k].contiguous(),
+                                  xc, xp, eta, g_eff[:, k], dW[:, k])
+        xs.append(xc)
+    return torch.stack(xs, dim=1)
+
+
+def _run_heun(backend, om2, ga, w, xc, xp, eta, g_eff, dW, powers, H, tau_c):
+    """Execute the augmented-state stochastic-Heun rollout under the requested backend. Only
+    'eager' and 'graphstep' are implemented for the noise path; any other backend falls back to
+    eager (correct, no capture). RK4 (noise-off) is unaffected -- see _run_rk4."""
+    if backend == "graphstep" and om2.is_cuda:
+        return _graphstep_heun_rollout(om2, ga, w, xc, xp, eta, g_eff, dW, powers, H, tau_c)
+    if backend not in ("eager", "graphstep") or not om2.is_cuda:
+        _warn_once(("heun_backend", backend),
+                   f"rollout_backend={backend!r} is not implemented for noise forcing; "
+                   f"using the eager stochastic-Heun rollout (correct, no capture).")
+    return _heun_core_factory(H, powers)(om2, ga, w, xc, xp, eta, g_eff, dW, tau_c)
+
+
 def teacher_forced_rollout(
     model,
     x: torch.Tensor,        # (B, L, 1) target audio
@@ -372,6 +540,9 @@ def teacher_forced_rollout(
     rng: Optional[torch.Generator] = None,
     drives: Optional[tuple] = None,  # precomputed (omega, gamma, weights, z2); skips get_funcs
     rollout_backend: str = "eager",  # 'eager' | 'cudagraph' | 'compile' (see _run_rk4)
+    gate: Optional[torch.Tensor] = None,   # (B, L, 1) noise gate g(t) from model.get_sigma; None => deterministic RK4
+    noise_gain: float = 1.0,               # scalar ramp/ablation multiplier on the forcing (0 => term off)
+    noise_tau_samp: Optional[float] = None,  # OU correlation time in samples (required when gate is not None)
 ) -> torch.Tensor:           # (B, H)
     """RK4 H-step rollout of the poly Ouroboros, drives encoded from target audio.
 
@@ -419,7 +590,21 @@ def teacher_forced_rollout(
         xc = xc * (1 - m) + noise_x * m
         xp = xp * (1 - m) + noise_xp * m
 
-    return _run_rk4(rollout_backend, om2, ga_h, w_h, xc, xp, powers, H)
+    if gate is None:
+        return _run_rk4(rollout_backend, om2, ga_h, w_h, xc, xp, powers, H)
+
+    # --- flow-gated colored-noise forcing (stochastic-Heun path) ---
+    assert noise_tau_samp is not None, "gate given but noise_tau_samp (tau_c in samples) is None"
+    # Pre-sample the per-step Wiener increments ONCE per rollout and hold them fixed through
+    # the recurrence (reparameterization): xi_k ~ N(0, 1), so eta's E-M step has dt=1 in
+    # rescaled-sample time. Resampled on the next call (next minibatch). Fold the ramp/ablation
+    # gain into the gate so noise_gain=0 makes the forcing EXACTLY 0 (=> output independent of
+    # dW) and grad still reaches the sigma head through g_eff.
+    dW = torch.randn(B, H, device=x.device, generator=rng)
+    eta0 = torch.zeros(B, device=x.device)          # OU state; relaxes to stationary in ~tau_c
+    g_eff = noise_gain * gate[:, :H, 0]              # (B, H)
+    return _run_heun(rollout_backend, om2, ga_h, w_h, xc, xp, eta0, g_eff, dW,
+                     powers, H, float(noise_tau_samp))
 
 
 def spectral_rollout_step(
@@ -444,6 +629,7 @@ def spectral_rollout_step(
     ic_noise_rms: float = 1e-3,
     rng: Optional[torch.Generator] = None,
     rollout_backend: str = "eager",
+    noise_gain: float = 0.0,          # ramp/ablation multiplier on the OU forcing (0 => off)
 ) -> dict:
     """One forward + loss for the spectral-rollout objective.
 
@@ -460,6 +646,17 @@ def spectral_rollout_step(
     # Encode drives once (model.get_funcs mutates dxdt in place; pass a clone).
     omega, gamma, wk, weights, _ = model.get_funcs(x, dxdt.clone(), dt)
     z2 = (model.tau / dt) * dxdt  # rescaled velocity
+
+    # Flow-gated colored-noise forcing (opt-in). The noise realization can only be supervised
+    # in distribution by the phase-discarding MRSTFT magnitude loss below -- never pathwise --
+    # so this path is only reachable with loss_mode='spectral_rollout' (guarded in train.train).
+    # The gate g(t) is a learned Mamba head; noise_tau_samp is the fixed OU correlation time.
+    # Skip the sigma encoder entirely while noise_gain==0 (warmup): the rollout then uses the
+    # exact deterministic RK4 path (no wasted encoder forward, no Heun), and the stochastic-Heun
+    # path engages only once the gain ramp lifts off at noise_start_step.
+    noise_on = getattr(model, "enable_noise_forcing", False) and noise_gain > 0
+    gate = model.get_sigma(x, dxdt.clone(), dt) if noise_on else None
+    noise_tau_samp = ((model.noise_tau_ms / 1e3) / dt) if noise_on else None
 
     # Learnable amplitude envelope e(t): computed once here and reused by both the TF anchor
     # (immediately below) and the rollout (further down). None when the model has no envelope.
@@ -510,6 +707,7 @@ def spectral_rollout_step(
         ic_mask=ic_mask, ic_noise_rms=ic_noise_rms, rng=rng,
         drives=(omega, gamma, weights, z2),
         rollout_backend=rollout_backend,
+        gate=gate, noise_gain=noise_gain, noise_tau_samp=noise_tau_samp,
     )
     # NON-TRAINABLE STABILIZER on the raw RK4 source: subtract the per-segment mean
     # so any DC drift the integrator accumulated is gone BEFORE env(t) multiplies it.

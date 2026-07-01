@@ -163,6 +163,9 @@ class Ouroboros(nn.Module):
         tract_n_sec: int = 3,
         use_envelope: bool = False,
         env_lowpass_ms: float = 20.0,
+        enable_noise_forcing: bool = False,
+        noise_tau_ms: float = 5.0,
+        noise_init_bias: float = 0.1,
     ):
 
         super().__init__()
@@ -293,6 +296,39 @@ class Ouroboros(nn.Module):
         if use_tract:
             self.tract = Tract(device=device, n_sec=tract_n_sec)
             self.tract_n_sec = tract_n_sec
+
+        # ---- flow-gated colored-noise forcing (opt-in) ----
+        # Adds an Ornstein-Uhlenbeck colored-noise term g(t)*eta to the momentum equation
+        # ONLY (see the stochastic-Heun path in train.spectral_rollout). eta is one scalar
+        # OU state per oscillator with fixed correlation time noise_tau_ms; g(t) = ReLU of a
+        # new Mamba head parallel to omega/gamma -- a learned, nonnegative, time-varying gate
+        # that sets where/how much noise is injected (it absorbs the intensity, so there is no
+        # separate sigma0). Off by default: a model built without the flag is bit-identical to
+        # the deterministic poly model and adds no parameters.
+        self.enable_noise_forcing = enable_noise_forcing
+        self.noise_tau_ms = noise_tau_ms
+        if enable_noise_forcing:
+            sigmaConfig = MambaConfig(
+                d_model=2 * d_data,
+                n_layers=n_layers,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand_factor=expand_factor,
+            )
+            self.sigma_mamba = Mamba(sigmaConfig).to(device)
+            # Gate head g(t) = relu(sigma_net(.)). The bias is init to a small POSITIVE constant
+            # (noise_init_bias, default 0.1) so the pre-activation is positive-biased and the
+            # ReLU starts LIVE: with the default (random, zero-ish-bias) Linear init ~1/3 of
+            # seeds had an all-negative pre-activation -> gate identically 0 -> relu'=0 -> the
+            # head received ZERO gradient and could never learn (measured across seeds). The
+            # gate being "on" at init is harmless because the actual forcing = noise_gain*g*eta
+            # and the noise_gain ramp (train.train) holds noise_gain at 0 until noise_start_step.
+            # noise_init_bias<=0 restores the dead-ReLU risk and is only for deliberate ablation.
+            self.sigma_net = nn.Linear(
+                in_features=2 * d_data, out_features=d_data, device=device
+            )
+            nn.init.constant_(self.sigma_net.bias, float(noise_init_bias))
+            self.names = self.names + [r"$\sigma$"]
 
     def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
         """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.
@@ -523,6 +559,29 @@ class Ouroboros(nn.Module):
         e_pre = self.env_net(env_out)
         e_pre = self._lowpass(e_pre, dt, lp_ms=self.env_lowpass_ms)
         return F.softplus(e_pre) / math.log(2)
+
+    def get_sigma(
+        self, x: torch.FloatTensor, dxdt: torch.FloatTensor, dt: float
+    ) -> Optional[torch.FloatTensor]:
+        """flow-gated noise gate g(t) = relu(sigma_net(sigma_mamba(x_in))), shape (B, L, 1),
+        or None when enable_noise_forcing is False. A parallel Mamba head reads the same
+        [x, x'] state as the drives; ReLU keeps the gate nonnegative. Unlike the envelope it
+        is deliberately NOT low-passed -- the gate is allowed to be sharp so it can track fast
+        onset/offset structure. Multiplies the OU noise eta in the momentum equation (see the
+        stochastic-Heun path in train.spectral_rollout); at init the noise_gain ramp holds the
+        term off regardless of g."""
+        if not self.enable_noise_forcing:
+            return None
+        dxdt = dxdt * (self.tau / dt)  # rescaled velocity; out-of-place (no caller mutation)
+        z = torch.cat([x, dxdt], dim=-1)
+        L = z.shape[1]
+        x_in = torch.cat([torch.flip(z, [1]), z], dim=1)
+        # Match the drive/envelope encoders' checkpointing policy (see get_funcs).
+        if self.checkpoint_encoder and torch.is_grad_enabled():
+            g_out = checkpoint(self.sigma_mamba, x_in, use_reentrant=False)[:, L:, :]
+        else:
+            g_out = self.sigma_mamba(x_in)[:, L:, :]
+        return F.relu(self.sigma_net(g_out))
 
     def integrate(
         self,
