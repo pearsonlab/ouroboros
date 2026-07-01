@@ -460,6 +460,16 @@ def integrate_poly_autonomous(
             xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to(dev)
             with torch.no_grad():
                 x_src = model.tract.apply(xt).detach().cpu().numpy().squeeze()
+        # Harmonic-plus-noise: add the additive filtered-noise branch OUTSIDE the tract, so the
+        # autonomous reconstruction matches training (harmonic + noise floor). Gated by noise_gain.
+        if getattr(model, "use_noise_branch", False) and noise_gain > 0:
+            from train.spectral_rollout import filtered_noise_branch
+            Hn = len(x_src)
+            gen = torch.Generator(device=dev); gen.manual_seed(int(seed))
+            with torch.no_grad():
+                nb = filtered_noise_branch(model, audio_t, dy_t.clone(), dt, Hn,
+                                           rng=gen).detach().cpu().numpy().squeeze()
+            x_src = x_src + noise_gain * np.asarray(nb, dtype=np.float64)[:len(x_src)]
         return x_src
 
     if use_learned_noise:
