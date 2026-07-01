@@ -76,6 +76,10 @@ def save_model(
         "env_lowpass_ms": getattr(model, "env_lowpass_ms", 20.0),
         "enable_noise_forcing": getattr(model, "enable_noise_forcing", False),
         "noise_tau_ms": getattr(model, "noise_tau_ms", 5.0),
+        "use_noise_branch": getattr(model, "use_noise_branch", False),
+        "noise_bands": getattr(model, "noise_bands", 65),
+        "noise_nfft": getattr(model, "noise_nfft", 512),
+        "noise_hop": getattr(model, "noise_hop", 128),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -156,6 +160,10 @@ def load_model(
             env_lowpass_ms=sd.get("env_lowpass_ms", 20.0),
             enable_noise_forcing=sd.get("enable_noise_forcing", False),
             noise_tau_ms=sd.get("noise_tau_ms", 5.0),
+            use_noise_branch=sd.get("use_noise_branch", False),
+            noise_bands=sd.get("noise_bands", 65),
+            noise_nfft=sd.get("noise_nfft", 512),
+            noise_hop=sd.get("noise_hop", 128),
         )
     except:
         print("no kernel in savefile!")
@@ -297,11 +305,12 @@ def train(
     # Hard dependency: the OU noise term can only be supervised in distribution by the
     # phase-discarding MRSTFT magnitude loss. A pointwise/time-domain loss would penalize
     # every noise realization for not matching the specific training draw, which is incoherent.
-    if getattr(model, "enable_noise_forcing", False) and loss_mode != "spectral_rollout":
+    if (getattr(model, "enable_noise_forcing", False) or getattr(model, "use_noise_branch", False)) \
+            and loss_mode != "spectral_rollout":
         raise ValueError(
-            "enable_noise_forcing requires loss_mode='spectral_rollout' (MRSTFT magnitude "
-            f"loss); got loss_mode={loss_mode!r}. The noise realization is not a pathwise "
-            "target and cannot be supervised by a pointwise objective."
+            "enable_noise_forcing / use_noise_branch require loss_mode='spectral_rollout' "
+            f"(MRSTFT magnitude loss); got loss_mode={loss_mode!r}. The noise realization is "
+            "random-phase and cannot be supervised by a pointwise objective."
         )
 
     train_losses, val_losses = [], []
@@ -416,7 +425,7 @@ def train(
     # Noise gate head (sigma_mamba + sigma_net). Frozen for the first freeze_noise_epochs
     # epochs; also the noise_gain ramp keeps the forcing off until noise_start_step.
     noise_params = []
-    for attr in ("sigma_mamba", "sigma_net"):
+    for attr in ("sigma_mamba", "sigma_net", "noisefilt_mamba", "noisefilt_net"):
         m = getattr(model, attr, None)
         if m is not None:
             noise_params.extend(list(m.parameters()))
@@ -518,10 +527,11 @@ def train(
                 else:
                     lam_env_t = lam_env
                     lam_env_log_t = lam_env_log
-                # Noise forcing gain ramp: held at 0 until noise_start_step (so the
-                # deterministic model settles first), then linearly 0 -> 1 over
-                # noise_warmup_steps. 0 when the model has no noise head.
-                if not getattr(model, "enable_noise_forcing", False):
+                # Noise gain ramp: held at 0 until noise_start_step (so the deterministic model
+                # settles first), then linearly 0 -> 1 over noise_warmup_steps. Gates BOTH the
+                # in-ODE OU forcing and the additive filtered-noise branch. 0 with no noise head.
+                if not (getattr(model, "enable_noise_forcing", False)
+                        or getattr(model, "use_noise_branch", False)):
                     noise_gain_t = 0.0
                 elif idx < noise_start_step:
                     noise_gain_t = 0.0
@@ -603,7 +613,7 @@ def train(
                 if lam_env_anchor > 0:
                     writer.add_scalar("Loss/env_anchor", env_anchor_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
-                if getattr(model, "enable_noise_forcing", False):
+                if getattr(model, "enable_noise_forcing", False) or getattr(model, "use_noise_branch", False):
                     writer.add_scalar("Train/noise_gain", float(noise_gain_t), idx)
                 # Weighted (contribution to total) -- directly comparable across components
                 writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)

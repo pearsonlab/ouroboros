@@ -627,6 +627,48 @@ def teacher_forced_rollout(
                      powers, H, float(noise_tau_samp))
 
 
+_NOISE_WIN_CACHE = {}
+
+
+def filtered_noise_branch(model, x, dxdt, dt, H, rng=None):
+    """DDSP-style additive filtered-noise source (harmonic-plus-noise mode).
+
+    white noise (reparameterized: sampled once, held fixed) -> STFT -> multiply by a per-frame
+    learned magnitude response (model.get_noise_filter, bands interpolated to the rFFT bins,
+    keeping the noise phase) -> iSTFT -> amplitude-modulate by the sigma gate g(t). Returns
+    (B, H) to be ADDED to the tract output. Differentiable in the noisefilt + sigma heads.
+    """
+    import torch.nn.functional as F
+    B = x.shape[0]
+    dev = x.device
+    n_fft = int(model.noise_nfft)
+    hop = int(model.noise_hop)
+    g = model.get_sigma(x, dxdt.clone(), dt)[:, :H, 0]            # (B, H) AM gate >= 0
+    filt = model.get_noise_filter(x, dxdt.clone(), dt)[:, :H, :]  # (B, H, bands) >= 0
+
+    key = (n_fft, dev, x.dtype)
+    win = _NOISE_WIN_CACHE.get(key)
+    if win is None:
+        win = torch.hann_window(n_fft, device=dev, dtype=x.dtype)
+        _NOISE_WIN_CACHE[key] = win
+
+    w = torch.randn(B, H, device=dev, dtype=x.dtype, generator=rng)         # white noise
+    W = torch.stft(w, n_fft, hop, window=win, return_complex=True, center=True)  # (B, Fbins, T)
+    Fbins, T = W.shape[-2], W.shape[-1]
+
+    # per-frame filter response: sample the per-timestep bands at frame centers, then
+    # interpolate the band axis up to the rFFT bin count.
+    idx = torch.clamp(torch.arange(T, device=dev) * hop, max=H - 1)
+    filt_fr = filt[:, idx, :]                                     # (B, T, bands)
+    bands = filt_fr.shape[-1]
+    filt_freq = F.interpolate(filt_fr.reshape(B * T, 1, bands), size=Fbins,
+                              mode="linear", align_corners=True).reshape(B, T, Fbins)
+    filt_freq = filt_freq.transpose(1, 2)                         # (B, Fbins, T)
+    Wf = W * filt_freq                                            # scale magnitude, keep phase
+    nf = torch.istft(Wf, n_fft, hop, window=win, length=H, center=True)  # (B, H)
+    return g * nf                                                 # sigma AM gate
+
+
 def spectral_rollout_step(
     model,
     x: torch.Tensor,        # (B, L, 1) target audio
@@ -750,6 +792,12 @@ def spectral_rollout_step(
         xg = e[:, :H, 0] * xg  # (B, H)
     if getattr(model, "use_tract", False):
         xg = model.tract.apply(xg[..., None])[..., 0]  # (B, H)
+
+    # Harmonic-plus-noise: add the parallel filtered-noise branch OUTSIDE the tract. The
+    # oscillator rollout above stayed fully deterministic (gate=None => RK4), so this is a
+    # clean additive source -- no ODE coupling, no collapse. noise_gain ramps/gates it in.
+    if getattr(model, "use_noise_branch", False) and noise_gain > 0:
+        xg = xg + noise_gain * filtered_noise_branch(model, x, dxdt, dt, H, rng=rng)
 
     # Backward gradient clip at the rolled-out audio: caps the spec loss's backward
     # contribution norm to SPEC_GRAD_MAX_NORM before it flows back into env_mamba's
