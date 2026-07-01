@@ -78,6 +78,13 @@ def _filter_configs_for_horizon(configs, H):
 _ROLLOUT_CACHE = {}
 _ROLLOUT_WARNED = set()
 
+# Clip the OU noise increment/state to +-NOISE_CLIP standard deviations. The OU has unit
+# stationary variance, so +-4 truncates a ~6e-5 tail -- negligible for the noise spectrum,
+# but it removes the rare Gaussian spikes that would otherwise kick the state past the
+# trained region. Paired with the in-substep kernel-input clamp (see the Heun drifts), this
+# keeps the high-order polynomial from overflowing fp32 -> NaN under the noise forcing.
+NOISE_CLIP = 4.0
+
 
 def _warn_once(key, msg):
     if key not in _ROLLOUT_WARNED:
@@ -139,11 +146,18 @@ def _heun_core_factory(H, powers):
         for k in range(H - 1):
             om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
             g_k = g_eff[:, k]
-            xi = dW[:, k]
+            xi = dW[:, k].clamp(-NOISE_CLIP, NOISE_CLIP)   # bound the noise increment
 
             def drift(xx, vv, ee):
-                xpw = xx.unsqueeze(1) ** powers
-                xvw = vv.unsqueeze(1) ** powers
+                # Clamp the kernel INPUT so the high-order polynomial can't overflow fp32 when a
+                # noise spike kicks the (unclamped) predictor state large -- the einsum would
+                # otherwise sum +inf/-inf -> NaN. Linear -om2*x -ga*v terms stay on the unclamped
+                # state to keep standard integrator semantics (mirrors the eval-side clamp in
+                # train.eval.integrate_poly_autonomous). Near-identity for in-range states.
+                xx_c = BX * torch.tanh(xx / BX)
+                vv_c = BXP * torch.tanh(vv / BXP)
+                xpw = xx_c.unsqueeze(1) ** powers
+                xvw = vv_c.unsqueeze(1) ** powers
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 # dx/ds = v ; dv/ds = -om2*x - ga*v - kernel + g_eff*eta ; deta/ds = -eta/tau_c
                 return vv, -om2k * xx - gak * vv - kern + g_k * ee, -ee / tau_c
@@ -157,7 +171,7 @@ def _heun_core_factory(H, powers):
             # corrector (trapezoidal drift; same noise increment)
             xc = xc + 0.5 * (ax + axt)
             xp = xp + 0.5 * (av + avt)
-            eta = eta + 0.5 * (ae + aet) + c2 * xi
+            eta = (eta + 0.5 * (ae + aet) + c2 * xi).clamp(-NOISE_CLIP, NOISE_CLIP)  # bound OU state
             xc = BX * torch.tanh(xc / BX)
             xp = BXP * torch.tanh(xp / BXP)
             xs.append(xc)
@@ -431,17 +445,23 @@ class _GraphedHeunStep:
         self.s_gxc, self.s_gxp, self.s_geta = z(B), z(B), z(B)
 
         def step(om2k, gak, w_k, xc, xp, eta, g_k):
+            xi = self.dW.clamp(-NOISE_CLIP, NOISE_CLIP)   # bound the noise increment (matches eager)
             def drift(xx, vv, ee):
-                xpw = xx.unsqueeze(1) ** powers
-                xvw = vv.unsqueeze(1) ** powers
+                # Clamp kernel input to prevent fp32 overflow under a noise spike; linear terms
+                # stay on the unclamped state. Identical to _heun_core_factory.drift so the eager
+                # and graphstep backends remain bit-for-bit equal (backend-parity test).
+                xx_c = BX * torch.tanh(xx / BX)
+                vv_c = BXP * torch.tanh(vv / BXP)
+                xpw = xx_c.unsqueeze(1) ** powers
+                xvw = vv_c.unsqueeze(1) ** powers
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 return vv, -om2k * xx - gak * vv - kern + g_k * ee, -ee / tau_c
             ax, av, ae = drift(xc, xp, eta)
-            xt = xc + ax; vt = xp + av; et = eta + ae + c2 * self.dW
+            xt = xc + ax; vt = xp + av; et = eta + ae + c2 * xi
             axt, avt, aet = drift(xt, vt, et)
             xo = xc + 0.5 * (ax + axt)
             vo = xp + 0.5 * (av + avt)
-            eo = eta + 0.5 * (ae + aet) + c2 * self.dW
+            eo = (eta + 0.5 * (ae + aet) + c2 * xi).clamp(-NOISE_CLIP, NOISE_CLIP)
             return BX * torch.tanh(xo / BX), BXP * torch.tanh(vo / BXP), eo
 
         # Warm up grad + no-grad paths on a side stream before capture (see _GraphedRK4Step).
