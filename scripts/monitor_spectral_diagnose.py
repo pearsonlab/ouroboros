@@ -570,7 +570,11 @@ def run_autonomy_on_checkpoint(ckpt_path, step_override=None, log_dir=None, labe
     # cap. SIGCONT in finally so a crash inside subprocess.run can't leave the trainer
     # frozen. Cost: ~80s of paused training per scored checkpoint (= one epoch save), or
     # roughly 5% wall-clock on a 30-min-epoch run.
-    trainer_pid = _trainer_gpu_pid()
+    #   CPU scoring mode: skip the pause entirely -- scoring never touches the GPU, so there's
+    #   no reason to freeze GPU training. The sidecar then runs fully decoupled (CPU scoring
+    #   alongside uninterrupted training), at the cost of some CPU contention during a score.
+    _cpu_mode = os.environ.get("MONITOR_DEVICE", "cuda").lower() == "cpu"
+    trainer_pid = None if _cpu_mode else _trainer_gpu_pid()
     if trainer_pid is not None:
         try:
             os.kill(trainer_pid, signal.SIGSTOP)
