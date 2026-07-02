@@ -77,9 +77,7 @@ def save_model(
         "enable_noise_forcing": getattr(model, "enable_noise_forcing", False),
         "noise_tau_ms": getattr(model, "noise_tau_ms", 5.0),
         "use_noise_branch": getattr(model, "use_noise_branch", False),
-        "noise_bands": getattr(model, "noise_bands", 65),
-        "noise_nfft": getattr(model, "noise_nfft", 512),
-        "noise_hop": getattr(model, "noise_hop", 128),
+        "noise_tract_n_sec": getattr(model, "noise_tract_n_sec", 3),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -161,9 +159,7 @@ def load_model(
             enable_noise_forcing=sd.get("enable_noise_forcing", False),
             noise_tau_ms=sd.get("noise_tau_ms", 5.0),
             use_noise_branch=sd.get("use_noise_branch", False),
-            noise_bands=sd.get("noise_bands", 65),
-            noise_nfft=sd.get("noise_nfft", 512),
-            noise_hop=sd.get("noise_hop", 128),
+            noise_tract_n_sec=sd.get("noise_tract_n_sec", 3),
         )
     except:
         print("no kernel in savefile!")
@@ -425,7 +421,7 @@ def train(
     # Noise gate head (sigma_mamba + sigma_net). Frozen for the first freeze_noise_epochs
     # epochs; also the noise_gain ramp keeps the forcing off until noise_start_step.
     noise_params = []
-    for attr in ("sigma_mamba", "sigma_net", "noisefilt_mamba", "noisefilt_net"):
+    for attr in ("sigma_mamba", "sigma_net", "noise_tract"):
         m = getattr(model, attr, None)
         if m is not None:
             noise_params.extend(list(m.parameters()))

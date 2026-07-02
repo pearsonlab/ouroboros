@@ -365,16 +365,14 @@ def main():
     # harmonic-plus-noise: additive filtered-noise branch (alternative to --enable-noise-forcing)
     p.add_argument("--use-noise-branch", action=argparse.BooleanOptionalAction, default=False,
                    help="Harmonic-plus-noise: keep the oscillator PURELY deterministic (RK4) and add, "
-                        "OUTSIDE the tract, a parallel filtered-noise source -- white noise, AM'd by the "
-                        "sigma gate g(t), through a learned time-varying filter (per-frame magnitude "
-                        "response from a Mamba head). DDSP-style; the two channels can't fight (no ODE "
-                        "coupling, no collapse, no Heun). Gated by the same --noise-start-step ramp. "
-                        "Requires the spectral loss. Mutually exclusive with --enable-noise-forcing.")
-    p.add_argument("--noise-bands", type=int, default=65,
-                   help="Number of frequency bands in the noise branch's per-frame magnitude filter "
-                        "(interpolated up to the rFFT bins at synthesis).")
-    p.add_argument("--noise-nfft", type=int, default=512, help="STFT n_fft for the noise branch filter.")
-    p.add_argument("--noise-hop", type=int, default=128, help="STFT hop for the noise branch filter.")
+                        "OUTSIDE the tract, a parallel noise source -- white noise through a LOW-ORDER "
+                        "rational (pole/zero) filter (--noise-tract-n-sec sections, same form as the "
+                        "vocal tract), amplitude-modulated by the sigma gate g(t). The low filter order "
+                        "can shape a broadband envelope but can't make sharp harmonic peaks, forcing the "
+                        "oscillator to carry the tonal structure. Requires the spectral loss.")
+    p.add_argument("--noise-tract-n-sec", type=int, default=3,
+                   help="Number of 2nd-order pole/zero sections in the noise branch's rational filter "
+                        "(order ~2*n_sec num/den). Low (2-3) keeps it too coarse to synthesize harmonics.")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -517,8 +515,7 @@ def main():
         freeze_envelope_epochs=args.freeze_envelope_epochs,
         enable_noise_forcing=args.enable_noise_forcing,
         noise_tau_ms=args.noise_tau_ms, noise_init_bias=args.noise_init_bias,
-        use_noise_branch=args.use_noise_branch, noise_bands=args.noise_bands,
-        noise_nfft=args.noise_nfft, noise_hop=args.noise_hop,
+        use_noise_branch=args.use_noise_branch, noise_tract_n_sec=args.noise_tract_n_sec,
         noise_start_step=args.noise_start_step,
         noise_warmup_steps=args.noise_warmup_steps,
         freeze_noise_epochs=args.freeze_noise_epochs,
@@ -575,9 +572,7 @@ def main():
         "noise_tau_ms": float(args.noise_tau_ms),
         "noise_init_bias": float(args.noise_init_bias),
         "use_noise_branch": bool(args.use_noise_branch),
-        "noise_bands": int(args.noise_bands),
-        "noise_nfft": int(args.noise_nfft),
-        "noise_hop": int(args.noise_hop),
+        "noise_tract_n_sec": int(args.noise_tract_n_sec),
         "noise_start_step": int(args.noise_start_step),
         "noise_warmup_steps": int(args.noise_warmup_steps),
         "freeze_noise_epochs": int(args.freeze_noise_epochs),

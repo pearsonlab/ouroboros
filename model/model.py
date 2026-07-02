@@ -167,9 +167,7 @@ class Ouroboros(nn.Module):
         noise_tau_ms: float = 5.0,
         noise_init_bias: float = 0.1,
         use_noise_branch: bool = False,
-        noise_bands: int = 65,
-        noise_nfft: int = 512,
-        noise_hop: int = 128,
+        noise_tract_n_sec: int = 3,
     ):
 
         super().__init__()
@@ -346,26 +344,14 @@ class Ouroboros(nn.Module):
             self.names = self.names + [r"$\sigma$"]
 
         if use_noise_branch:
-            self.noise_bands = noise_bands
-            self.noise_nfft = noise_nfft
-            self.noise_hop = noise_hop
-            # Time-varying noise filter: a Mamba head emits a per-timestep magnitude response
-            # over `noise_bands` frequency bands (interpolated up to the rFFT bins at synthesis).
-            # softplus -> nonnegative gain; a negative bias init makes the filter start quiet so
-            # the noise branch fades in as it learns, letting the harmonic settle first.
-            nfConfig = MambaConfig(
-                d_model=2 * d_data,
-                n_layers=n_layers,
-                d_state=d_state,
-                d_conv=d_conv,
-                expand_factor=expand_factor,
-            )
-            self.noisefilt_mamba = Mamba(nfConfig).to(device)
-            self.noisefilt_net = nn.Linear(
-                in_features=2 * d_data, out_features=noise_bands, device=device
-            )
-            nn.init.zeros_(self.noisefilt_net.weight)
-            nn.init.constant_(self.noisefilt_net.bias, -4.0)  # softplus(-4)~0.018 -> quiet start
+            self.noise_tract_n_sec = noise_tract_n_sec
+            # Low-order rational (pole/zero) filter for the noise branch -- SAME parameterization
+            # as the vocal Tract (n_sec second-order pole/zero sections, identity at init). Kept
+            # deliberately LOW order so it can shape a broadband spectral envelope but CANNOT
+            # synthesize sharp harmonic peaks -- that forces the oscillator to carry the tonal /
+            # harmonic structure instead of the noise modelling everything. Applied to white noise;
+            # the sigma gate g(t) provides the time-varying amplitude (see filtered_noise_branch).
+            self.noise_tract = Tract(device=device, n_sec=noise_tract_n_sec)
             self.names = self.names + [r"$H_{noise}$"]
 
     def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
@@ -621,26 +607,6 @@ class Ouroboros(nn.Module):
         else:
             g_out = self.sigma_mamba(x_in)[:, L:, :]
         return F.relu(self.sigma_net(g_out))
-
-    def get_noise_filter(
-        self, x: torch.FloatTensor, dxdt: torch.FloatTensor, dt: float
-    ) -> Optional[torch.FloatTensor]:
-        """Per-timestep magnitude response of the additive noise branch's time-varying filter,
-        shape (B, L, noise_bands), nonnegative (softplus). None when use_noise_branch is False.
-        A Mamba head reads the same [x, x'] state as the drives; the response is interpolated to
-        the rFFT bins and multiplies the (sigma-gated) white-noise STFT magnitude at synthesis
-        (see train.spectral_rollout.filtered_noise_branch)."""
-        if not getattr(self, "use_noise_branch", False):
-            return None
-        dxdt = dxdt * (self.tau / dt)
-        z = torch.cat([x, dxdt], dim=-1)
-        L = z.shape[1]
-        x_in = torch.cat([torch.flip(z, [1]), z], dim=1)
-        if self.checkpoint_encoder and torch.is_grad_enabled():
-            nf_out = checkpoint(self.noisefilt_mamba, x_in, use_reentrant=False)[:, L:, :]
-        else:
-            nf_out = self.noisefilt_mamba(x_in)[:, L:, :]
-        return F.softplus(self.noisefilt_net(nf_out))   # (B, L, noise_bands), >= 0
 
     def integrate(
         self,

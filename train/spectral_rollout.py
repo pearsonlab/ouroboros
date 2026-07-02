@@ -627,46 +627,21 @@ def teacher_forced_rollout(
                      powers, H, float(noise_tau_samp))
 
 
-_NOISE_WIN_CACHE = {}
-
-
 def filtered_noise_branch(model, x, dxdt, dt, H, rng=None):
-    """DDSP-style additive filtered-noise source (harmonic-plus-noise mode).
+    """Additive noise source (harmonic-plus-noise mode).
 
-    white noise (reparameterized: sampled once, held fixed) -> STFT -> multiply by a per-frame
-    learned magnitude response (model.get_noise_filter, bands interpolated to the rFFT bins,
-    keeping the noise phase) -> iSTFT -> amplitude-modulate by the sigma gate g(t). Returns
-    (B, H) to be ADDED to the tract output. Differentiable in the noisefilt + sigma heads.
+    white noise (reparameterized: sampled once, held fixed) -> model.noise_tract (a LOW-ORDER
+    rational pole/zero filter, same parameterization as the vocal tract, too coarse to synthesize
+    sharp harmonic peaks) -> amplitude-modulate by the sigma gate g(t). Returns (B, H) to be ADDED
+    to the tract output. Differentiable in the sigma head + noise_tract; the low filter order is
+    what forces the oscillator (not the noise) to carry the tonal/harmonic structure.
     """
-    import torch.nn.functional as F
     B = x.shape[0]
     dev = x.device
-    n_fft = int(model.noise_nfft)
-    hop = int(model.noise_hop)
-    g = model.get_sigma(x, dxdt.clone(), dt)[:, :H, 0]            # (B, H) AM gate >= 0
-    filt = model.get_noise_filter(x, dxdt.clone(), dt)[:, :H, :]  # (B, H, bands) >= 0
-
-    key = (n_fft, dev, x.dtype)
-    win = _NOISE_WIN_CACHE.get(key)
-    if win is None:
-        win = torch.hann_window(n_fft, device=dev, dtype=x.dtype)
-        _NOISE_WIN_CACHE[key] = win
-
-    w = torch.randn(B, H, device=dev, dtype=x.dtype, generator=rng)         # white noise
-    W = torch.stft(w, n_fft, hop, window=win, return_complex=True, center=True)  # (B, Fbins, T)
-    Fbins, T = W.shape[-2], W.shape[-1]
-
-    # per-frame filter response: sample the per-timestep bands at frame centers, then
-    # interpolate the band axis up to the rFFT bin count.
-    idx = torch.clamp(torch.arange(T, device=dev) * hop, max=H - 1)
-    filt_fr = filt[:, idx, :]                                     # (B, T, bands)
-    bands = filt_fr.shape[-1]
-    filt_freq = F.interpolate(filt_fr.reshape(B * T, 1, bands), size=Fbins,
-                              mode="linear", align_corners=True).reshape(B, T, Fbins)
-    filt_freq = filt_freq.transpose(1, 2)                         # (B, Fbins, T)
-    Wf = W * filt_freq                                            # scale magnitude, keep phase
-    nf = torch.istft(Wf, n_fft, hop, window=win, length=H, center=True)  # (B, H)
-    return g * nf                                                 # sigma AM gate
+    g = model.get_sigma(x, dxdt.clone(), dt)[:, :H, 0]                 # (B, H) AM gate >= 0
+    w = torch.randn(B, H, device=dev, dtype=x.dtype, generator=rng)    # white noise
+    colored = model.noise_tract.apply(w[..., None])[..., 0]           # (B, H) low-order rational
+    return g * colored                                                # sigma AM gate
 
 
 def spectral_rollout_step(

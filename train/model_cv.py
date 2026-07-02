@@ -300,9 +300,7 @@ def model_seed_cv_spectral(
     noise_warmup_steps: int = 0,
     freeze_noise_epochs: int = 0,
     use_noise_branch: bool = False,
-    noise_bands: int = 65,
-    noise_nfft: int = 512,
-    noise_hop: int = 128,
+    noise_tract_n_sec: int = 3,
     # tract.K_raw initial value (None = leave at 0 → K = softplus(0) = log(2)).
     # When set, the entry script picks this from a quick RMS scan of the training
     # audio so K = softplus(K_raw) matches target audio scale from epoch 0.
@@ -354,8 +352,8 @@ def model_seed_cv_spectral(
                           use_envelope=use_envelope, env_lowpass_ms=env_lowpass_ms,
                           enable_noise_forcing=enable_noise_forcing,
                           noise_tau_ms=noise_tau_ms, noise_init_bias=noise_init_bias,
-                          use_noise_branch=use_noise_branch, noise_bands=noise_bands,
-                          noise_nfft=noise_nfft, noise_hop=noise_hop)
+                          use_noise_branch=use_noise_branch,
+                          noise_tract_n_sec=noise_tract_n_sec)
         # K_raw_init: set the tract gain so audio amplitude starts near target RMS
         # at epoch 0, instead of relying on it to descend from K_raw=0 during training.
         # Only applies on fresh start; resume restores the trained value.
