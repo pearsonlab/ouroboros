@@ -437,10 +437,10 @@ def integrate_poly_autonomous(
     # (use_learned_noise); noise_tau_c is the OU correlation time in samples.
     noise_on = getattr(model, "enable_noise_forcing", False)
     g_gate = None
-    if noise_on:
-        with torch.no_grad():
-            g_gate = model.get_sigma(audio_t, dy_t.clone(), dt).detach().cpu().numpy().squeeze()
-        g_gate = np.atleast_1d(g_gate).astype(np.float64)
+    with torch.no_grad():
+        _g = model.get_sigma(audio_t, dy_t.clone(), dt)   # non-None iff the sigma head exists
+    if _g is not None:                                    # OU forcing OR additive noise branch
+        g_gate = np.atleast_1d(_g.detach().cpu().numpy().squeeze()).astype(np.float64)
     use_learned_noise = noise_on and noise_gain > 0
     if use_learned_noise:
         g_seq = g_gate
@@ -708,7 +708,8 @@ def autonomy_score(
         if return_trajectories:
             env_n = env[:n] if env is not None else np.ones(n)
             src_n = src[:n] if src is not None else auto_n.copy()
-            drives_n = {k: v[:n].copy() for k, v in drives.items()} if drives is not None else None
+            drives_n = ({k: (v[:n].copy() if v is not None else None) for k, v in drives.items()}
+                        if drives is not None else None)
             trajectories.append((tgt_n.copy(), auto_n.copy(), env_n.copy(),
                                  src_n.copy(), drives_n))
         if (not np.isfinite(auto_n).all()) or np.nanstd(auto_n) < 1e-9:
