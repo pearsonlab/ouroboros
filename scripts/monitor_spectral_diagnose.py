@@ -449,21 +449,30 @@ try:
             ax_d = axes[drives_row, 0]
             ax_d2 = axes[drives_row, 1]
             ms_axis = np.arange(len(drives['omega'])) / SR * 1000
-            # Left panel: gamma, alpha share an axis; omega^2 on twin
-            ax_d.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
-            ax_d.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
-            # sigma = the learned noise gate g(t)=ReLU(sigma head); same scale as gamma/alpha.
-            # None for models without the noise head (drives dict carries it only when present).
-            if drives.get('sigma') is not None:
-                ax_d.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
-            ax_d.set_ylabel(r'$\gamma$, $\alpha$, $g$', color='black')
-            ax_d.set_xlim([0, _max_ms])
-            ax_dt = ax_d.twinx()
-            ax_dt.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
-                       label=r'$\omega^2$', alpha=0.7)
-            ax_dt.set_ylabel(r'$\omega^2$', color='tab:blue')
-            ax_dt.tick_params(axis='y', labelcolor='tab:blue')
-            ax_d.legend(loc='upper left', fontsize=7, framealpha=0.6)
+            # Left panel: for a harmonic-plus-noise model, show the FILTERED-NOISE waveform (the
+            # term added to the tract output to produce the final waveform), y-locked to the
+            # TARGET scale like the other left-column waveforms. The drives are still shown on the
+            # right panel. For models without the noise branch, fall back to the drives here.
+            if drives.get('noise') is not None:
+                nz = drives['noise']
+                t_ms_n = np.arange(len(nz)) / SR * 1000
+                ax_d.plot(t_ms_n, nz, color='tab:gray', lw=0.6)
+                ax_d.set_ylabel('filtered noise')
+                ax_d.set_xlim([0, _max_ms])
+                ax_d.set_ylim(wf_ylim)          # lock to target scale (as with the other left-col waveforms)
+            else:
+                ax_d.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
+                ax_d.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
+                if drives.get('sigma') is not None:
+                    ax_d.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
+                ax_d.set_ylabel(r'$\gamma$, $\alpha$, $g$', color='black')
+                ax_d.set_xlim([0, _max_ms])
+                ax_dt = ax_d.twinx()
+                ax_dt.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
+                           label=r'$\omega^2$', alpha=0.7)
+                ax_dt.set_ylabel(r'$\omega^2$', color='tab:blue')
+                ax_dt.tick_params(axis='y', labelcolor='tab:blue')
+                ax_d.legend(loc='upper left', fontsize=7, framealpha=0.6)
             # Right panel: same data, just on the wider 2-column width for readability.
             ax_d2.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
             ax_d2.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
