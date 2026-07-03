@@ -473,18 +473,25 @@ try:
                 ax_dt.set_ylabel(r'$\omega^2$', color='tab:blue')
                 ax_dt.tick_params(axis='y', labelcolor='tab:blue')
                 ax_d.legend(loc='upper left', fontsize=7, framealpha=0.6)
-            # Right panel: same data, just on the wider 2-column width for readability.
+            # Right panel: gamma + alpha on the left axis, omega^2 on a twin, and sigma on its
+            # OWN twin (offset spine). sigma (the noise gate g) is ~1000x smaller than gamma, so
+            # sharing gamma's axis squashes it to a flat line -- its own axis makes its structure
+            # visible.
             ax_d2.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
             ax_d2.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
-            if drives.get('sigma') is not None:
-                ax_d2.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
             ax_d2.set_xlim([0, _max_ms])
-            ax_d2.set_ylabel(r'$\gamma$, $\alpha$, $g$')
+            ax_d2.set_ylabel(r'$\gamma$, $\alpha$')
             ax_d2t = ax_d2.twinx()
             ax_d2t.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
                         label=r'$\omega^2$', alpha=0.7)
             ax_d2t.set_ylabel(r'$\omega^2$', color='tab:blue')
             ax_d2t.tick_params(axis='y', labelcolor='tab:blue')
+            if drives.get('sigma') is not None:
+                ax_d2s = ax_d2.twinx()
+                ax_d2s.spines['right'].set_position(('outward', 44))  # offset so it clears omega^2's axis
+                ax_d2s.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
+                ax_d2s.set_ylabel(r'$g=\sigma$', color='tab:green')
+                ax_d2s.tick_params(axis='y', labelcolor='tab:green')
             ax_d2.legend(loc='upper left', fontsize=7, framealpha=0.6)
         bottom = n_rows - 1
         axes[bottom, 0].set_xlabel('ms'); axes[bottom, 1].set_xlabel('ms')
