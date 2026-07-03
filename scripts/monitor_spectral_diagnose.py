@@ -351,7 +351,10 @@ try:
     # inflight ckpts which don't have a clean epoch number — the sidecar reads the
     # trainer's latest Loss/spec step and passes it here so the Val/ curves align).
     _step_override = os.environ.get("MONITOR_STEP_OVERRIDE")
-    step = int(_step_override) if _step_override else (ep + 1) * bpe - 1
+    # step_override is ckpt_epoch*bpe (start of epoch); add bpe-1 to land on the epoch's LAST
+    # batch index = (ckpt_epoch+1)*bpe-1, matching the noise-gain calc above and the trainer's
+    # end-of-epoch scalar step. (No override -> same formula from the parsed ep.)
+    step = (int(_step_override) + bpe - 1) if _step_override else (ep + 1) * bpe - 1
     # Val metrics (cold-start, rescale=False -- the same numbers the seed-CV uses).
     # Putting them on the same x-axis as the train scalars lets you compare e.g.
     # LossW/logm directly to Val/signed_amp_mean.
