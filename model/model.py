@@ -176,6 +176,7 @@ class Ouroboros(nn.Module):
         noise_init_bias: float = 0.1,
         use_noise_branch: bool = False,
         noise_tract_n_sec: int = 3,
+        sigma_lowpass_ms: float = 0.0,
     ):
 
         super().__init__()
@@ -317,6 +318,10 @@ class Ouroboros(nn.Module):
         # the deterministic poly model and adds no parameters.
         self.enable_noise_forcing = enable_noise_forcing
         self.noise_tau_ms = noise_tau_ms
+        # Optional low-pass on the sigma gate g(t) (0 = off, the default -- g stays sharp). When
+        # >0, get_sigma smooths g at this timescale (same zero-phase Gaussian as the drives), so
+        # the noise amplitude envelope can't snap abruptly.
+        self.sigma_lowpass_ms = sigma_lowpass_ms
         # ---- harmonic-plus-noise: additive filtered-noise branch (opt-in) ----
         # An alternative to the in-ODE OU forcing: keep the oscillator PURELY deterministic
         # (RK4) and add, OUTSIDE the tract, a parallel noise source -- white noise, amplitude-
@@ -614,7 +619,12 @@ class Ouroboros(nn.Module):
             g_out = checkpoint(self.sigma_mamba, x_in, use_reentrant=False)[:, L:, :]
         else:
             g_out = self.sigma_mamba(x_in)[:, L:, :]
-        return F.relu(self.sigma_net(g_out))
+        g = F.relu(self.sigma_net(g_out))
+        # Optional smoothing (opt-in via sigma_lowpass_ms). The Gaussian kernel has all-positive,
+        # unit-sum weights, so low-passing a nonnegative gate keeps it nonnegative.
+        if getattr(self, "sigma_lowpass_ms", 0.0) > 0:
+            g = self._lowpass(g, dt, lp_ms=self.sigma_lowpass_ms)
+        return g
 
     def integrate(
         self,

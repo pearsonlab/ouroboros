@@ -373,6 +373,10 @@ def main():
     p.add_argument("--noise-tract-n-sec", type=int, default=3,
                    help="Number of 2nd-order pole/zero sections in the noise branch's rational filter "
                         "(order ~2*n_sec num/den). Low (2-3) keeps it too coarse to synthesize harmonics.")
+    p.add_argument("--sigma-lowpass-ms", type=float, default=0.0,
+                   help="Optional low-pass timescale (ms) for the sigma noise gate g(t); 0 = off (sharp "
+                        "gate, default). >0 smooths the noise amplitude envelope (same zero-phase Gaussian "
+                        "as the drives) so it can't snap abruptly. ~1-2 ms is a light smoothing.")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -516,6 +520,7 @@ def main():
         enable_noise_forcing=args.enable_noise_forcing,
         noise_tau_ms=args.noise_tau_ms, noise_init_bias=args.noise_init_bias,
         use_noise_branch=args.use_noise_branch, noise_tract_n_sec=args.noise_tract_n_sec,
+        sigma_lowpass_ms=args.sigma_lowpass_ms,
         noise_start_step=args.noise_start_step,
         noise_warmup_steps=args.noise_warmup_steps,
         freeze_noise_epochs=args.freeze_noise_epochs,
@@ -573,6 +578,7 @@ def main():
         "noise_init_bias": float(args.noise_init_bias),
         "use_noise_branch": bool(args.use_noise_branch),
         "noise_tract_n_sec": int(args.noise_tract_n_sec),
+        "sigma_lowpass_ms": float(args.sigma_lowpass_ms),
         "noise_start_step": int(args.noise_start_step),
         "noise_warmup_steps": int(args.noise_warmup_steps),
         "freeze_noise_epochs": int(args.freeze_noise_epochs),

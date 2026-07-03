@@ -78,6 +78,7 @@ def save_model(
         "noise_tau_ms": getattr(model, "noise_tau_ms", 5.0),
         "use_noise_branch": getattr(model, "use_noise_branch", False),
         "noise_tract_n_sec": getattr(model, "noise_tract_n_sec", 3),
+        "sigma_lowpass_ms": getattr(model, "sigma_lowpass_ms", 0.0),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -160,6 +161,7 @@ def load_model(
             noise_tau_ms=sd.get("noise_tau_ms", 5.0),
             use_noise_branch=sd.get("use_noise_branch", False),
             noise_tract_n_sec=sd.get("noise_tract_n_sec", 3),
+            sigma_lowpass_ms=sd.get("sigma_lowpass_ms", 0.0),
         )
     except:
         print("no kernel in savefile!")
