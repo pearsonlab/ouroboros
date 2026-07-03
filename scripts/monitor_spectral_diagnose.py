@@ -336,10 +336,10 @@ try:
     bpe_env = os.environ.get('MONITOR_BPE')
     bpe = int(bpe_env) if (bpe_env and bpe_env.isdigit()) else 1
     # epoch -> step alignment: trainer's writer.add_scalar uses idx = global batch index,
-    # so the audio/figure step at end-of-epoch N should be (N + 1) * bpe - 1. Resume runs
-    # complicate this (idx resets to 0 even though epoch counter starts at start_epoch);
-    # for now use epoch_in_loop * bpe which is good enough for x-axis alignment when the
-    # run is from-scratch. Resumed runs will land at the resumed-epoch index in TB.
+    # so checkpoint_N (saved at the END of epoch N) sits at global step (N + 1) * bpe - 1.
+    # Use that so the audio/figure/Val points land exactly on the train-loss curve for the
+    # same model. (Resume runs complicate this -- idx resets to 0 even though the epoch
+    # counter starts at start_epoch -- but from-scratch runs are exact.)
     # MONITOR_LOG_DIR overrides where Val/* scalars + spectrograms are written. Needed
     # when the sidecar stages an inflight save into a temp dir (ckpt_dir then points at
     # the temp dir that gets cleaned up after subprocess exit, taking the SummaryWriter
@@ -351,7 +351,7 @@ try:
     # inflight ckpts which don't have a clean epoch number — the sidecar reads the
     # trainer's latest Loss/spec step and passes it here so the Val/ curves align).
     _step_override = os.environ.get("MONITOR_STEP_OVERRIDE")
-    step = int(_step_override) if _step_override else ep * bpe
+    step = int(_step_override) if _step_override else (ep + 1) * bpe - 1
     # Val metrics (cold-start, rescale=False -- the same numbers the seed-CV uses).
     # Putting them on the same x-axis as the train scalars lets you compare e.g.
     # LossW/logm directly to Val/signed_amp_mean.
