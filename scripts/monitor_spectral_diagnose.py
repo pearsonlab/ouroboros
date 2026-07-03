@@ -107,9 +107,17 @@ def detect_batches_per_epoch(fallback: int = 750) -> int:
     try:
         run_dir = os.path.dirname(SEED_DIR.rstrip("/"))
         parent = os.path.dirname(run_dir)
-        log_path = os.path.join(parent, os.path.basename(run_dir) + "_train.log")
-        if os.path.exists(log_path):
-            import re
+        # The launch script writes <run_dir>/train.log; older runs used a sibling
+        # <parent>/<runname>_train.log. Try both.
+        candidates = [
+            os.path.join(run_dir, "train.log"),
+            os.path.join(parent, os.path.basename(run_dir) + "_train.log"),
+        ]
+        import re
+        for log_path in candidates:
+            if not os.path.exists(log_path):
+                continue
+            found = False
             with open(log_path) as f:
                 # the line is small + near the top; scan up to first ~200 lines.
                 for i, line in enumerate(f):
@@ -118,7 +126,10 @@ def detect_batches_per_epoch(fallback: int = 750) -> int:
                     m = re.search(r"batches_per_epoch=(\d+)", line)
                     if m:
                         bpe = int(m.group(1))
+                        found = True
                         break
+            if found:
+                break
     except Exception:
         pass
     _BPE_CACHE[SEED_DIR] = bpe
