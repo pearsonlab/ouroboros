@@ -60,6 +60,7 @@ class Tract(nn.Module):
         tau_init: float = 10.0,
         pad: int = 128,
         r_max: float = 0.99,
+        use_comb: bool = True,
     ):
         super().__init__()
         self.device = device
@@ -91,10 +92,15 @@ class Tract(nn.Module):
         # picks K_raw = softplus_inv(target_K) so the absolute gain is correct.
         self.K_raw = nn.Parameter(torch.zeros((), device=device))
         # trachea comb: reflection r = r_max*tanh(r_raw) (init 0 -> no comb); delay tau samples.
-        self.r_raw = nn.Parameter(torch.zeros((), device=device))
-        self.tau_raw = nn.Parameter(
-            torch.tensor(math.log(math.expm1(tau_init)), device=device)
-        )
+        # Disabled (use_comb=False) for the noise branch: a comb imposes periodic spectral teeth,
+        # exactly the harmonic-like structure the low-order noise filter must NOT be able to make
+        # -- without it the noise filter is a pure broadband pole/zero envelope.
+        self.use_comb = use_comb
+        if use_comb:
+            self.r_raw = nn.Parameter(torch.zeros((), device=device))
+            self.tau_raw = nn.Parameter(
+                torch.tensor(math.log(math.expm1(tau_init)), device=device)
+            )
 
     def _transfer(self, n: int, device, dtype) -> torch.Tensor:
         """complex rational transfer function H(f) on the rFFT grid of a length-n signal."""
@@ -114,6 +120,8 @@ class Tract(nn.Module):
             den = jw2 + (2 * zp[k] * wp[k]) * jw + wp[k] ** 2
             H = H * (num / den)
 
+        if not self.use_comb:
+            return H
         r = self.r_max * torch.tanh(self.r_raw)
         tau = F.softplus(self.tau_raw)
         ang = -2 * math.pi * (kf / n) * tau
@@ -351,7 +359,7 @@ class Ouroboros(nn.Module):
             # synthesize sharp harmonic peaks -- that forces the oscillator to carry the tonal /
             # harmonic structure instead of the noise modelling everything. Applied to white noise;
             # the sigma gate g(t) provides the time-varying amplitude (see filtered_noise_branch).
-            self.noise_tract = Tract(device=device, n_sec=noise_tract_n_sec)
+            self.noise_tract = Tract(device=device, n_sec=noise_tract_n_sec, use_comb=False)
             self.names = self.names + [r"$H_{noise}$"]
 
     def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
