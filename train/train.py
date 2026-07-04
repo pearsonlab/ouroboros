@@ -69,6 +69,7 @@ def save_model(
         # parameterization tag for forward-compat (always "poly" on this branch)
         "parameterization": getattr(model, "parameterization", "poly"),
         "drive_lowpass_ms": getattr(model, "drive_lowpass_ms", 0.0),
+        "alpha_lowpass_ms": getattr(model, "alpha_lowpass_ms", 0.0),
         "keep_const": getattr(model, "keep_const", False),
         "use_tract": getattr(model, "use_tract", False),
         "tract_n_sec": getattr(model, "tract_n_sec", 3),
@@ -152,6 +153,7 @@ def load_model(
             kernel=kernel,
             device=device,
             drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
+            alpha_lowpass_ms=sd.get("alpha_lowpass_ms", 0.0),
             keep_const=sd.get("keep_const", False),
             use_tract=sd.get("use_tract", False),
             tract_n_sec=sd.get("tract_n_sec", 3),

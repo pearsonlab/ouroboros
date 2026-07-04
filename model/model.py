@@ -160,6 +160,7 @@ class Ouroboros(nn.Module):
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
         drive_lowpass_ms: float = 0.0,
+        alpha_lowpass_ms: float = 0.0,
         keep_const: bool = False,
         osc_init: bool = False,
         checkpoint_encoder: bool = False,
@@ -225,6 +226,11 @@ class Ouroboros(nn.Module):
         # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Keeps the
         # drives from re-encoding the audio carrier and improves autonomous behavior.
         self.drive_lowpass_ms = drive_lowpass_ms
+        # Optional EXTRA low-pass on alpha (the constant kernel term [0,0] = pressure-analog DC
+        # drive). 0 = off (alpha smoothed at drive_lowpass_ms like the rest). >0 smooths alpha at
+        # this longer timescale so the driving pressure varies slowly (syllable-scale), matching the
+        # physical syringeal pressure wave.
+        self.alpha_lowpass_ms = alpha_lowpass_ms
         # if True, gradient-checkpoint the three Mamba drive encoders in get_funcs: their
         # activations over the doubled-length sequence (x_in is 2L) dominate training memory
         # (~6.9 GB at B=64, vs ~60 MiB for the RK4 rollout), so recomputing them in backward
@@ -387,10 +393,16 @@ class Ouroboros(nn.Module):
         return F.conv1d(xc, k, groups=C).transpose(1, 2)
 
     def _lowpass_weights(self, weights: torch.FloatTensor, dt: float) -> torch.FloatTensor:
-        """low-pass the polynomial kernel weights (B, L, P, P) along time."""
+        """low-pass the polynomial kernel weights (B, L, P, P) along time. The constant term
+        (alpha = [0,0], the pressure-analog DC drive) optionally gets an EXTRA, longer low-pass
+        (alpha_lowpass_ms) so it varies on a slow syllable-scale timescale."""
         B, L, P, P2 = weights.shape
-        w = self._lowpass(weights.reshape(B, L, P * P2), dt)
-        return w.reshape(B, L, P, P2)
+        w = self._lowpass(weights.reshape(B, L, P * P2), dt).reshape(B, L, P, P2)
+        if getattr(self, "alpha_lowpass_ms", 0.0) > 0:
+            a = self._lowpass(w[:, :, 0, 0:1], dt, lp_ms=self.alpha_lowpass_ms)  # (B,L,1)
+            w = w.clone()
+            w[:, :, 0, 0] = a[:, :, 0]
+        return w
 
     def forward(
         self,

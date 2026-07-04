@@ -208,6 +208,10 @@ def main():
     p.add_argument("--d-conv", type=int, default=4)
     p.add_argument("--expand-factor", type=int, default=10)
     p.add_argument("--drive-lowpass-ms", type=float, default=1.0)
+    p.add_argument("--alpha-lowpass-ms", type=float, default=0.0,
+                   help="Extra low-pass timescale (ms) for alpha (the constant kernel term = "
+                        "pressure-analog DC drive); 0=off (smoothed at --drive-lowpass-ms like the "
+                        "other drives). >0 (e.g. 15) makes the driving pressure vary slowly.")
     p.add_argument("--keep-const", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--osc-init", action=argparse.BooleanOptionalAction, default=False,
                    help="Strategy 1: initialize each seed as a marginal van der Pol limit cycle "
@@ -488,7 +492,7 @@ def main():
         dls=dls, dt=dt, val_vocs=val_vocs, test_vocs=test_vocs,
         n_kernels=args.n_kernels, n_layers=args.n_layers,
         d_state=args.d_state, d_conv=args.d_conv, expand_factor=args.expand_factor,
-        tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, keep_const=args.keep_const,
+        tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, alpha_lowpass_ms=args.alpha_lowpass_ms, keep_const=args.keep_const,
         osc_init=args.osc_init,
         checkpoint_encoder=args.checkpoint_encoder,
         use_tract=args.use_tract, tract_n_sec=args.tract_n_sec, use_envelope=args.use_envelope,
@@ -544,6 +548,7 @@ def main():
         "ratio": list(ratio),
         "max_segs": args.max_segs,
         "drive_lowpass_ms": args.drive_lowpass_ms,
+        "alpha_lowpass_ms": args.alpha_lowpass_ms,
         "keep_const": bool(args.keep_const),
         "osc_init": bool(args.osc_init),
         "use_tract": bool(args.use_tract),

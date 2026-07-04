@@ -232,6 +232,7 @@ def model_seed_cv_spectral(
     tau: float = None,             # default 1/sr if None
     smooth_len: float = 0.001,
     drive_lowpass_ms: float = 1.0,
+    alpha_lowpass_ms: float = 0.0,
     keep_const: bool = False,
     osc_init: bool = False,        # Strategy 1: van der Pol limit-cycle init (see Ouroboros.__init__)
     checkpoint_encoder: bool = False,  # gradient-checkpoint the Mamba drive encoders (memory for larger B)
@@ -347,6 +348,7 @@ def model_seed_cv_spectral(
         model = Ouroboros(d_data=1, n_layers=n_layers, d_state=d_state, d_conv=d_conv,
                           expand_factor=expand_factor, tau=tau, smooth_len=smooth_len,
                           kernel=kernel, drive_lowpass_ms=drive_lowpass_ms,
+                          alpha_lowpass_ms=alpha_lowpass_ms,
                           keep_const=keep_const, osc_init=osc_init,
                           checkpoint_encoder=checkpoint_encoder,
                           use_tract=use_tract, tract_n_sec=tract_n_sec,
