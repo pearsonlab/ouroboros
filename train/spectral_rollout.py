@@ -102,14 +102,16 @@ def _rk4_core_factory(H, powers):
             om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
 
             def f(xx, vv):
-                # NOTE: substep-clamp (eval.integrate_poly_autonomous) is intentionally
-                # NOT applied here: each extra tanh op saves another (B,) tensor for
-                # backward (~few hundred MB across H=2048 substeps), tipping resumes
-                # into OOM. Training relies on the post-step clamp + grad nan_to_num
-                # to bound divergence; eval gets the surgical fix because integration
-                # is no-grad and the float64 overflow path is the real divergence cause.
-                xpw = xx.unsqueeze(1) ** powers  # (B, P)
-                xvw = vv.unsqueeze(1) ** powers  # (B, P)
+                # Clamp the kernel INPUT (soft-tanh) before the v^P polynomial so a runaway
+                # (gamma<0) substep velocity can't overflow fp32 -> NaN. Mirrors the Heun core.
+                # The LINEAR terms (-om2*x - ga*v) keep the raw state -- only the polynomial
+                # needs bounding. Costs a couple (B,) tanh tensors/substep for backward (the
+                # memory the old comment fretted about); worth it to keep the RK4 path from
+                # diverging when the oscillator self-oscillates hard.
+                xx_c = BX * torch.tanh(xx / BX)
+                vv_c = BXP * torch.tanh(vv / BXP)
+                xpw = xx_c.unsqueeze(1) ** powers  # (B, P)
+                xvw = vv_c.unsqueeze(1) ** powers  # (B, P)
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 return vv, -om2k * xx - gak * vv - kern
 
@@ -287,9 +289,12 @@ class _GraphedRK4Step:
 
         def step(om2k, gak, w_k, xc, xp):
             def f(xx, vv):
-                # See _rk4_core_factory.f re. why substep-clamp is not applied in training.
-                xpw = xx.unsqueeze(1) ** powers
-                xvw = vv.unsqueeze(1) ** powers
+                # Kernel-input soft-tanh clamp (matches _rk4_core_factory.f) so graphstep RK4
+                # is bit-for-bit with eager and can't overflow v^P on a gamma<0 runaway.
+                xx_c = BX * torch.tanh(xx / BX)
+                vv_c = BXP * torch.tanh(vv / BXP)
+                xpw = xx_c.unsqueeze(1) ** powers
+                xvw = vv_c.unsqueeze(1) ** powers
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 return vv, -om2k * xx - gak * vv - kern
             k1x, k1v = f(xc, xp)
