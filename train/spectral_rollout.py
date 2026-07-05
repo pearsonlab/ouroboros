@@ -667,6 +667,7 @@ def spectral_rollout_step(
     lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights
     lam_env_anchor: float = 0.0,      # scale on mean((e - 1)^2) envelope gauge anchor; pulls e toward identity, per-sample backward grad bounded by 2|e-1|/N
     lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor; pins K=softplus(K_raw) near its data-init K0, closing the (K, source) gauge the env anchor leaves open
+    lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2); pins the envelope PEAK to 1 (absolute scale) without penalizing its time-variance (shape)
     tf_var: Optional[float] = None,   # precomputed Var(d2x) over the dataset; matches rollout_refine.py:110
     ic_mask: Optional[torch.Tensor] = None,
     ic_noise_rms: float = 1e-3,
@@ -866,6 +867,18 @@ def spectral_rollout_step(
     else:
         L_k_anchor = torch.zeros((), device=x.device, dtype=x.dtype)
 
+    # Scale-only anchor on the envelope: quadratic penalty on the departure of the PEAK of
+    # e(t) from 1, mean over batch: mean((max_t e - 1)^2). Unlike lam_env_anchor (which pins
+    # e(t) to a per-sample target and thus penalizes the whole shape), this fixes only the
+    # absolute SCALE of the envelope -- its time-variance (syllable shaping) is unpenalized,
+    # so e is free to vary but can't roam its overall level up (the runaway seen with only a
+    # K anchor). Grad flows only through each sample's argmax timestep (max-pool subgradient).
+    if lam_env_max_anchor > 0 and e is not None:
+        e_max = e[:, :H, 0].amax(dim=1)          # (B,) per-sample envelope peak
+        L_env_max = (e_max - 1.0).pow(2).mean()
+    else:
+        L_env_max = torch.zeros((), device=x.device, dtype=x.dtype)
+
     total = (
         lam_spec * L_spec
         + lam_tf * L_tf
@@ -874,11 +887,12 @@ def spectral_rollout_step(
         + lam_reg * L_reg
         + lam_env_anchor * L_env_anchor
         + lam_tract_k_anchor * L_k_anchor
+        + lam_env_max_anchor * L_env_max
     )
     return {"spec": L_spec, "sc": L_sc, "logm": L_logm,
             "tf": L_tf, "env": L_env, "env_log": L_env_log,
             "reg": L_reg, "env_anchor": L_env_anchor,
-            "k_anchor": L_k_anchor, "total": total}
+            "k_anchor": L_k_anchor, "env_max": L_env_max, "total": total}
 
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:

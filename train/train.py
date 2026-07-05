@@ -225,6 +225,7 @@ def train(
     lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
     lam_env_anchor: float = 0.0,    # scale on mean((e - 1)^2) envelope gauge anchor (pulls e toward 1)
     lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor (pins K near data-init)
+    lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2) envelope PEAK anchor (pins scale, not shape)
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
     env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
     # Step-based overrides (None = derived from _epochs * batches_per_epoch at startup).
@@ -367,6 +368,7 @@ def train(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
             f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} lam_reg={lam_reg} "
             f"lam_env_anchor={lam_env_anchor} lam_tract_k_anchor={lam_tract_k_anchor} "
+            f"lam_env_max_anchor={lam_env_max_anchor} "
             f"K_anchor_target={_k0:.4g} kernel.lam={float(model.kernel.lam):.4g} "
             f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
             f"rollout_backend={rollout_backend} "
@@ -560,6 +562,7 @@ def train(
                     lam_reg=lam_reg,
                     lam_env_anchor=lam_env_anchor,
                     lam_tract_k_anchor=lam_tract_k_anchor,
+                    lam_env_max_anchor=lam_env_max_anchor,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
@@ -606,10 +609,10 @@ def train(
                 # weighted views in Python so the TB plots show each term's actual contribution
                 # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
                 # plain floats already on host.
-                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, env_anchor_v, k_anchor_v, total_v = torch.stack(
+                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, env_anchor_v, k_anchor_v, env_max_v, total_v = torch.stack(
                     [out["spec"], out["sc"], out["logm"], out["tf"],
                      out["env"], out["env_log"], out["reg"], out["env_anchor"],
-                     out["k_anchor"], total_loss]
+                     out["k_anchor"], out["env_max"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
                 # Raw values
@@ -627,6 +630,8 @@ def train(
                     writer.add_scalar("Loss/env_anchor", env_anchor_v, idx)
                 if lam_tract_k_anchor > 0:
                     writer.add_scalar("Loss/k_anchor", k_anchor_v, idx)
+                if lam_env_max_anchor > 0:
+                    writer.add_scalar("Loss/env_max", env_max_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
                 if getattr(model, "enable_noise_forcing", False) or getattr(model, "use_noise_branch", False):
                     writer.add_scalar("Train/noise_gain", float(noise_gain_t), idx)
@@ -645,6 +650,8 @@ def train(
                     writer.add_scalar("LossW/env_anchor", float(lam_env_anchor) * env_anchor_v, idx)
                 if lam_tract_k_anchor > 0:
                     writer.add_scalar("LossW/k_anchor", float(lam_tract_k_anchor) * k_anchor_v, idx)
+                if lam_env_max_anchor > 0:
+                    writer.add_scalar("LossW/env_max", float(lam_env_max_anchor) * env_max_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)

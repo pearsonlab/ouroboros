@@ -265,6 +265,12 @@ def main():
                         "Per-sample backward grad 2*(e-1)/N is bounded and smooth -- no eps "
                         "machinery, no small-e gradient cliff. Only meaningful when "
                         "use_envelope is enabled. Default 0 disables.")
+    p.add_argument("--lam-env-max-anchor", type=float, default=0.0,
+                   help="weight on mean((max_t e - 1)^2), a quadratic penalty on the departure "
+                        "of the envelope's PEAK from 1. Fixes only the absolute SCALE of e(t): "
+                        "its time-variance (syllable shaping) is unpenalized, unlike --lam-env-anchor "
+                        "which pins the whole shape to a target. Prevents the envelope roaming its "
+                        "level up while letting it vary. Only meaningful with use_envelope. Default 0.")
     p.add_argument("--lam-tract-k-anchor", type=float, default=0.0,
                    help="weight on the (K/K0 - 1)^2 tract-GAIN gauge anchor, where "
                         "K = softplus(tract.K_raw) and K0 is the data-init gain. Closes the "
@@ -516,6 +522,7 @@ def main():
         lam_reg=args.lam_reg,
         lam_env_anchor=args.lam_env_anchor,
         lam_tract_k_anchor=args.lam_tract_k_anchor,
+        lam_env_max_anchor=args.lam_env_max_anchor,
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
         spec_warmup_steps=args.spec_warmup_steps,
@@ -573,6 +580,7 @@ def main():
         "lam_reg": args.lam_reg,
         "lam_env_anchor": args.lam_env_anchor,
         "lam_tract_k_anchor": args.lam_tract_k_anchor,
+        "lam_env_max_anchor": args.lam_env_max_anchor,
         "lam": args.lam,
         "spec_configs": [list(c) for c in spec_configs],
         "H_min": args.H_min,
