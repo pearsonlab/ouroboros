@@ -475,18 +475,11 @@ try:
                 ax_d.set_xlim([0, _max_ms])
                 ax_d.set_ylim(wf_ylim)          # lock to target scale (as with the other left-col waveforms)
             else:
-                ax_d.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
-                ax_d.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
-                if drives.get('sigma') is not None:
-                    ax_d.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
-                ax_d.set_ylabel(r'$\gamma$, $\alpha$, $g$', color='black')
-                ax_d.set_xlim([0, _max_ms])
-                ax_dt = ax_d.twinx()
-                ax_dt.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
-                           label=r'$\omega^2$', alpha=0.7)
-                ax_dt.set_ylabel(r'$\omega^2$', color='tab:blue')
-                ax_dt.tick_params(axis='y', labelcolor='tab:blue')
-                ax_d.legend(loc='upper left', fontsize=7, framealpha=0.6)
+                # No noise branch: this panel is reserved for the filtered-noise waveform, so
+                # with noise off leave it blank + annotated (the drives are on the right panel).
+                ax_d.text(0.5, 0.5, 'no noise branch', transform=ax_d.transAxes,
+                          ha='center', va='center', color='gray', fontsize=9, style='italic')
+                ax_d.set_xticks([]); ax_d.set_yticks([])
             # Right panel: gamma + alpha on the left axis, omega^2 on a twin, and sigma on its
             # OWN twin (offset spine). sigma (the noise gate g) is ~1000x smaller than gamma, so
             # sharing gamma's axis squashes it to a flat line -- its own axis makes its structure
