@@ -91,6 +91,12 @@ class Tract(nn.Module):
         # (vs the old K=1 at log_K=0); the entry script's data-driven init
         # picks K_raw = softplus_inv(target_K) so the absolute gain is correct.
         self.K_raw = nn.Parameter(torch.zeros((), device=device))
+        # Target gain for the optional K-gauge anchor (see train.spectral_rollout). Persistent
+        # buffer so it rides save/load + device moves; holds the INITIAL K = softplus(K_raw).
+        # model_cv's data-driven K_raw init updates it so the anchor pins K near its data-matched
+        # starting gain, not the constructor default. Closes the (K, source) -> (c*K, source/c)
+        # gauge the envelope anchor leaves open. (load_model tolerates its absence in old ckpts.)
+        self.register_buffer("K_anchor_target", F.softplus(self.K_raw.detach().clone()))
         # trachea comb: reflection r = r_max*tanh(r_raw) (init 0 -> no comb); delay tau samples.
         # Disabled (use_comb=False) for the noise branch: a comb imposes periodic spectral teeth,
         # exactly the harmonic-like structure the low-order noise filter must NOT be able to make

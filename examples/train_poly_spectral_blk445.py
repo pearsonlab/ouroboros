@@ -265,6 +265,14 @@ def main():
                         "Per-sample backward grad 2*(e-1)/N is bounded and smooth -- no eps "
                         "machinery, no small-e gradient cliff. Only meaningful when "
                         "use_envelope is enabled. Default 0 disables.")
+    p.add_argument("--lam-tract-k-anchor", type=float, default=0.0,
+                   help="weight on the (K/K0 - 1)^2 tract-GAIN gauge anchor, where "
+                        "K = softplus(tract.K_raw) and K0 is the data-init gain. Closes the "
+                        "(K, source) -> (c*K, source/c) gauge the envelope anchor leaves open: "
+                        "pins the absolute output gain near its data-matched start WITHOUT "
+                        "flattening the envelope (which mean((e-1)^2) does). K is a scalar so the "
+                        "term is tiny with a bounded gradient. Only meaningful with use_tract. "
+                        "Default 0 disables.")
     p.add_argument("--lam-env-log", type=float, default=0.0,
                    help="weight on the LOG-RATIO envelope loss (|log((env(a)+eps)/(env(g)+eps))|). "
                         "Symmetric in (auto, target) -- penalizes shrinking past target the same as "
@@ -507,6 +515,7 @@ def main():
         env_ms=args.env_ms,
         lam_reg=args.lam_reg,
         lam_env_anchor=args.lam_env_anchor,
+        lam_tract_k_anchor=args.lam_tract_k_anchor,
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
         spec_warmup_steps=args.spec_warmup_steps,
@@ -563,6 +572,7 @@ def main():
         "env_ms": args.env_ms,
         "lam_reg": args.lam_reg,
         "lam_env_anchor": args.lam_env_anchor,
+        "lam_tract_k_anchor": args.lam_tract_k_anchor,
         "lam": args.lam,
         "spec_configs": [list(c) for c in spec_configs],
         "H_min": args.H_min,

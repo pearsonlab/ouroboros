@@ -262,6 +262,7 @@ def model_seed_cv_spectral(
     env_ms: float = 2.0,
     lam_reg: float = 0.0,
     lam_env_anchor: float = 0.0,
+    lam_tract_k_anchor: float = 0.0,
     spec_warmup_epochs: int = 5,
     env_warmup_epochs: int = 0,
     spec_warmup_steps: int = None,
@@ -364,6 +365,10 @@ def model_seed_cv_spectral(
         if use_tract and K_raw_init is not None:
             with torch.no_grad():
                 model.tract.K_raw.data.fill_(float(K_raw_init))
+                # keep the K-gauge anchor target aligned with the data-init gain, so
+                # --lam-tract-k-anchor pins K near this value rather than softplus(0)
+                model.tract.K_anchor_target.copy_(
+                    torch.nn.functional.softplus(model.tract.K_raw.data))
         opt = Adam(model.parameters(), lr=lr)
         sched = ReduceLROnPlateau(opt, factor=0.5, patience=max(n_epochs // 25, 2),
                                   min_lr=1e-10)
@@ -410,6 +415,7 @@ def model_seed_cv_spectral(
                 env_ms=env_ms,
                 lam_reg=lam_reg,
                 lam_env_anchor=lam_env_anchor,
+                lam_tract_k_anchor=lam_tract_k_anchor,
                 spec_warmup_epochs=spec_warmup_epochs,
                 env_warmup_epochs=env_warmup_epochs,
                 spec_warmup_steps=spec_warmup_steps,

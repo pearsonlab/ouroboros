@@ -666,6 +666,7 @@ def spectral_rollout_step(
     env_ms: float = 2.0,
     lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights
     lam_env_anchor: float = 0.0,      # scale on mean((e - 1)^2) envelope gauge anchor; pulls e toward identity, per-sample backward grad bounded by 2|e-1|/N
+    lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor; pins K=softplus(K_raw) near its data-init K0, closing the (K, source) gauge the env anchor leaves open
     tf_var: Optional[float] = None,   # precomputed Var(d2x) over the dataset; matches rollout_refine.py:110
     ic_mask: Optional[torch.Tensor] = None,
     ic_noise_rms: float = 1e-3,
@@ -852,6 +853,19 @@ def spectral_rollout_step(
     else:
         L_env_anchor = torch.zeros((), device=x.device, dtype=x.dtype)
 
+    # Gauge-fixing anchor on the tract GAIN K = softplus(K_raw): quadratic pull toward its
+    # data-init value K0 (model.tract.K_anchor_target). Closes the (K, source) -> (c*K, source/c)
+    # gauge the envelope anchor leaves open -- pins the absolute output gain WITHOUT flattening
+    # the envelope. Relative (K/K0 - 1)^2 so the weight is scale-free; K is a scalar so this is a
+    # tiny, bounded-gradient term (dL/dK_raw = 2(K/K0 - 1)/K0 * sigmoid(K_raw)).
+    tract = getattr(model, "tract", None)
+    if lam_tract_k_anchor > 0 and tract is not None and getattr(tract, "K_anchor_target", None) is not None:
+        K = torch.nn.functional.softplus(tract.K_raw)
+        K0 = tract.K_anchor_target.clamp_min(1e-8)
+        L_k_anchor = (K / K0 - 1.0).pow(2)
+    else:
+        L_k_anchor = torch.zeros((), device=x.device, dtype=x.dtype)
+
     total = (
         lam_spec * L_spec
         + lam_tf * L_tf
@@ -859,10 +873,12 @@ def spectral_rollout_step(
         + lam_env_log * L_env_log
         + lam_reg * L_reg
         + lam_env_anchor * L_env_anchor
+        + lam_tract_k_anchor * L_k_anchor
     )
     return {"spec": L_spec, "sc": L_sc, "logm": L_logm,
             "tf": L_tf, "env": L_env, "env_log": L_env_log,
-            "reg": L_reg, "env_anchor": L_env_anchor, "total": total}
+            "reg": L_reg, "env_anchor": L_env_anchor,
+            "k_anchor": L_k_anchor, "total": total}
 
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:
