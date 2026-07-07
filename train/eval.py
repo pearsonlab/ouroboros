@@ -458,7 +458,10 @@ def integrate_poly_autonomous(
         signal -- no DC ride-through into the formant filter."""
         x_src = np.asarray(x_src, dtype=np.float64)
         if detrend:
-            x_src = correct(x_src)
+            # Mean removal only, matching the training loss (xg - xg.mean()). No butter high-pass:
+            # the low frequencies are MODELED (by the rumble branch), not filtered out, so eval +
+            # plotting reflect exactly what the loss optimizes.
+            x_src = x_src - np.mean(x_src)
         x_src = x_src * e_seq[: len(x_src)]
         if use_tract:
             xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to(dev)
@@ -720,7 +723,7 @@ def autonomy_score(
     trajectories = [] if return_trajectories else None
     for seg in segments:
         seg = np.asarray(seg, dtype=np.float64)
-        tgt = correct(seg)
+        tgt = seg  # raw target (matches the training loss, which fits the raw audio; no high-pass)
         if return_trajectories:
             auto, env, src, drives = integrate_poly_autonomous(
                 model, seg, dt, method=method, noise_sd=0.0, noise_gain=noise_gain, osc_gain=osc_gain,
@@ -801,6 +804,6 @@ def generate_autonomous(
     auto = integrate_poly_autonomous(model, audio, dt, method=method, detrend=detrend,
                                      noise_sd=0.0, verbose=verbose)
     if rescale and np.isfinite(auto).all() and np.nanstd(auto) > 1e-9:
-        target = ref_rms if ref_rms is not None else float(np.nanstd(correct(np.asarray(audio, dtype=np.float64))))
+        target = ref_rms if ref_rms is not None else float(np.nanstd(np.asarray(audio, dtype=np.float64)))
         auto = auto * (target / (np.nanstd(auto) + 1e-12))
     return auto
