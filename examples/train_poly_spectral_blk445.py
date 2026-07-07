@@ -417,9 +417,11 @@ def main():
                         "time-resolved target so the rumble fits the LF signal.")
     p.add_argument("--floor-pctile", type=float, default=15.0,
                    help="Percentile (over batch x time) for the noise-floor target. ~15 = minimum statistics.")
-    p.add_argument("--floor-cutoff-hz", type=float, default=375.0,
+    p.add_argument("--floor-cutoff-hz", type=float, default=-1.0,
                    help="Frequency boundary: bins >= this get the floor target (noise); below keep the real "
-                        "time-resolved target (rumble). Default 375 ~ the rumble branch's effective cutoff.")
+                        "time-resolved target (rumble). Default (-1) AUTO-derives to 1.5*--rumble-lowpass-hz "
+                        "(the rumble's effective upper edge) so ONE param (--rumble-lowpass-hz) controls the "
+                        "whole LF/noise split. Set explicitly only to override.")
     p.add_argument("--use-rumble-branch", action=argparse.BooleanOptionalAction, default=False,
                    help="Add a deterministic low-frequency 'rumble' source: a parallel Mamba head "
                         "whose output is band-limited to < --rumble-lowpass-hz and ADDED to the "
@@ -583,7 +585,8 @@ def main():
         osc_warmup_epochs=args.osc_warmup_epochs,
         mel_spec=args.mel_spec, mel_n_mels=args.mel_n_mels,
         floor_fit=args.noise_floor_fit, floor_pctile=args.floor_pctile,
-        floor_cutoff_hz=args.floor_cutoff_hz,
+        floor_cutoff_hz=(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
+                         else 1.5 * args.rumble_lowpass_hz),  # one shared cutoff (--rumble-lowpass-hz)
         freeze_noise_epochs=args.freeze_noise_epochs,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
@@ -646,7 +649,8 @@ def main():
         "sigma_constant": bool(args.sigma_constant),
         "noise_floor_fit": bool(args.noise_floor_fit),
         "floor_pctile": float(args.floor_pctile),
-        "floor_cutoff_hz": float(args.floor_cutoff_hz),
+        "floor_cutoff_hz": float(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
+                                 else 1.5 * args.rumble_lowpass_hz),
         "use_rumble_branch": bool(args.use_rumble_branch),
         "rumble_lowpass_hz": float(args.rumble_lowpass_hz),
         "noise_start_step": int(args.noise_start_step),
