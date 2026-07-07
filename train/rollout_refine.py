@@ -125,18 +125,18 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             fb = _mel_fb(n_fft, sr, n_mels, fmax if fmax is not None else sr / 2.0, A.device, A.dtype)
             A = torch.einsum('mf,bft->bmt', fb, A)
             G = torch.einsum('mf,bft->bmt', fb, G)
+        wmask = None
         if floor_fit:
-            # Noise-floor target for the noise-fit epoch (per sample, so each voc targets its OWN
-            # floor). Pick the QUIET TIME FRAMES -- those whose BROADBAND power (>= floor_cutoff_hz,
-            # the noise band, NOT total power which the LF/rumble would contaminate) falls in the
-            # [0.4*floor_pctile, floor_pctile] percentile band -- and AVERAGE their spectra. That gives
-            # a coherent floor SPECTRUM (a real quiet-moment spectrum), unlike a per-frequency
-            # percentile which stitches a different time frame per bin and sits far below the mean.
-            # floor_correction de-biases the mild downward pull of selecting low-power frames
-            # (minimum-statistics correction): model the broadband power as Gamma(shape=K); the
-            # unbiased factor is C(K) = (p_hi-p_lo)/[F_{K+1}(b)-F_{K+1}(a)], K = mean^2/var of the
-            # broadband power. Default 1.2 ~ C(K=30). Broadband bins get this floor; LF keeps the
-            # real target. Full rationale + derivation: docs/noise_floor_fit.md.
+            # Noise-floor fit via MASKED regression (per sample). Rather than reduce the noise gate to
+            # a scalar in the forward pass (which oscillated/collapsed), keep g(t) time-varying and
+            # restrict the BROADBAND loss (>= floor_cutoff_hz) to the QUIET TIME FRAMES -- those whose
+            # broadband power (NOT total power, which the LF/rumble would contaminate) is in the
+            # [0.4*floor_pctile, floor_pctile] percentile band. There g(t)*noise_tract is regressed
+            # onto the real quiet-frame spectra (the floor); loud frames get no broadband gradient, so
+            # syllables can't drag g up. LF bins keep the loss at all frames (rumble). The constant
+            # per-voc level g0 is read out POST-HOC as mean(g(t)) over these quiet frames (x
+            # floor_correction, the minimum-statistics de-bias), never in the gradient. Full rationale
+            # + the Gamma-K derivation of floor_correction: docs/noise_floor_fit.md.
             fdim = G.shape[-2]
             if mel:
                 bin_hz = torch.as_tensor(_mel_hz(fdim, fmax if fmax is not None else sr / 2.0),
@@ -147,14 +147,17 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             bbp = G[:, bb, :].sum(dim=1)                                 # (B, T) broadband power/frame
             q_lo = torch.quantile(bbp, 0.4 * float(floor_pctile) / 100.0, dim=1, keepdim=True)
             q_hi = torch.quantile(bbp, float(floor_pctile) / 100.0, dim=1, keepdim=True)
-            sel = ((bbp >= q_lo) & (bbp <= q_hi)).to(G.dtype)           # (B, T) quiet frames
-            sel = torch.where(sel.sum(-1, keepdim=True) > 0, sel, (bbp <= q_hi).to(G.dtype))  # fallback
-            w = sel.unsqueeze(1)                                         # (B, 1, T)
-            N_floor = (G * w).sum(-1) / w.sum(-1).clamp_min(1.0)         # (B, F) quiet-frame mean
-            N_floor = (N_floor * float(floor_correction)).unsqueeze(-1)  # (B, F, 1) bias-corrected
-            G = torch.where(bb.view(1, fdim, 1), N_floor.expand_as(G), G)
-        sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + sc_eps)
-        logm = (torch.log(G + eps) - torch.log(A + eps)).abs().mean(dim=(-2, -1))
+            quiet = (bbp >= q_lo) & (bbp <= q_hi)                        # (B, T) quiet frames
+            quiet = torch.where(quiet.any(dim=1, keepdim=True), quiet, bbp <= q_hi)  # fallback
+            drop = bb.view(1, fdim, 1) & (~quiet).unsqueeze(1)          # (B, F, T) broadband, loud frames
+            wmask = (~drop).to(G.dtype)                                 # 1 everywhere except those
+        if wmask is not None:
+            sc = torch.norm((G - A) * wmask, dim=(-2, -1)) / (torch.norm(G * wmask, dim=(-2, -1)) + sc_eps)
+            lm = (torch.log(G + eps) - torch.log(A + eps)).abs() * wmask
+            logm = lm.sum(dim=(-2, -1)) / wmask.sum(dim=(-2, -1)).clamp_min(1.0)
+        else:
+            sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + sc_eps)
+            logm = (torch.log(G + eps) - torch.log(A + eps)).abs().mean(dim=(-2, -1))
         sc_total = sc_total + sc.mean()
         logm_total = logm_total + logm.mean()
     n = len(configs)
