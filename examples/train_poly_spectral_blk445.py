@@ -405,6 +405,10 @@ def main():
                    help="Optional low-pass timescale (ms) for the sigma noise gate g(t); 0 = off (sharp "
                         "gate, default). >0 smooths the noise amplitude envelope (same zero-phase Gaussian "
                         "as the drives) so it can't snap abruptly. ~1-2 ms is a light smoothing.")
+    p.add_argument("--sigma-constant", action=argparse.BooleanOptionalAction, default=False,
+                   help="Restrict the noise gate g to a single CONSTANT per vocalization (the sigma Mamba "
+                        "head mean-pools over time and predicts one number). Forces g to model a stationary "
+                        "noise floor rather than tracking syllabic content. For the noise-floor-fit scheme.")
     p.add_argument("--use-rumble-branch", action=argparse.BooleanOptionalAction, default=False,
                    help="Add a deterministic low-frequency 'rumble' source: a parallel Mamba head "
                         "whose output is band-limited to < --rumble-lowpass-hz and ADDED to the "
@@ -561,6 +565,7 @@ def main():
         noise_tau_ms=args.noise_tau_ms, noise_init_bias=args.noise_init_bias,
         use_noise_branch=args.use_noise_branch, noise_tract_n_sec=args.noise_tract_n_sec,
         sigma_lowpass_ms=args.sigma_lowpass_ms,
+        sigma_constant=args.sigma_constant,
         use_rumble_branch=args.use_rumble_branch, rumble_lowpass_hz=args.rumble_lowpass_hz,
         noise_start_step=args.noise_start_step,
         noise_warmup_steps=args.noise_warmup_steps,
@@ -625,6 +630,7 @@ def main():
         "use_noise_branch": bool(args.use_noise_branch),
         "noise_tract_n_sec": int(args.noise_tract_n_sec),
         "sigma_lowpass_ms": float(args.sigma_lowpass_ms),
+        "sigma_constant": bool(args.sigma_constant),
         "use_rumble_branch": bool(args.use_rumble_branch),
         "rumble_lowpass_hz": float(args.rumble_lowpass_hz),
         "noise_start_step": int(args.noise_start_step),

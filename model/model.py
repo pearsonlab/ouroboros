@@ -184,6 +184,7 @@ class Ouroboros(nn.Module):
         use_noise_branch: bool = False,
         noise_tract_n_sec: int = 3,
         sigma_lowpass_ms: float = 0.0,
+        sigma_constant: bool = False,
         use_rumble_branch: bool = False,
         rumble_lowpass_hz: float = 250.0,
     ):
@@ -336,6 +337,7 @@ class Ouroboros(nn.Module):
         # >0, get_sigma smooths g at this timescale (same zero-phase Gaussian as the drives), so
         # the noise amplitude envelope can't snap abruptly.
         self.sigma_lowpass_ms = sigma_lowpass_ms
+        self.sigma_constant = sigma_constant
         # ---- harmonic-plus-noise: additive filtered-noise branch (opt-in) ----
         # An alternative to the in-ODE OU forcing: keep the oscillator PURELY deterministic
         # (RK4) and add, OUTSIDE the tract, a parallel noise source -- white noise, amplitude-
@@ -694,6 +696,14 @@ class Ouroboros(nn.Module):
             g_out = checkpoint(self.sigma_mamba, x_in, use_reentrant=False)[:, L:, :]
         else:
             g_out = self.sigma_mamba(x_in)[:, L:, :]
+        if getattr(self, "sigma_constant", False):
+            # Constant noise gate: mean-pool the encoder over time and predict ONE number per
+            # segment. This forces g to model a STATIONARY floor level rather than tracking the
+            # syllabic envelope (which the time-varying gate was doing -- it rose on loud syllables,
+            # so subtracting g^2*N(f) would eat the vocalization). Broadcast back over time.
+            g_out = g_out.mean(dim=1, keepdim=True)                  # (B, 1, F)
+            g = F.relu(self.sigma_net(g_out))                       # (B, 1, 1) one number per segment
+            return g.expand(-1, L, -1)                              # (B, L, 1) constant over the voc
         g = F.relu(self.sigma_net(g_out))
         # Optional smoothing (opt-in via sigma_lowpass_ms). The Gaussian kernel has all-positive,
         # unit-sum weights, so low-passing a nonnegative gate keeps it nonnegative.
