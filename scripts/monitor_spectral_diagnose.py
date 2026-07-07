@@ -370,6 +370,7 @@ try:
     # long ones. Each per-voc panel still shows its own content; the extra space
     # on the right of short ones is intentional.
     _max_ms = max((len(t[0]) for t in trajs[:N_TB_VOCS] if len(t) >= 1), default=1) / SR * 1000
+    _psd = []  # per-voc (target, auto, noise, rumble) for the mel-PSD panel built after the loop
     for i in range(min(N_TB_VOCS, len(trajs))):
         # autonomy_score returns (tgt, auto, env, src, drives) when return_trajectories=True;
         # tolerate older 2/3/4-tuple shapes so this script works against in-flight runs
@@ -519,6 +520,44 @@ try:
         plt.tight_layout()
         sw.add_figure(f"specgram/voc{i}", fig, step)
         plt.close(fig)
+        _dv = drives or {}
+        _psd.append((np.asarray(tgt_n, dtype=np.float64), np.asarray(auto_n, dtype=np.float64),
+                     _dv.get('noise'), _dv.get('rumble')))
+
+    # Per-epoch mel-PSD panel: target vs tract output (= auto - noise - rumble) vs filtered noise
+    # vs rumble, for the same TB vocs. Mel-band power (time-averaged), mel-warped frequency axis.
+    if _psd:
+        _nm, _fm, _nf, _hop = 128, 16000.0, 1024, 256
+        _mhz = librosa.mel_frequencies(n_mels=_nm, fmax=_fm)
+        def _mpsd(y):
+            y = np.ascontiguousarray(np.asarray(y, dtype=np.float32))
+            S = librosa.feature.melspectrogram(y=y, sr=SR, n_fft=_nf, hop_length=_hop,
+                                               n_mels=_nm, fmax=_fm, power=2.0)
+            return 10.0 * np.log10(S.mean(axis=1) + 1e-12)
+        pfig, paxes = plt.subplots(1, len(_psd), figsize=(5 * len(_psd), 4.2),
+                                   sharey=True, squeeze=False)
+        _xt = np.linspace(0, _nm - 1, 7).astype(int)
+        for j, (tg, au, nz, ru) in enumerate(_psd):
+            ax = paxes[0, j]
+            n = min(len(tg), len(au))
+            tract = au[:n].copy()
+            if nz is not None:
+                tract = tract - np.asarray(nz, dtype=np.float64)[:n]
+            if ru is not None:
+                tract = tract - np.asarray(ru, dtype=np.float64)[:n]
+            ax.plot(np.arange(_nm), _mpsd(tg[:n]), color='tab:orange', lw=1.2, label='target')
+            ax.plot(np.arange(_nm), _mpsd(tract), color='tab:green', lw=1.2, label='tract out')
+            if nz is not None:
+                ax.plot(np.arange(_nm), _mpsd(np.asarray(nz)[:n]), color='tab:gray', lw=1.0, label='noise')
+            if ru is not None:
+                ax.plot(np.arange(_nm), _mpsd(np.asarray(ru)[:n]), color='tab:blue', lw=1.0, label='rumble')
+            ax.set_title(f"voc{j}", fontsize=8); ax.set_xlabel('mel freq (Hz)'); ax.grid(alpha=0.3)
+            ax.legend(fontsize=7); ax.set_xticks(_xt)
+            ax.set_xticklabels([str(int(_mhz[k])) for k in _xt], fontsize=7)
+        paxes[0, 0].set_ylabel('mel-band power (dB)')
+        _plabel = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
+        pfig.suptitle(f"mel-PSD  ckpt {_plabel}   (target / tract out / noise / rumble)", fontsize=10)
+        plt.tight_layout(); sw.add_figure("psd/mel", pfig, step); plt.close(pfig)
     sw.close()
 except Exception as _tb_e:
     # Don't let TB rendering errors fail the autonomy score itself.

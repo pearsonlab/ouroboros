@@ -395,6 +395,16 @@ def main():
                    help="Optional low-pass timescale (ms) for the sigma noise gate g(t); 0 = off (sharp "
                         "gate, default). >0 smooths the noise amplitude envelope (same zero-phase Gaussian "
                         "as the drives) so it can't snap abruptly. ~1-2 ms is a light smoothing.")
+    p.add_argument("--use-rumble-branch", action=argparse.BooleanOptionalAction, default=False,
+                   help="Add a deterministic low-frequency 'rumble' source: a parallel Mamba head "
+                        "whose output is band-limited to < --rumble-lowpass-hz and ADDED to the "
+                        "tract+noise output. Gives the model a cheap dedicated channel for the "
+                        "sub-cutoff recording floor so the oscillator isn't forced to match it -- "
+                        "but the oscillator stays FULL-RANGE (not high-passed), so it can still "
+                        "produce LF when a vocalization has genuine low-frequency content.")
+    p.add_argument("--rumble-lowpass-hz", type=float, default=250.0,
+                   help="Cutoff (Hz) for the rumble head's low-pass (soft raised-cosine rolloff to "
+                        "1.5x cutoff). Only meaningful with --use-rumble-branch. Default 250.")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -541,6 +551,7 @@ def main():
         noise_tau_ms=args.noise_tau_ms, noise_init_bias=args.noise_init_bias,
         use_noise_branch=args.use_noise_branch, noise_tract_n_sec=args.noise_tract_n_sec,
         sigma_lowpass_ms=args.sigma_lowpass_ms,
+        use_rumble_branch=args.use_rumble_branch, rumble_lowpass_hz=args.rumble_lowpass_hz,
         noise_start_step=args.noise_start_step,
         noise_warmup_steps=args.noise_warmup_steps,
         freeze_noise_epochs=args.freeze_noise_epochs,
@@ -602,6 +613,8 @@ def main():
         "use_noise_branch": bool(args.use_noise_branch),
         "noise_tract_n_sec": int(args.noise_tract_n_sec),
         "sigma_lowpass_ms": float(args.sigma_lowpass_ms),
+        "use_rumble_branch": bool(args.use_rumble_branch),
+        "rumble_lowpass_hz": float(args.rumble_lowpass_hz),
         "noise_start_step": int(args.noise_start_step),
         "noise_warmup_steps": int(args.noise_warmup_steps),
         "freeze_noise_epochs": int(args.freeze_noise_epochs),

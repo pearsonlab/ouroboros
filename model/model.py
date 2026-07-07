@@ -184,6 +184,8 @@ class Ouroboros(nn.Module):
         use_noise_branch: bool = False,
         noise_tract_n_sec: int = 3,
         sigma_lowpass_ms: float = 0.0,
+        use_rumble_branch: bool = False,
+        rumble_lowpass_hz: float = 250.0,
     ):
 
         super().__init__()
@@ -378,6 +380,61 @@ class Ouroboros(nn.Module):
             # the sigma gate g(t) provides the time-varying amplitude (see filtered_noise_branch).
             self.noise_tract = Tract(device=device, n_sec=noise_tract_n_sec, use_comb=False)
             self.names = self.names + [r"$H_{noise}$"]
+
+        # Deterministic low-frequency "rumble" source, band-limited to < rumble_lowpass_hz, added
+        # alongside tract + noise (OUTSIDE the tract). A dedicated cheap channel for the sub-cutoff
+        # recording floor so the oscillator isn't forced to spend capacity matching it -- but the
+        # oscillator is left FULL-RANGE (not high-passed), so it can still reach below the cutoff
+        # when a vocalization has genuine LF content. Zero-init head -> starts silent, learned gently.
+        self.use_rumble_branch = use_rumble_branch
+        if use_rumble_branch:
+            self.rumble_lowpass_hz = float(rumble_lowpass_hz)
+            rumbleConfig = MambaConfig(
+                d_model=2 * d_data,
+                n_layers=n_layers,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand_factor=expand_factor,
+            )
+            self.rumble_mamba = Mamba(rumbleConfig).to(device)
+            self.rumble_net = nn.Linear(2 * d_data, d_data, device=device)
+            nn.init.zeros_(self.rumble_net.weight)
+            nn.init.zeros_(self.rumble_net.bias)
+            self.names = self.names + [r"rumble"]
+
+    def _lowpass_fft(self, x: torch.FloatTensor, cutoff_hz: float, dt: float) -> torch.FloatTensor:
+        """Zero-phase soft-mask rFFT low-pass along time of a (B, L, C) series: unity below
+        cutoff_hz, raised-cosine rolloff to 0 by 1.5*cutoff_hz. Fixed (non-learnable) given the
+        cutoff; differentiable through rfft/irfft. Used to band-limit the rumble source."""
+        B, L, C = x.shape
+        sig = x.transpose(1, 2)                                   # (B, C, L)
+        Xf = torch.fft.rfft(sig, dim=-1)
+        freqs = torch.fft.rfftfreq(L, d=dt, device=x.device)     # (L//2+1,) Hz
+        hi = 1.5 * cutoff_hz
+        t = ((hi - freqs) / (hi - cutoff_hz)).clamp(0.0, 1.0)     # 1 below cutoff, 0 above hi
+        mask = 0.5 - 0.5 * torch.cos(math.pi * t)                # raised-cosine transition band
+        out = torch.fft.irfft(Xf * mask, n=L, dim=-1)            # (B, C, L)
+        return out.transpose(1, 2)                                # (B, L, C)
+
+    def get_rumble(
+        self, x: torch.FloatTensor, dxdt: torch.FloatTensor, dt: float
+    ) -> Optional[torch.FloatTensor]:
+        """Deterministic low-frequency source r(t), band-limited to < rumble_lowpass_hz, shape
+        (B, L, 1), or None when use_rumble_branch is False. Parallel Mamba head over the same
+        [x, x'] state as the drives; zero-init so it starts silent. Added to the tract+noise
+        output OUTSIDE the tract (see train.spectral_rollout / train.eval)."""
+        if not getattr(self, "use_rumble_branch", False):
+            return None
+        dxdt = dxdt * (self.tau / dt)  # rescaled velocity; out-of-place (no caller mutation)
+        z = torch.cat([x, dxdt], dim=-1)
+        L = z.shape[1]
+        x_in = torch.cat([torch.flip(z, [1]), z], dim=1)
+        if self.checkpoint_encoder and torch.is_grad_enabled():
+            r_out = checkpoint(self.rumble_mamba, x_in, use_reentrant=False)[:, L:, :]
+        else:
+            r_out = self.rumble_mamba(x_in)[:, L:, :]
+        r = self.rumble_net(r_out)                          # (B, L, 1) raw LF source
+        return self._lowpass_fft(r, self.rumble_lowpass_hz, dt)
 
     def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
         """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.

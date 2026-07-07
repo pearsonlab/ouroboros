@@ -447,6 +447,7 @@ def integrate_poly_autonomous(
         noise_tau_c = (model.noise_tau_ms / 1e3) / dt
 
     _noise_cap = {"n": None}   # captures the additive filtered-noise term added to the tract output
+    _rumble_cap = {"r": None}  # captures the additive band-limited rumble term added to the tract output
 
     def _finish(x_src: np.ndarray) -> np.ndarray:
         """detrend the raw RK4 source FIRST (non-trainable HPF stabilizes the
@@ -475,6 +476,16 @@ def integrate_poly_autonomous(
             noise_term = noise_gain * np.asarray(nb, dtype=np.float64)[:len(x_src)]
             _noise_cap["n"] = noise_term
             x_src = x_src + noise_term
+        # Rumble branch: deterministic band-limited LF source added OUTSIDE the tract (mirrors
+        # train.spectral_rollout). Captured so callers/monitor can plot it. Always on when enabled.
+        if getattr(model, "use_rumble_branch", False):
+            from train.spectral_rollout import rumble_branch
+            Hr = len(x_src)
+            with torch.no_grad():
+                rb = rumble_branch(model, audio_t, dy_t.clone(), dt, Hr).detach().cpu().numpy().squeeze()
+            rumble_term = np.asarray(rb, dtype=np.float64)[:len(x_src)]
+            _rumble_cap["r"] = rumble_term
+            x_src = x_src + rumble_term
         return x_src
 
     if use_learned_noise:
@@ -524,7 +535,8 @@ def integrate_poly_autonomous(
                         "gamma": gamma[: len(out)].astype(np.float64).copy(),
                         "alpha": alpha[: len(out)],
                         "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None),
-                        "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None)},)
+                        "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None),
+                        "rumble": (_rumble_cap["r"][: len(out)].copy() if _rumble_cap["r"] is not None else None)},)
         return rv if len(rv) > 1 else rv[0]
 
     if noise_sd > 0:
@@ -564,7 +576,8 @@ def integrate_poly_autonomous(
                         "gamma": gamma[: len(out)].astype(np.float64).copy(),
                         "alpha": alpha[: len(out)],
                         "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None),
-                        "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None)},)
+                        "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None),
+                        "rumble": (_rumble_cap["r"][: len(out)].copy() if _rumble_cap["r"] is not None else None)},)
         return rv if len(rv) > 1 else rv[0]
 
     # Manual RK4 with the same soft-tanh state saturation as train/spectral_rollout.py
@@ -618,7 +631,8 @@ def integrate_poly_autonomous(
                     "gamma": gamma[: len(out)].astype(np.float64).copy(),
                     "alpha": alpha[: len(out)],
                     "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None),
-                    "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None)},)
+                    "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None),
+                    "rumble": (_rumble_cap["r"][: len(out)].copy() if _rumble_cap["r"] is not None else None)},)
     return rv if len(rv) > 1 else rv[0]
 
 

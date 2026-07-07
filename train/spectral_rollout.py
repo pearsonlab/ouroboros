@@ -649,6 +649,19 @@ def filtered_noise_branch(model, x, dxdt, dt, H, rng=None):
     return g * colored                                                # sigma AM gate
 
 
+def rumble_branch(model, x, dxdt, dt, H):
+    """Deterministic low-frequency 'rumble' source (harmonic-plus-noise-plus-rumble mode).
+
+    model.get_rumble runs a parallel Mamba head and band-limits its output to < rumble_lowpass_hz.
+    Returns (B, H) to be ADDED to the tract output OUTSIDE the tract, alongside the noise branch.
+    A dedicated cheap channel for the sub-cutoff recording floor so the oscillator isn't forced to
+    spend capacity on it -- the oscillator is left FULL-RANGE (not high-passed), so it can still
+    reach below the cutoff when a vocalization has genuine LF content. Differentiable in the head.
+    """
+    r = model.get_rumble(x, dxdt.clone(), dt)      # (B, L, 1) band-limited LF source
+    return r[:, :H, 0]                             # (B, H)
+
+
 def spectral_rollout_step(
     model,
     x: torch.Tensor,        # (B, L, 1) target audio
@@ -780,6 +793,11 @@ def spectral_rollout_step(
     # clean additive source -- no ODE coupling, no collapse. noise_gain ramps/gates it in.
     if getattr(model, "use_noise_branch", False) and noise_gain > 0:
         xg = xg + noise_gain * filtered_noise_branch(model, x, dxdt, dt, H, rng=rng)
+
+    # Rumble branch: deterministic band-limited (< rumble_lowpass_hz) LF source added OUTSIDE the
+    # tract, alongside the noise. Takes the sub-cutoff recording floor off the oscillator's plate.
+    if getattr(model, "use_rumble_branch", False):
+        xg = xg + rumble_branch(model, x, dxdt, dt, H)
 
     # Backward gradient clip at the rolled-out audio: caps the spec loss's backward
     # contribution norm to SPEC_GRAD_MAX_NORM before it flows back into env_mamba's
