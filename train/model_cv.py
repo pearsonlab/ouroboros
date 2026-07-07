@@ -304,6 +304,9 @@ def model_seed_cv_spectral(
     osc_warmup_epochs: int = 0,
     mel_spec: bool = False,
     mel_n_mels: int = 80,
+    floor_fit: bool = False,
+    floor_pctile: float = 15.0,
+    floor_cutoff_hz: float = 375.0,
     freeze_noise_epochs: int = 0,
     use_noise_branch: bool = False,
     noise_tract_n_sec: int = 3,
@@ -444,6 +447,7 @@ def model_seed_cv_spectral(
                 freeze_noise_epochs=freeze_noise_epochs,
                 osc_warmup_epochs=osc_warmup_epochs,
                 mel_spec=mel_spec, mel_n_mels=mel_n_mels,
+                floor_fit=floor_fit, floor_pctile=floor_pctile, floor_cutoff_hz=floor_cutoff_hz,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

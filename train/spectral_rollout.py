@@ -693,6 +693,9 @@ def spectral_rollout_step(
     osc_gain: float = 1.0,            # gain on the deterministic (tract) output; warmup ramp gates it in
     mel_spec: bool = False,           # compute the MRSTFT magnitude loss on mel-warped spectra
     mel_n_mels: int = 80,
+    floor_fit: bool = False,          # noise-fit: broadband target = per-freq percentile FLOOR
+    floor_pctile: float = 15.0,
+    floor_cutoff_hz: float = 375.0,
 ) -> dict:
     """One forward + loss for the spectral-rollout objective.
 
@@ -838,7 +841,9 @@ def spectral_rollout_step(
 
     configs_H = _filter_configs_for_horizon(configs, H)
     spec_parts = mrstft_loss(xg, tgt, configs_H, return_components=True,
-                             mel=mel_spec, sr=1.0 / dt, n_mels=mel_n_mels)
+                             mel=mel_spec, sr=1.0 / dt, n_mels=mel_n_mels,
+                             floor_fit=floor_fit, floor_pctile=floor_pctile,
+                             floor_cutoff_hz=floor_cutoff_hz)
     L_spec = spec_parts["spec"]
     L_sc = spec_parts["sc"]
     L_logm = spec_parts["logm"]

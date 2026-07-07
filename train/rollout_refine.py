@@ -87,8 +87,20 @@ def _mel_fb(n_fft, sr, n_mels, fmax, device, dtype):
     return fb
 
 
+_MEL_HZ_CACHE = {}
+def _mel_hz(n_mels, fmax):
+    key = (int(n_mels), float(fmax))
+    v = _MEL_HZ_CACHE.get(key)
+    if v is None:
+        import librosa
+        v = librosa.mel_frequencies(n_mels=n_mels, fmax=fmax)
+        _MEL_HZ_CACHE[key] = v
+    return v
+
+
 def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_components=False,
-                mel=False, sr=44100, n_mels=80, fmax=None):
+                mel=False, sr=44100, n_mels=80, fmax=None,
+                floor_fit=False, floor_pctile=15.0, floor_cutoff_hz=375.0):
     """multi-resolution STFT magnitude loss: spectral convergence + log-magnitude L1.
 
     When return_components=True, returns dict {'spec', 'sc', 'logm'} of scalars instead
@@ -113,6 +125,24 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             fb = _mel_fb(n_fft, sr, n_mels, fmax if fmax is not None else sr / 2.0, A.device, A.dtype)
             A = torch.einsum('mf,bft->bmt', fb, A)
             G = torch.einsum('mf,bft->bmt', fb, G)
+        if floor_fit:
+            # Percentile-floor target for the noise-fit epoch. For the BROADBAND bins
+            # (>= floor_cutoff_hz) replace the target with a per-freq FLOOR: the low percentile of
+            # |STFT(target)| pooled over batch AND time. Pooling over the batch is essential -- a
+            # single 46 ms rollout may be entirely inside a syllable, but across the 64 segments the
+            # quiet inter-syllable frames reveal the true noise floor. So the (stationary) noise is
+            # fit to the floor, not the loudness-weighted average (which parked it ~20-50x too high).
+            # LF bins (< cutoff) keep the real time-resolved target so the rumble fits the LF signal.
+            fdim = G.shape[-2]
+            if mel:
+                bin_hz = torch.as_tensor(_mel_hz(fdim, fmax if fmax is not None else sr / 2.0),
+                                         device=G.device, dtype=G.dtype)
+            else:
+                bin_hz = torch.linspace(0.0, sr / 2.0, fdim, device=G.device, dtype=G.dtype)
+            Gp = G.permute(1, 0, 2).reshape(fdim, -1)               # (F, B*T)
+            N_floor = torch.quantile(Gp, float(floor_pctile) / 100.0, dim=1).view(1, fdim, 1)
+            hi = (bin_hz >= float(floor_cutoff_hz)).view(1, fdim, 1)
+            G = torch.where(hi, N_floor.expand_as(G), G)
         sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + sc_eps)
         logm = (torch.log(G + eps) - torch.log(A + eps)).abs().mean(dim=(-2, -1))
         sc_total = sc_total + sc.mean()
