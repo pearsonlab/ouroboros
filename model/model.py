@@ -697,13 +697,16 @@ class Ouroboros(nn.Module):
         else:
             g_out = self.sigma_mamba(x_in)[:, L:, :]
         if getattr(self, "sigma_constant", False):
-            # Constant noise gate: mean-pool the encoder over time and predict ONE number per
-            # segment. This forces g to model a STATIONARY floor level rather than tracking the
-            # syllabic envelope (which the time-varying gate was doing -- it rose on loud syllables,
-            # so subtracting g^2*N(f) would eat the vocalization). Broadcast back over time.
-            g_out = g_out.mean(dim=1, keepdim=True)                  # (B, 1, F)
-            g = F.relu(self.sigma_net(g_out))                       # (B, 1, 1) one number per segment
-            return g.expand(-1, L, -1)                              # (B, L, 1) constant over the voc
+            # ONE number per vocalization = the noise-FLOOR level. sigma_mamba already reads the full
+            # waveform AND its reversal (x_in = [flip(z), z] -> every position is bidirectional), so
+            # the issue is not access but the REDUCTION to a scalar. A mean-pool is loudness-weighted
+            # and washes the floor out (a loud-syllable voc with a low floor reads high). Instead take
+            # a LOW PERCENTILE over time of the per-time gate: the floor IS the quiet-moment level, and
+            # this lets the SSM put syllable loudness in the high percentiles and read the floor off
+            # the low ones. See docs/noise_floor_fit.md.
+            g_t = F.relu(self.sigma_net(g_out))                     # (B, L, 1) per-time gate, full ctx
+            g_c = torch.quantile(g_t, 0.15, dim=1, keepdim=True)    # (B, 1, 1) floor = 15th pctile
+            return g_c.expand(-1, L, -1)                            # (B, L, 1) constant over the voc
         g = F.relu(self.sigma_net(g_out))
         # Optional smoothing (opt-in via sigma_lowpass_ms). The Gaussian kernel has all-positive,
         # unit-sum weights, so low-passing a nonnegative gate keeps it nonnegative.
