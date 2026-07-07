@@ -422,6 +422,14 @@ def main():
     p.add_argument("--floor-correction", type=float, default=1.2,
                    help="Bias-correction factor multiplying the quiet-frame floor (selecting low-power frames "
                         "biases the estimate downward; ~1.2 de-biases it, cf. MAD->sigma's 1.4826).")
+    p.add_argument("--noise-fit-only", action=argparse.BooleanOptionalAction, default=False,
+                   help="Noise-floor-fit STAGE: skip the oscillator (drives / TF anchor / RK4 rollout) and run "
+                        "only the feedforward rumble + filtered noise. No rollout cost -> use a LONG --context-len "
+                        "so segments contain quiet gaps and the quiet-frame floor is the true floor.")
+    p.add_argument("--lam-rumble-td", type=float, default=0.0,
+                   help="Weight on a time-domain MSE of the rumble vs the raw LF waveform (low-passed at "
+                        "--rumble-lowpass-hz). Phase-aligns the rumble so raw-rumble cancels in the time domain; "
+                        "rumble-only; drop it once the rumble is frozen.")
     p.add_argument("--floor-cutoff-hz", type=float, default=-1.0,
                    help="Frequency boundary: bins >= this get the floor target (noise); below keep the real "
                         "time-resolved target (rumble). Default (-1) AUTO-derives to 1.5*--rumble-lowpass-hz "
@@ -591,6 +599,7 @@ def main():
         mel_spec=args.mel_spec, mel_n_mels=args.mel_n_mels,
         floor_fit=args.noise_floor_fit, floor_pctile=args.floor_pctile,
         floor_correction=args.floor_correction,
+        noise_fit_only=args.noise_fit_only, lam_rumble_td=args.lam_rumble_td,
         floor_cutoff_hz=(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
                          else 1.5 * args.rumble_lowpass_hz),  # one shared cutoff (--rumble-lowpass-hz)
         freeze_noise_epochs=args.freeze_noise_epochs,
@@ -656,6 +665,8 @@ def main():
         "noise_floor_fit": bool(args.noise_floor_fit),
         "floor_pctile": float(args.floor_pctile),
         "floor_correction": float(args.floor_correction),
+        "noise_fit_only": bool(args.noise_fit_only),
+        "lam_rumble_td": float(args.lam_rumble_td),
         "floor_cutoff_hz": float(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
                                  else 1.5 * args.rumble_lowpass_hz),
         "use_rumble_branch": bool(args.use_rumble_branch),

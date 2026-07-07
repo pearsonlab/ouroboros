@@ -290,6 +290,8 @@ def train(
     floor_pctile: float = 25.0,
     floor_cutoff_hz: float = 375.0,
     floor_correction: float = 1.2,
+    noise_fit_only: bool = False,  # skip oscillator (drives/TF/rollout) -> long-window rumble+noise fit
+    lam_rumble_td: float = 0.0,    # time-domain MSE: rumble vs raw LF waveform (phase-align)
     freeze_noise_epochs: int = 0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
@@ -599,6 +601,7 @@ def train(
                     mel_spec=mel_spec, mel_n_mels=mel_n_mels,
                     floor_fit=floor_fit, floor_pctile=floor_pctile, floor_cutoff_hz=floor_cutoff_hz,
                     floor_correction=floor_correction,
+                    noise_fit_only=noise_fit_only, lam_rumble_td=lam_rumble_td,
                 )
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):
