@@ -658,8 +658,11 @@ def rumble_branch(model, x, dxdt, dt, H):
     spend capacity on it -- the oscillator is left FULL-RANGE (not high-passed), so it can still
     reach below the cutoff when a vocalization has genuine LF content. Differentiable in the head.
     """
-    r = model.get_rumble(x, dxdt.clone(), dt)      # (B, L, 1) band-limited LF source
-    return r[:, :H, 0]                             # (B, H)
+    r = model.get_rumble(x, dxdt.clone(), dt)[:, :H, 0]   # (B, H) band-limited LF source
+    # DC-subtract (like the oscillator source): the rumble low-pass passes 0 Hz and the MRSTFT loss
+    # ignores the 0-freq bin, so an un-penalized DC offset would otherwise accumulate -- adding a
+    # pure offset to the output and a broadband STFT edge artifact. Remove it.
+    return r - r.mean(dim=1, keepdim=True)
 
 
 def spectral_rollout_step(
