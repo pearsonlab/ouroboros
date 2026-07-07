@@ -29,37 +29,50 @@ loudness-weighted average (which over-subtracts and erases the vocalization).
   (`high-pass = x − lowpass(x)`), so rumble and noise are complementary and **one**
   parameter (`--rumble-lowpass-hz`) sets the whole LF/noise split. The floor-fit band
   boundary auto-derives to `1.5 ×` that cutoff (the rumble's effective upper edge).
-- **sigma** (`--sigma-constant`): **one number per vocalization** (the sigma Mamba head
-  mean-pools over time). It must model a *stationary floor level*, not track syllables.
-  With the noise high-passed, `sigma` only ever scales the **broadband** floor, so the LF
-  fit can't prop it up.
+- **sigma** (`--sigma-constant`): **one scalar gain per vocalization** on the filtered
+  noise. The sigma Mamba head reads the whole waveform (+ its reversal), mean-pools to a
+  single number, and applies **softplus** (so it can approach 0 smoothly for clean vocs
+  without a dead-relu collapse). With the noise high-passed, this gain only ever scales the
+  **broadband** floor, so the LF fit can't prop it up.
 
-## The floor target (`--noise-floor-fit`)
+## The floor target (`--noise-floor-fit`) — MASKED regression
 
-For broadband bins (≥ the derived cutoff) the spectral target is replaced, **per sample**,
-by an estimate of that vocalization's own noise floor. LF bins keep the real
-time-resolved target so the rumble fits the LF signal.
+For broadband bins (≥ the derived cutoff) the spectral loss is **masked to that
+vocalization's QUIET time frames**, and there `sigma · noise_tract` is regressed onto the
+real spectra of those frames (their floor). LF bins keep the loss at all frames so the
+rumble fits the LF signal. The scalar gain is learned directly by this masked loss — no
+scalar reduction sits in the gradient path.
 
-Design choices, in order of how we arrived at them:
+Design choices, in the order we arrived at them (each fixed a failure of the last):
 
-1. **Per sample, not batch-pooled.** Recording floors vary across vocalizations
-   (~30× observed). A single batch-pooled floor is right for some vocs and
-   off-by-a-constant for others — a *target* error, visible as one PSD panel dead-on and
-   another shifted by a fixed dB. So each voc targets its **own** floor.
+1. **Per sample, not batch-pooled.** Recording floors vary per vocalization; a single
+   batch-pooled floor is right for some vocs and off-by-a-constant for others (visible as
+   one PSD panel dead-on, another shifted by a fixed dB). Each voc targets its **own** floor.
 
-2. **Quiet-frame spectrum, not a per-frequency percentile.** A per-frequency percentile
-   over time stitches a *different* time frame into each bin — incoherent, and it sits
-   4–6 dB below the mean (each bin is a single exponential-ish variable, so its low
-   percentile is far below its mean). Instead we pick the **quiet time frames** — those
-   whose **broadband** power (not *total* power, which the LF/rumble would contaminate —
-   this was the syllD 2–5 kHz contamination bug) falls in the `[0.4·p, p]` percentile band
-   (`p = --floor-pctile`, default 25 → the 10–25th percentile frames) — and **average
-   their spectra**. That is a real, coherent quiet-moment spectrum; the shared
-   `noise_tract` learns the spectral *shape*.
+2. **Select QUIET FRAMES by BROADBAND power, not per-frequency percentiles, not total
+   power.** A per-frequency percentile stitches a different time frame into each bin
+   (incoherent, and 4–6 dB below the mean). Total-power selection lets the LF/rumble pick
+   the frames (the syllD 2–5 kHz contamination bug). So: select frames whose **broadband**
+   power (≥ cutoff) is in the `[0.4·p, p]` percentile band and use *those* frames.
 
-3. **Bias correction (`--floor-correction`).** Selecting low-power frames biases the
-   estimate downward — the classic minimum-statistics bias, exactly analogous to
-   MAD → σ needing 1.4826. See the derivation below. Default 1.2.
+3. **MASK the loss, don't build a target spectrum, and keep g(t) out of the gradient
+   reduction.** Every attempt to reduce the gate to a scalar *inside the forward pass*
+   failed: mean-pool → the shared gain collapsed to 0; hard percentile → oscillated
+   (109→0.95→13.8); soft low-k → still fragile — because the reduction sat in the gradient
+   path and its frame-selection moved with the gate's own values. The fix is to **mask the
+   broadband loss to the (target-selected, stable) quiet frames** and let the head emit one
+   scalar gain trained by that masked loss. Loud frames get no broadband gradient, so
+   syllables can't drag the gain up. The shared `noise_tract` learns the (universal) shape.
+
+4. **Bias correction (`--floor-correction`).** Selecting low-power frames biases the
+   estimate downward — the classic minimum-statistics bias, analogous to MAD → σ needing
+   1.4826. Closed form below. The `[5,15]` band (`--floor-pctile 15`, `--floor-correction
+   1.3`) tracks the true floor better than `[10,25]` (measured 1.1–1.3× vs 1.2–1.9× bias
+   across voc types), at the cost of a slightly noisier per-segment estimate.
+
+The noise-floor **shape is universal** across voc types (normalized quiet-frame PSDs of
+syllA–E overlap within 1.3–2.4 dB), so one shared `noise_tract` is correct — only the
+per-voc **level** (the scalar gain) needs to vary.
 
 ## Deriving the correction factor (principled, not tuned)
 
@@ -103,28 +116,65 @@ Matches to <1%. Our colored noise sits between, so `C ≈ 1.12–1.27`; the fixe
 broadband power each batch and plug into `C(K)` — no magic constant. (Not yet wired in;
 the fixed 1.2 only sets the absolute level by ±~0.8 dB.)
 
+## Long-window noise-fit STAGE (`--noise-fit-only`)
+
+The floor lives in the quiet frames between syllables. A 46 ms rollout window (the
+oscillator's H) **has no quiet frames for a dense vocalizer** — syllD's 46 ms quiet-frame
+floor is **67×** its true full-voc floor — so the gain fit an elevated target and plateaued
+(loudness-dominated at init, e.g. syllD's gain read *highest* despite the lowest floor).
+
+The fix exploits that this stage doesn't need the oscillator: `--noise-fit-only` **skips the
+drives / TF anchor / RK4 rollout** and runs only the feedforward rumble + filtered noise.
+With no O(H) rollout, the window can be long (`--context-len 0.3`, H≈13000), so segments
+contain quiet gaps and the per-segment quiet-frame floor **is** the true floor. Result: the
+per-voc gain specializes to each voc's true floor (syllD/E from 125×/58× to ~2×, syllA/C on
+their floor) instead of a uniform loudness-driven value. Memory scales with `batch ×
+window`; use `--batch-size 8` at H≈13000 on an 11 GB card.
+
+## Rumble = time-domain MSE (`--lam-rumble-td`), noise = magnitude only
+
+The rumble is **deterministic**, so it *can* be phase-aligned to the actual LF waveform;
+the noise (stochastic) and oscillator (magnitude loss) cannot. Add a time-domain MSE of the
+rumble vs the raw LF (`lowpass(raw, rumble_lowpass_hz)`, DC-subtracted):
+`lam_rumble_td · mean((rumble − raw_LF)²)`. **Rumble only.** Without it the magnitude loss
+leaves the rumble phase random, so `raw − rumble` **adds** LF power (measured 4–5×) instead
+of cancelling. With it, time-domain `raw − rumble` removes 65–99 % of the LF. Drop the MSE
+once the rumble is frozen.
+
+## Residual subtraction (for the oscillator stage)
+
+Because everything here is magnitude-trained *except* the (MSE'd) rumble:
+
+- **rumble** → subtract in the **time domain**: `x = raw − rumble` (phase-aligned).
+- **noise** → subtract in the **power domain**: `residual = √max(|STFT(x)|² − E|STFT(noise)|², 0)`
+  (stochastic, no phase). Estimate `E|STFT(noise)|²` by a few draws.
+
+(Subtracting the magnitude-only rumble in the time domain *without* the MSE would add LF,
+not remove it — the original plan's bug.)
+
 ## Flags
 
 ```
---sigma-constant                 # one noise-gate number per vocalization
+--sigma-constant                 # one softplus scalar gain per vocalization
 --use-noise-branch --use-rumble-branch
 --rumble-lowpass-hz 250          # THE single LF/noise crossover (rumble LP, noise HP, floor boundary=1.5x)
---noise-floor-fit                # broadband target = per-sample quiet-frame floor
---floor-pctile 25                # quiet-frame band upper edge (frames in [0.4p, p] percentile)
---floor-correction 1.2           # minimum-statistics bias correction; C(K), see above
-# oscillator frozen during the warm-up:
+--noise-floor-fit                # mask broadband loss to per-sample quiet frames
+--floor-pctile 15                # quiet-frame band = [0.4p, p] pctile -> [6,15]; beats [10,25]
+--floor-correction 1.3           # minimum-statistics bias correction C(K); 1.3 for [5,15], 1.2 for [10,25]
+--noise-fit-only                 # skip oscillator -> long window; run only rumble + noise
+--lam-rumble-td 10               # time-domain rumble MSE (phase-align); rumble-only, drop when frozen
+--context-len 0.3 --H-min 13000 --H-max 13000 --batch-size 8   # long window; oscillator's H is irrelevant here
 --lam-tf 0 --freeze-drives-epochs N --freeze-tract-epochs N --freeze-envelope-epochs N
 ```
 
-Implementation: `mrstft_loss(..., floor_fit=...)` in `train/rollout_refine.py`;
-noise high-pass in `filtered_noise_branch` (`train/spectral_rollout.py`); constant sigma in
-`Ouroboros.get_sigma` (`model/model.py`).
+Implementation: masked floor loss + rumble MSE in `spectral_rollout_step` /
+`mrstft_loss` (`train/rollout_refine.py`, `train/spectral_rollout.py`); noise high-pass in
+`filtered_noise_branch`; scalar gain in `Ouroboros.get_sigma` (`model/model.py`).
 
-## Known open issue
+## Self-calibrating correction (optional, not wired)
 
-The constant-sigma head **mean-pools over time**, so it reads loudness-dominated features:
-a voc with loud syllables but a low floor (e.g. syllD) makes the head predict a *high*
-sigma even though its floor is low. Result: noise-dominated vocs land on their floor
-immediately, but clean-but-loud vocs are slow to (or don't) diverge downward. Candidate
-fix: pool the sigma head over a **low percentile** of its time-encoding rather than the
-mean, so it estimates the floor from the quiet part of its own input.
+`C(K)` needs only `K` = effective DOF = `mean²/var` of the **pure-noise** broadband power
+(≈30 for our colored noise; ≈80 white, ≈20 pink). Estimate it from the selected quiet
+frames each batch and plug into the closed form — no magic constant. NB: estimate `K` on the
+*quiet frames only*; over the full segment the syllables inflate the variance and `K`
+collapses (→ absurd `C`).
