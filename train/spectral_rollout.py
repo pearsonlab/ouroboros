@@ -646,6 +646,14 @@ def filtered_noise_branch(model, x, dxdt, dt, H, rng=None):
     g = model.get_sigma(x, dxdt.clone(), dt)[:, :H, 0]                 # (B, H) AM gate >= 0
     w = torch.randn(B, H, device=dev, dtype=x.dtype, generator=rng)    # white noise
     colored = model.noise_tract.apply(w[..., None])[..., 0]           # (B, H) low-order rational
+    if getattr(model, "use_rumble_branch", False):
+        # Band-limit the noise to the COMPLEMENT of the rumble: high-pass ABOVE the shared crossover
+        # (rumble_lowpass_hz -- the SINGLE cutoff controlling both branches). The LF is owned entirely
+        # by the rumble Mamba head; the (shared, constant) sigma then only ever scales the broadband
+        # floor, so the LF fit can't prop sigma up. high-pass = x - lowpass(x) at the same cutoff, so
+        # rumble (lowpass) + noise (highpass) cross over cleanly with the raised-cosine transition.
+        cutoff = float(getattr(model, "rumble_lowpass_hz", 250.0))
+        colored = colored - model._lowpass_fft(colored[..., None], cutoff, dt)[..., 0]
     return g * colored                                                # sigma AM gate
 
 
