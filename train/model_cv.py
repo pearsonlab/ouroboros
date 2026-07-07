@@ -301,6 +301,9 @@ def model_seed_cv_spectral(
     noise_init_bias: float = 0.1,
     noise_start_step: int = 0,
     noise_warmup_steps: int = 0,
+    osc_warmup_epochs: int = 0,
+    mel_spec: bool = False,
+    mel_n_mels: int = 80,
     freeze_noise_epochs: int = 0,
     use_noise_branch: bool = False,
     noise_tract_n_sec: int = 3,
@@ -437,6 +440,8 @@ def model_seed_cv_spectral(
                 noise_start_step=noise_start_step,
                 noise_warmup_steps=noise_warmup_steps,
                 freeze_noise_epochs=freeze_noise_epochs,
+                osc_warmup_epochs=osc_warmup_epochs,
+                mel_spec=mel_spec, mel_n_mels=mel_n_mels,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

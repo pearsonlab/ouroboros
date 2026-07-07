@@ -298,10 +298,20 @@ else:
             min(1.0, (_step - _nstart) / _nwarm) if _nwarm > 0 else 1.0)
     except (KeyError, ValueError, TypeError):
         _noise_gain = 1.0
+# Oscillator warmup gain: same ramp-from-step logic as noise, so warmup-epoch checkpoints are
+# scored/rendered with the oscillator OFF (only rumble+noise), matching what was trained.
+try:
+    _ostep = float(os.environ["MONITOR_STEP_OVERRIDE"]) + float(os.environ.get("MONITOR_BPE", "0"))
+    _ostart = float(os.environ.get("MONITOR_OSC_START_STEP", "0"))
+    _owarm = float(os.environ.get("MONITOR_OSC_WARMUP_STEPS", "0"))
+    _osc_gain = 0.0 if _ostep < _ostart else (
+        min(1.0, (_ostep - _ostart) / _owarm) if _owarm > 0 else 1.0)
+except (KeyError, ValueError, TypeError):
+    _osc_gain = 1.0
 with torch.no_grad():
     score, _, bd, trajs = autonomy_score(
         model, val_vocs, DT, rescale=False, cold_start=True, return_trajectories=True,
-        noise_gain=_noise_gain,
+        noise_gain=_noise_gain, osc_gain=_osc_gain,
     )
 
 # Persist signed amp_pen alongside the offline cache the loss panels reads.
@@ -520,7 +530,7 @@ try:
         # MONITOR_CKPT_LABEL overrides the title's epoch tag — used by the inflight
         # scorer to display the real epoch / step rather than the temp-dir stub of "0".
         _label = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
-        fig.suptitle(f"voc{i}  ckpt {_label}  noise_gain={_noise_gain:.2f}   "
+        fig.suptitle(f"voc{i}  ckpt {_label}  noise_gain={_noise_gain:.2f}  osc_gain={_osc_gain:.2f}   "
                      f"(spec: mel, dB re target peak, [-80, 0])", fontsize=10)
         plt.tight_layout()
         sw.add_figure(f"specgram/voc{i}", fig, step)

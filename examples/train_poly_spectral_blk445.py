@@ -380,6 +380,16 @@ def main():
     p.add_argument("--freeze-noise-epochs", type=int, default=0,
                    help="Freeze the sigma gate head (sigma_mamba + sigma_net) for the first N epochs. "
                         "0 disables (the gain ramp already holds the term off early).")
+    p.add_argument("--osc-warmup-epochs", type=int, default=0,
+                   help="Oscillator warmup: hold the deterministic (oscillator->env->tract) output "
+                        "gated OFF for the first N epochs so the rumble+noise branches fit the "
+                        "spectrum FIRST, then ramp the oscillator in over the following epoch. The "
+                        "oscillator/tract/envelope get no gradient while gated (stay at init). 0 = off.")
+    p.add_argument("--mel-spec", action=argparse.BooleanOptionalAction, default=False,
+                   help="Compute the MRSTFT magnitude loss on MEL-warped spectra (mel filterbank "
+                        "applied to |STFT| before the SC + log-mag terms) instead of linear frequency.")
+    p.add_argument("--mel-n-mels", type=int, default=80,
+                   help="Number of mel bands for --mel-spec (fmax = Nyquist). Default 80.")
     # harmonic-plus-noise: additive filtered-noise branch (alternative to --enable-noise-forcing)
     p.add_argument("--use-noise-branch", action=argparse.BooleanOptionalAction, default=False,
                    help="Harmonic-plus-noise: keep the oscillator PURELY deterministic (RK4) and add, "
@@ -554,6 +564,8 @@ def main():
         use_rumble_branch=args.use_rumble_branch, rumble_lowpass_hz=args.rumble_lowpass_hz,
         noise_start_step=args.noise_start_step,
         noise_warmup_steps=args.noise_warmup_steps,
+        osc_warmup_epochs=args.osc_warmup_epochs,
+        mel_spec=args.mel_spec, mel_n_mels=args.mel_n_mels,
         freeze_noise_epochs=args.freeze_noise_epochs,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
@@ -617,6 +629,9 @@ def main():
         "rumble_lowpass_hz": float(args.rumble_lowpass_hz),
         "noise_start_step": int(args.noise_start_step),
         "noise_warmup_steps": int(args.noise_warmup_steps),
+        "osc_warmup_epochs": int(args.osc_warmup_epochs),
+        "mel_spec": bool(args.mel_spec),
+        "mel_n_mels": int(args.mel_n_mels),
         "freeze_noise_epochs": int(args.freeze_noise_epochs),
         "sr": int(sr),
     }

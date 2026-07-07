@@ -73,7 +73,22 @@ def stft_mag(x, n_fft, hop):
     return S.abs()  # (B, F, T)
 
 
-def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_components=False):
+_MEL_FB_CACHE = {}
+def _mel_fb(n_fft, sr, n_mels, fmax, device, dtype):
+    """Cached mel filterbank (n_mels, n_fft//2+1) as a torch tensor for mel-warping the STFT
+    magnitude inside the loss. Uses librosa (already a codebase dep)."""
+    key = (int(n_fft), int(round(sr)), int(n_mels), float(fmax), str(device), str(dtype))
+    fb = _MEL_FB_CACHE.get(key)
+    if fb is None:
+        import librosa
+        fb_np = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels, fmax=fmax)  # (n_mels, F)
+        fb = torch.tensor(fb_np, device=device, dtype=dtype)
+        _MEL_FB_CACHE[key] = fb
+    return fb
+
+
+def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_components=False,
+                mel=False, sr=44100, n_mels=80, fmax=None):
     """multi-resolution STFT magnitude loss: spectral convergence + log-magnitude L1.
 
     When return_components=True, returns dict {'spec', 'sc', 'logm'} of scalars instead
@@ -91,6 +106,13 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
     for n_fft, hop in configs:
         A = stft_mag(xg, n_fft, hop)
         G = stft_mag(tgt, n_fft, hop)
+        if mel:
+            # Warp the linear STFT magnitude onto a mel filterbank BEFORE the SC/log-mag terms,
+            # so the loss weights low/mid vocal structure the way a mel spectrogram does. fmax
+            # defaults to Nyquist (nothing discarded, just mel-spaced).
+            fb = _mel_fb(n_fft, sr, n_mels, fmax if fmax is not None else sr / 2.0, A.device, A.dtype)
+            A = torch.einsum('mf,bft->bmt', fb, A)
+            G = torch.einsum('mf,bft->bmt', fb, G)
         sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + sc_eps)
         logm = (torch.log(G + eps) - torch.log(A + eps)).abs().mean(dim=(-2, -1))
         sc_total = sc_total + sc.mean()

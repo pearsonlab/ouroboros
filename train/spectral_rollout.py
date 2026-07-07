@@ -687,6 +687,9 @@ def spectral_rollout_step(
     rng: Optional[torch.Generator] = None,
     rollout_backend: str = "eager",
     noise_gain: float = 0.0,          # ramp/ablation multiplier on the OU forcing (0 => off)
+    osc_gain: float = 1.0,            # gain on the deterministic (tract) output; warmup ramp gates it in
+    mel_spec: bool = False,           # compute the MRSTFT magnitude loss on mel-warped spectra
+    mel_n_mels: int = 80,
 ) -> dict:
     """One forward + loss for the spectral-rollout objective.
 
@@ -788,6 +791,15 @@ def spectral_rollout_step(
     if getattr(model, "use_tract", False):
         xg = model.tract.apply(xg[..., None])[..., 0]  # (B, H)
 
+    # Oscillator warmup gate: multiply the deterministic (oscillator -> env -> tract) output by
+    # osc_gain. Held at 0 during warmup (train.train schedule) so the rumble+noise branches fit
+    # the SPECTRAL loss FIRST, then ramped to 1 to bring the oscillator in for the harmonics. At
+    # osc_gain=0 the tract output is 0, so the spectral loss sends NO gradient to the oscillator /
+    # tract / envelope -- they are not recruited to the spectrum. (The TF anchor still uses the
+    # drives directly, weight lam_tf, so the oscillator idles in a learnable basin meanwhile.)
+    if osc_gain != 1.0:
+        xg = osc_gain * xg
+
     # Harmonic-plus-noise: add the parallel filtered-noise branch OUTSIDE the tract. The
     # oscillator rollout above stayed fully deterministic (gate=None => RK4), so this is a
     # clean additive source -- no ODE coupling, no collapse. noise_gain ramps/gates it in.
@@ -822,7 +834,8 @@ def spectral_rollout_step(
     tgt = x[:, :H, 0]
 
     configs_H = _filter_configs_for_horizon(configs, H)
-    spec_parts = mrstft_loss(xg, tgt, configs_H, return_components=True)
+    spec_parts = mrstft_loss(xg, tgt, configs_H, return_components=True,
+                             mel=mel_spec, sr=1.0 / dt, n_mels=mel_n_mels)
     L_spec = spec_parts["spec"]
     L_sc = spec_parts["sc"]
     L_logm = spec_parts["logm"]

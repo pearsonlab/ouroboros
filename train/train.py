@@ -278,6 +278,12 @@ def train(
     # and set noise_start_step so the deterministic model is settled before noise turns on.
     noise_start_step: int = 0,
     noise_warmup_steps: int = 0,
+    # Oscillator warmup: osc_gain (gain on the deterministic tract output) is held at 0 for the
+    # first `osc_warmup_epochs` epochs, then ramped 0 -> 1 over the following epoch -- so the
+    # rumble+noise branches fit the spectrum FIRST and the oscillator is brought in afterward.
+    osc_warmup_epochs: int = 0,
+    mel_spec: bool = False,        # MRSTFT magnitude loss on mel-warped spectra
+    mel_n_mels: int = 80,
     freeze_noise_epochs: int = 0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
@@ -366,6 +372,9 @@ def train(
             H_total_steps_eff = nEpochs * batches_per_epoch
         else:
             H_total_steps_eff = int(H_total_steps)
+        # Oscillator warmup: osc off for the first osc_warmup_epochs, then ramp in over one epoch.
+        osc_start_step_eff = int(osc_warmup_epochs) * batches_per_epoch
+        osc_warmup_steps_eff = batches_per_epoch if osc_warmup_epochs > 0 else 0
         _k0 = (float(model.tract.K_anchor_target)
                if getattr(model, "tract", None) is not None else float("nan"))
         print(
@@ -451,6 +460,7 @@ def train(
         print(f"enable_noise_forcing: sigma head ({len(noise_params)} tensors), "
               f"noise_tau_ms={getattr(model, 'noise_tau_ms', None)}, "
               f"noise_start_step={noise_start_step}, noise_warmup_steps={noise_warmup_steps}, "
+              f"osc_warmup_epochs={osc_warmup_epochs} (osc_start_step={osc_start_step_eff}), mel_spec={mel_spec}, "
               f"freeze_noise_epochs={freeze_noise_epochs}.", flush=True)
 
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
@@ -556,6 +566,14 @@ def train(
                     noise_gain_t = min(1.0, (idx - noise_start_step) / float(noise_warmup_steps))
                 else:
                     noise_gain_t = 1.0
+                # Oscillator warmup ramp: held at 0 until osc_start_step_eff (rumble+noise fit
+                # first), then 0 -> 1 over osc_warmup_steps_eff. Gates the deterministic tract output.
+                if idx < osc_start_step_eff:
+                    osc_gain_t = 0.0
+                elif osc_warmup_steps_eff > 0:
+                    osc_gain_t = min(1.0, (idx - osc_start_step_eff) / float(osc_warmup_steps_eff))
+                else:
+                    osc_gain_t = 1.0
                 out = spectral_rollout_step(
                     model, x, dxdt, dx2, dt,
                     H=H, configs=spec_configs,
@@ -571,6 +589,8 @@ def train(
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
                     noise_gain=noise_gain_t,
+                    osc_gain=osc_gain_t,
+                    mel_spec=mel_spec, mel_n_mels=mel_n_mels,
                 )
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):
@@ -639,6 +659,8 @@ def train(
                 writer.add_scalar("Loss/total", total_v, idx)
                 if getattr(model, "enable_noise_forcing", False) or getattr(model, "use_noise_branch", False):
                     writer.add_scalar("Train/noise_gain", float(noise_gain_t), idx)
+                if osc_start_step_eff > 0:
+                    writer.add_scalar("Train/osc_gain", float(osc_gain_t), idx)
                 # Weighted (contribution to total) -- directly comparable across components
                 writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)
                 writer.add_scalar("LossW/sc",    float(lam_spec_t) * sc_v,    idx)

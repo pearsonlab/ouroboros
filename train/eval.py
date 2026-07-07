@@ -369,6 +369,7 @@ def integrate_poly_autonomous(
     detrend: bool = True,
     noise_sd: float = 0.0,
     noise_gain: float = 0.0,
+    osc_gain: float = 1.0,
     seed: int = 0,
     verbose: bool = True,
     return_envelope: bool = False,
@@ -463,6 +464,10 @@ def integrate_poly_autonomous(
             xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to(dev)
             with torch.no_grad():
                 x_src = model.tract.apply(xt).detach().cpu().numpy().squeeze()
+        # Oscillator warmup gate: scale the deterministic (tract) output by osc_gain, matching
+        # the training-time gate, BEFORE the additive noise/rumble branches.
+        if osc_gain != 1.0:
+            x_src = x_src * osc_gain
         # Harmonic-plus-noise: add the additive filtered-noise branch OUTSIDE the tract, so the
         # autonomous reconstruction matches training (harmonic + noise floor). Gated by noise_gain.
         # Capture the added term (noise_gain * filtered noise) so callers can plot it.
@@ -649,6 +654,7 @@ def autonomy_score(
     cold_start: bool = False,
     return_trajectories: bool = False,
     noise_gain: float = 0.0,
+    osc_gain: float = 1.0,
 ) -> tuple:
     """
     Validation metric for AUTONOMOUS reconstruction quality (model-selection criterion).
@@ -717,12 +723,12 @@ def autonomy_score(
         tgt = correct(seg)
         if return_trajectories:
             auto, env, src, drives = integrate_poly_autonomous(
-                model, seg, dt, method=method, noise_sd=0.0, noise_gain=noise_gain,
+                model, seg, dt, method=method, noise_sd=0.0, noise_gain=noise_gain, osc_gain=osc_gain,
                 detrend=True, verbose=False, return_envelope=True,
                 return_source=True, return_drives=True)
         else:
             auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
-                                             noise_gain=noise_gain,
+                                             noise_gain=noise_gain, osc_gain=osc_gain,
                                              detrend=True, verbose=False)
             env = src = drives = None
         n = min(len(tgt), len(auto))
