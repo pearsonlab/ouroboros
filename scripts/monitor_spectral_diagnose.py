@@ -388,6 +388,7 @@ try:
         else:
             tgt_n, auto_n = traj
             env_n = src_n = drives = None
+        rumble_n = drives.get('rumble') if drives is not None else None
         s_tgt = float(np.nanstd(tgt_n) + 1e-12)
         s_auto = float(np.nanstd(auto_n) + 1e-12)
         auto_rescaled = auto_n * (s_tgt / s_auto)  # match target RMS for listening / display
@@ -402,8 +403,10 @@ try:
         #   row 0: target waveform | target spectrogram
         #   row 1: auto (post-tract) waveform | auto spectrogram
         #   row 2: source (pre-tract, pre-env) waveform | source spectrogram (if src_n)
-        #   row 3: drives panel -- omega^2 / gamma / alpha time series (if drives)
-        n_rows = 2 + (1 if src_n is not None else 0) + (1 if drives is not None else 0)
+        #   row 3: rumble (band-limited LF branch) waveform | spectrogram (if rumble_n)
+        #   row 4: drives panel -- omega^2 / gamma / alpha time series (if drives)
+        n_rows = (2 + (1 if src_n is not None else 0)
+                  + (1 if rumble_n is not None else 0) + (1 if drives is not None else 0))
         fig, axes = plt.subplots(n_rows, 2, figsize=(11, 2 * n_rows),
                                  gridspec_kw={'width_ratios': [1, 2]})
         # Mel-spaced spectrograms (default): the low/mid vocal structure is what matters
@@ -436,6 +439,8 @@ try:
                      ("auto",   auto_n, auto_n, "tab:green")]
         if src_n is not None:
             row_specs.append(("source", src_n, src_n, "tab:purple"))
+        if rumble_n is not None:
+            row_specs.append(("rumble", rumble_n, rumble_n, "tab:blue"))
         for row, (label, wf_x, spec_x, color) in enumerate(row_specs):
             t_ms = np.arange(len(wf_x)) / SR * 1000
             axes[row, 0].plot(t_ms, wf_x, color=color, lw=0.6); axes[row, 0].set_ylabel(label)
