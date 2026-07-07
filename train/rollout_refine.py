@@ -100,7 +100,7 @@ def _mel_hz(n_mels, fmax):
 
 def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_components=False,
                 mel=False, sr=44100, n_mels=80, fmax=None,
-                floor_fit=False, floor_pctile=15.0, floor_cutoff_hz=375.0):
+                floor_fit=False, floor_pctile=25.0, floor_cutoff_hz=375.0, floor_correction=1.2):
     """multi-resolution STFT magnitude loss: spectral convergence + log-magnitude L1.
 
     When return_components=True, returns dict {'spec', 'sc', 'logm'} of scalars instead
@@ -126,23 +126,30 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             A = torch.einsum('mf,bft->bmt', fb, A)
             G = torch.einsum('mf,bft->bmt', fb, G)
         if floor_fit:
-            # Percentile-floor target for the noise-fit epoch. For the BROADBAND bins
-            # (>= floor_cutoff_hz) replace the target with a per-freq FLOOR: the low percentile of
-            # |STFT(target)| pooled over batch AND time. Pooling over the batch is essential -- a
-            # single 46 ms rollout may be entirely inside a syllable, but across the 64 segments the
-            # quiet inter-syllable frames reveal the true noise floor. So the (stationary) noise is
-            # fit to the floor, not the loudness-weighted average (which parked it ~20-50x too high).
-            # LF bins (< cutoff) keep the real time-resolved target so the rumble fits the LF signal.
+            # Noise-floor target for the noise-fit epoch (per sample, so each voc targets its OWN
+            # floor). Pick the QUIET TIME FRAMES -- those whose BROADBAND power (>= floor_cutoff_hz,
+            # the noise band, NOT total power which the LF/rumble would contaminate) falls in the
+            # [0.4*floor_pctile, floor_pctile] percentile band -- and AVERAGE their spectra. That gives
+            # a coherent floor SPECTRUM (a real quiet-moment spectrum), unlike a per-frequency
+            # percentile which stitches a different time frame per bin and sits far below the mean.
+            # floor_correction de-biases the mild downward pull of selecting low-power frames
+            # (minimum-statistics correction). Broadband bins get this floor; LF keeps the real target.
             fdim = G.shape[-2]
             if mel:
                 bin_hz = torch.as_tensor(_mel_hz(fdim, fmax if fmax is not None else sr / 2.0),
                                          device=G.device, dtype=G.dtype)
             else:
                 bin_hz = torch.linspace(0.0, sr / 2.0, fdim, device=G.device, dtype=G.dtype)
-            Gp = G.permute(1, 0, 2).reshape(fdim, -1)               # (F, B*T)
-            N_floor = torch.quantile(Gp, float(floor_pctile) / 100.0, dim=1).view(1, fdim, 1)
-            hi = (bin_hz >= float(floor_cutoff_hz)).view(1, fdim, 1)
-            G = torch.where(hi, N_floor.expand_as(G), G)
+            bb = (bin_hz >= float(floor_cutoff_hz))                      # broadband mask (F,)
+            bbp = G[:, bb, :].sum(dim=1)                                 # (B, T) broadband power/frame
+            q_lo = torch.quantile(bbp, 0.4 * float(floor_pctile) / 100.0, dim=1, keepdim=True)
+            q_hi = torch.quantile(bbp, float(floor_pctile) / 100.0, dim=1, keepdim=True)
+            sel = ((bbp >= q_lo) & (bbp <= q_hi)).to(G.dtype)           # (B, T) quiet frames
+            sel = torch.where(sel.sum(-1, keepdim=True) > 0, sel, (bbp <= q_hi).to(G.dtype))  # fallback
+            w = sel.unsqueeze(1)                                         # (B, 1, T)
+            N_floor = (G * w).sum(-1) / w.sum(-1).clamp_min(1.0)         # (B, F) quiet-frame mean
+            N_floor = (N_floor * float(floor_correction)).unsqueeze(-1)  # (B, F, 1) bias-corrected
+            G = torch.where(bb.view(1, fdim, 1), N_floor.expand_as(G), G)
         sc = torch.norm(G - A, dim=(-2, -1)) / (torch.norm(G, dim=(-2, -1)) + sc_eps)
         logm = (torch.log(G + eps) - torch.log(A + eps)).abs().mean(dim=(-2, -1))
         sc_total = sc_total + sc.mean()

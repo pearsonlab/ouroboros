@@ -286,9 +286,10 @@ def train(
     osc_warmup_epochs: int = 0,
     mel_spec: bool = False,        # MRSTFT magnitude loss on mel-warped spectra
     mel_n_mels: int = 80,
-    floor_fit: bool = False,       # noise-fit: broadband spectral target = per-freq percentile floor
-    floor_pctile: float = 15.0,
+    floor_fit: bool = False,       # noise-fit: broadband spectral target = per-sample quiet-frame floor
+    floor_pctile: float = 25.0,
     floor_cutoff_hz: float = 375.0,
+    floor_correction: float = 1.2,
     freeze_noise_epochs: int = 0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
@@ -597,6 +598,7 @@ def train(
                     osc_gain=osc_gain_t,
                     mel_spec=mel_spec, mel_n_mels=mel_n_mels,
                     floor_fit=floor_fit, floor_pctile=floor_pctile, floor_cutoff_hz=floor_cutoff_hz,
+                    floor_correction=floor_correction,
                 )
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):

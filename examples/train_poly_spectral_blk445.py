@@ -411,12 +411,17 @@ def main():
                         "noise floor rather than tracking syllabic content. For the noise-floor-fit scheme.")
     p.add_argument("--noise-floor-fit", action=argparse.BooleanOptionalAction, default=False,
                    help="Noise-fit loss: for broadband bins (>= --floor-cutoff-hz) the spectral target is a "
-                        "per-freq FLOOR = the --floor-pctile percentile of |STFT(target)| pooled over batch "
-                        "and time (minimum-statistics noise floor), so the stationary noise fits the true "
-                        "floor from quiet frames, not the loudness-weighted average. LF bins keep the real "
-                        "time-resolved target so the rumble fits the LF signal.")
-    p.add_argument("--floor-pctile", type=float, default=15.0,
-                   help="Percentile (over batch x time) for the noise-floor target. ~15 = minimum statistics.")
+                        "PER-SAMPLE floor = the mean spectrum of the QUIET TIME FRAMES (those whose broadband "
+                        "power falls in the [0.4x, 1x]*--floor-pctile percentile band), times --floor-correction "
+                        "(minimum-statistics bias correction). Each voc targets its own coherent floor spectrum; "
+                        "the shared noise_tract learns the shape. LF bins keep the real time-resolved target "
+                        "so the rumble fits the LF signal.")
+    p.add_argument("--floor-pctile", type=float, default=25.0,
+                   help="Upper edge of the quiet-frame selection band (frames with broadband power in "
+                        "[0.4*p, p] percentile are averaged). ~25 selects the 10-25th percentile frames.")
+    p.add_argument("--floor-correction", type=float, default=1.2,
+                   help="Bias-correction factor multiplying the quiet-frame floor (selecting low-power frames "
+                        "biases the estimate downward; ~1.2 de-biases it, cf. MAD->sigma's 1.4826).")
     p.add_argument("--floor-cutoff-hz", type=float, default=-1.0,
                    help="Frequency boundary: bins >= this get the floor target (noise); below keep the real "
                         "time-resolved target (rumble). Default (-1) AUTO-derives to 1.5*--rumble-lowpass-hz "
@@ -585,6 +590,7 @@ def main():
         osc_warmup_epochs=args.osc_warmup_epochs,
         mel_spec=args.mel_spec, mel_n_mels=args.mel_n_mels,
         floor_fit=args.noise_floor_fit, floor_pctile=args.floor_pctile,
+        floor_correction=args.floor_correction,
         floor_cutoff_hz=(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
                          else 1.5 * args.rumble_lowpass_hz),  # one shared cutoff (--rumble-lowpass-hz)
         freeze_noise_epochs=args.freeze_noise_epochs,
@@ -649,6 +655,7 @@ def main():
         "sigma_constant": bool(args.sigma_constant),
         "noise_floor_fit": bool(args.noise_floor_fit),
         "floor_pctile": float(args.floor_pctile),
+        "floor_correction": float(args.floor_correction),
         "floor_cutoff_hz": float(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
                                  else 1.5 * args.rumble_lowpass_hz),
         "use_rumble_branch": bool(args.use_rumble_branch),
