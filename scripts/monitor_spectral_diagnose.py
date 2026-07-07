@@ -448,7 +448,10 @@ try:
         row_specs = [("target", tgt_n,  tgt_n,  "tab:orange"),
                      ("auto",   auto_n, auto_n, "tab:green")]
         if src_n is not None:
-            row_specs.append(("source", src_n, src_n, "tab:purple"))
+            # Gate the source DISPLAY by osc_gain too, so during warmup (osc_gain=0) the source row
+            # reads ~0 -- reflecting that the oscillator isn't contributing to the output yet.
+            src_g = src_n * _osc_gain
+            row_specs.append(("source", src_g, src_g, "tab:purple"))
         if rumble_n is not None:
             row_specs.append(("rumble", rumble_n, rumble_n, "tab:blue"))
         for row, (label, wf_x, spec_x, color) in enumerate(row_specs):
