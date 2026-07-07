@@ -705,8 +705,15 @@ class Ouroboros(nn.Module):
             # this lets the SSM put syllable loudness in the high percentiles and read the floor off
             # the low ones. See docs/noise_floor_fit.md.
             g_t = F.relu(self.sigma_net(g_out))                     # (B, L, 1) per-time gate, full ctx
-            g_c = torch.quantile(g_t, 0.15, dim=1, keepdim=True)    # (B, 1, 1) floor = 15th pctile
-            return g_c.expand(-1, L, -1)                            # (B, L, 1) constant over the voc
+            # Reduce to the floor with a SOFT low-tail statistic: the mean of the lowest ~20% of the
+            # gate over time. A hard percentile (torch.quantile) gave gradient to a single time sample
+            # -> sparse updates that overshot and oscillated (and snapped to 0 when the head zeroed
+            # part of the gate). The lowest-k% mean spreads gradient over the whole quiet tail: dense,
+            # smooth, and it can't collapse to 0 unless the entire tail is 0. See docs/noise_floor_fit.md.
+            k = max(1, int(round(0.20 * g_t.shape[1])))
+            g_low = torch.topk(g_t, k, dim=1, largest=False).values  # (B, k, 1) the k quietest
+            g_c = g_low.mean(dim=1, keepdim=True)                    # (B, 1, 1) soft floor readout
+            return g_c.expand(-1, L, -1)                             # (B, L, 1) constant over the voc
         g = F.relu(self.sigma_net(g_out))
         # Optional smoothing (opt-in via sigma_lowpass_ms). The Gaussian kernel has all-positive,
         # unit-sum weights, so low-passing a nonnegative gate keeps it nonnegative.
