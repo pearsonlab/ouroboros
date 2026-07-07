@@ -333,6 +333,7 @@ try:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    import librosa  # mel filterbank for the spectrogram panels (already a codebase dep)
     bpe_env = os.environ.get('MONITOR_BPE')
     bpe = int(bpe_env) if (bpe_env and bpe_env.isdigit()) else 1
     # epoch -> step alignment: trainer's writer.add_scalar uses idx = global batch index,
@@ -404,17 +405,19 @@ try:
         n_rows = 2 + (1 if src_n is not None else 0) + (1 if drives is not None else 0)
         fig, axes = plt.subplots(n_rows, 2, figsize=(11, 2 * n_rows),
                                  gridspec_kw={'width_ratios': [1, 2]})
-        n_fft, hop = 512, 128
-        def _stft_mag(x):
-            return np.abs(np.fft.rfft(np.lib.stride_tricks.sliding_window_view(x, n_fft)[::hop]
-                                       * np.hanning(n_fft), axis=-1)).T
-        # Spectrogram colour is dB relative to the TARGET's peak |STFT| (one shared reference
-        # for all rows), so the target peaks at 0 dB and its structure fills the [-80, 0] dB
-        # range instead of saturating, while quieter rows (e.g. a ~100x-quiet auto rollout,
-        # ~-40 dB) sit visibly lower on the SAME amplitude-faithful scale. The old code used
-        # un-normalized log10|STFT| with vmax=-2, which saturated for any content above
-        # ~1e-4 amplitude -- so the target washed out and a silent rollout could look bright.
-        _spec_ref = float(np.nanmax(_stft_mag(tgt_n)) + 1e-12)
+        # Mel-spaced spectrograms (default): the low/mid vocal structure is what matters
+        # (birdsong harmonics live < ~8 kHz), so map onto a mel filterbank via librosa (already
+        # a codebase dep -- visualization/model_vis.py). n_fft=1024 gives enough low-frequency
+        # resolution that the bottom mel bands aren't empty (n_fft=512 striped). Colour is dB
+        # relative to the TARGET's peak MEL POWER (one shared reference for all rows), so the
+        # target peaks at 0 dB and quieter rows sit visibly lower on the same faithful scale.
+        _n_mels, _fmax, _mel_nfft, _mel_hop = 128, 16000.0, 1024, 256
+        def _mel_pow(x):
+            return librosa.feature.melspectrogram(
+                y=np.ascontiguousarray(x, dtype=np.float32), sr=SR, n_fft=_mel_nfft,
+                hop_length=_mel_hop, n_mels=_n_mels, fmax=_fmax, power=2.0)  # (nmels, ntime)
+        _mel_hz = librosa.mel_frequencies(n_mels=_n_mels, fmax=_fmax)
+        _spec_ref = float(np.nanmax(_mel_pow(tgt_n)) + 1e-20)
         _spec_db_floor = -80.0
         # Lock all waveform panels to the target's y-range so each panel is
         # directly comparable in scale. The envelope shape (positive) is rescaled
@@ -447,13 +450,15 @@ try:
                 axes[row, 0].plot(t_ms,  env_shape, color="k", lw=0.6, linestyle="--", label="env (shape only)")
                 axes[row, 0].plot(t_ms, -env_shape, color="k", lw=0.6, linestyle="--")
                 axes[row, 0].legend(loc="upper right", fontsize=7, framealpha=0.6)
-            S = _stft_mag(spec_x)
-            S_db = 20.0 * np.log10(np.maximum(S / _spec_ref, 1e-5))  # dB re target peak
-            axes[row, 1].imshow(S_db, aspect='auto', origin='lower',
-                                 extent=[0, t_ms[-1] if len(t_ms) else 1, 0, SR / 2],
+            Mp = _mel_pow(spec_x)                                     # (nmels, ntime) mel power
+            M_db = 10.0 * np.log10(np.maximum(Mp / _spec_ref, 1e-8))  # dB re target peak mel power
+            axes[row, 1].imshow(M_db, aspect='auto', origin='lower',
+                                 extent=[0, t_ms[-1] if len(t_ms) else 1, 0, _n_mels],
                                  vmin=_spec_db_floor, vmax=0.0, cmap='magma')
             axes[row, 1].set_xlim([0, _max_ms])
-            axes[row, 1].set_ylim([0, 16000])
+            _yt = np.linspace(0, _n_mels - 1, 6).astype(int)          # mel-spaced Hz tick labels
+            axes[row, 1].set_yticks(_yt)
+            axes[row, 1].set_yticklabels([str(int(_mel_hz[k])) for k in _yt], fontsize=7)
         # Drives panel: time series of omega^2, gamma, alpha drawn across BOTH
         # columns of the next row, with the constant terms ALPHA and GAMMA on the
         # left y-axis and OMEGA^2 on a twin right axis (it's on a very different
@@ -505,12 +510,12 @@ try:
         # spec-row right-column labels (skip the drives row which has its own ylabel)
         last_spec_row = len(row_specs) - 1
         for r in range(last_spec_row + 1):
-            axes[r, 1].set_ylabel('Hz')
+            axes[r, 1].set_ylabel('mel (Hz)')
         # MONITOR_CKPT_LABEL overrides the title's epoch tag — used by the inflight
         # scorer to display the real epoch / step rather than the temp-dir stub of "0".
         _label = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
         fig.suptitle(f"voc{i}  ckpt {_label}  noise_gain={_noise_gain:.2f}   "
-                     f"(spec: dB re target peak, [-80, 0])", fontsize=10)
+                     f"(spec: mel, dB re target peak, [-80, 0])", fontsize=10)
         plt.tight_layout()
         sw.add_figure(f"specgram/voc{i}", fig, step)
         plt.close(fig)
