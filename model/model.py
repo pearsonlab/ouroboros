@@ -696,12 +696,15 @@ class Ouroboros(nn.Module):
             g_out = checkpoint(self.sigma_mamba, x_in, use_reentrant=False)[:, L:, :]
         else:
             g_out = self.sigma_mamba(x_in)[:, L:, :]
-        # NOTE: under --sigma-constant the gate stays TIME-VARYING here. Reducing it to a scalar in
-        # the forward pass (mean / percentile / low-k) put that reduction in the gradient path and
-        # caused collapse (mean) or oscillation (percentile). Instead the spectral loss masks the
-        # broadband to the target's QUIET frames, so g(t) is trained to the floor only there, and the
-        # constant per-voc level is read out POST-HOC as mean(g(t)) over those quiet frames (frozen
-        # state, for the residual subtraction) -- never differentiated. See docs/noise_floor_fit.md.
+        if getattr(self, "sigma_constant", False):
+            # ONE scalar gain per vocalization on the filtered noise. The Mamba sees the whole
+            # waveform (+ its reversal) and mean-pools to a single number; the spectral loss is MASKED
+            # to the quiet frames (see mrstft_loss), so this gain is trained to match the noise floor
+            # -- "see the whole voc, output a gain for the quiet parts". Softplus (not relu) so it can
+            # approach 0 smoothly for clean vocs instead of dead-relu collapsing. See
+            # docs/noise_floor_fit.md.
+            g_out = g_out.mean(dim=1, keepdim=True)                     # (B, 1, F) full-voc summary
+            return F.softplus(self.sigma_net(g_out)).expand(-1, L, -1)  # (B, L, 1) constant gain
         g = F.relu(self.sigma_net(g_out))
         # Optional smoothing (opt-in via sigma_lowpass_ms). The Gaussian kernel has all-positive,
         # unit-sum weights, so low-passing a nonnegative gate keeps it nonnegative.
