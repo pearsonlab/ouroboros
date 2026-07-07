@@ -133,7 +133,10 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             # a coherent floor SPECTRUM (a real quiet-moment spectrum), unlike a per-frequency
             # percentile which stitches a different time frame per bin and sits far below the mean.
             # floor_correction de-biases the mild downward pull of selecting low-power frames
-            # (minimum-statistics correction). Broadband bins get this floor; LF keeps the real target.
+            # (minimum-statistics correction): model the broadband power as Gamma(shape=K); the
+            # unbiased factor is C(K) = (p_hi-p_lo)/[F_{K+1}(b)-F_{K+1}(a)], K = mean^2/var of the
+            # broadband power. Default 1.2 ~ C(K=30). Broadband bins get this floor; LF keeps the
+            # real target. Full rationale + derivation: docs/noise_floor_fit.md.
             fdim = G.shape[-2]
             if mel:
                 bin_hz = torch.as_tensor(_mel_hz(fdim, fmax if fmax is not None else sr / 2.0),
