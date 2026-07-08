@@ -419,9 +419,10 @@ def main():
     p.add_argument("--floor-pctile", type=float, default=25.0,
                    help="Upper edge of the quiet-frame selection band (frames with broadband power in "
                         "[0.4*p, p] percentile are averaged). ~25 selects the 10-25th percentile frames.")
-    p.add_argument("--floor-correction", type=float, default=1.2,
-                   help="Bias-correction factor multiplying the quiet-frame floor (selecting low-power frames "
-                        "biases the estimate downward; ~1.2 de-biases it, cf. MAD->sigma's 1.4826).")
+    p.add_argument("--floor-correction", type=float, default=-1.0,
+                   help="Minimum-statistics de-bias for the quiet-frame floor. Default (<=0) COMPUTES it as "
+                        "C(K, band) from the [0.4p,p] band and an estimated DOF K -- not hard-coded. Set >0 to "
+                        "override with a fixed factor.")
     p.add_argument("--noise-fit-only", action=argparse.BooleanOptionalAction, default=False,
                    help="Noise-floor-fit STAGE: skip the oscillator (drives / TF anchor / RK4 rollout) and run "
                         "only the feedforward rumble + filtered noise. No rollout cost -> use a LONG --context-len "

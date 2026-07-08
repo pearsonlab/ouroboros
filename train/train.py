@@ -289,7 +289,7 @@ def train(
     floor_fit: bool = False,       # noise-fit: broadband spectral target = per-sample quiet-frame floor
     floor_pctile: float = 25.0,
     floor_cutoff_hz: float = 375.0,
-    floor_correction: float = 1.2,
+    floor_correction: float = -1.0,   # <=0: auto C(K,band); >0: manual override
     noise_fit_only: bool = False,  # skip oscillator (drives/TF/rollout) -> long-window rumble+noise fit
     lam_rumble_td: float = 0.0,    # time-domain MSE: rumble vs raw LF waveform (phase-align)
     freeze_noise_epochs: int = 0,

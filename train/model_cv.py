@@ -307,7 +307,7 @@ def model_seed_cv_spectral(
     floor_fit: bool = False,
     floor_pctile: float = 25.0,
     floor_cutoff_hz: float = 375.0,
-    floor_correction: float = 1.2,
+    floor_correction: float = -1.0,   # <=0: auto C(K,band); >0: manual override
     noise_fit_only: bool = False,
     lam_rumble_td: float = 0.0,
     freeze_noise_epochs: int = 0,

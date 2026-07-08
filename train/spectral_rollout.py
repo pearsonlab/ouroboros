@@ -704,7 +704,7 @@ def spectral_rollout_step(
     floor_fit: bool = False,          # noise-fit: broadband target = per-sample quiet-frame floor
     floor_pctile: float = 25.0,
     floor_cutoff_hz: float = 375.0,
-    floor_correction: float = 1.2,    # minimum-statistics bias correction on the quiet-frame floor
+    floor_correction: float = -1.0,   # <=0: auto C(K,band) from the band; >0: manual override
     noise_fit_only: bool = False,     # skip the oscillator (drives/TF/rollout) -> long-window rumble+noise fit
     lam_rumble_td: float = 0.0,       # time-domain MSE of the rumble vs the raw LF waveform (phase-align)
 ) -> dict:

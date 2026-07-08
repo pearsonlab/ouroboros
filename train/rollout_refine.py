@@ -87,6 +87,23 @@ def _mel_fb(n_fft, sr, n_mels, fmax, device, dtype):
     return fb
 
 
+_FLOOR_C_CACHE = {}
+def _floor_C(K, p_lo, p_hi):
+    """Minimum-statistics bias correction for a quiet-frame band [p_lo, p_hi], from the band itself
+    (not hard-coded). Broadband power ~ Gamma(shape=K); selecting the [p_lo,p_hi] percentile band and
+    averaging underestimates the mean by C, which collapses to the closed form
+        C(K) = (p_hi - p_lo) / [ F_{K+1}(b) - F_{K+1}(a) ],  a = F_K^{-1}(p_lo), b = F_K^{-1}(p_hi)
+    with F_K the Gamma(K,1) CDF. Cached (a pure scalar in K and the band). See docs/noise_floor_fit.md."""
+    key = (round(float(K), 2), round(float(p_lo), 4), round(float(p_hi), 4))
+    v = _FLOOR_C_CACHE.get(key)
+    if v is None:
+        from scipy.special import gammainc, gammaincinv
+        a = gammaincinv(K, p_lo); b = gammaincinv(K, p_hi)
+        v = float((p_hi - p_lo) / (gammainc(K + 1, b) - gammainc(K + 1, a)))
+        _FLOOR_C_CACHE[key] = v
+    return v
+
+
 _MEL_HZ_CACHE = {}
 def _mel_hz(n_mels, fmax):
     key = (int(n_mels), float(fmax))
@@ -100,7 +117,7 @@ def _mel_hz(n_mels, fmax):
 
 def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_components=False,
                 mel=False, sr=44100, n_mels=80, fmax=None,
-                floor_fit=False, floor_pctile=25.0, floor_cutoff_hz=375.0, floor_correction=1.2):
+                floor_fit=False, floor_pctile=25.0, floor_cutoff_hz=375.0, floor_correction=-1.0):
     """multi-resolution STFT magnitude loss: spectral convergence + log-magnitude L1.
 
     When return_components=True, returns dict {'spec', 'sc', 'logm'} of scalars instead
@@ -127,16 +144,15 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             G = torch.einsum('mf,bft->bmt', fb, G)
         wmask = None
         if floor_fit:
-            # Noise-floor fit via MASKED regression (per sample). Rather than reduce the noise gate to
-            # a scalar in the forward pass (which oscillated/collapsed), keep g(t) time-varying and
+            # Noise-floor fit via MASKED regression (per sample). Keep the gate time-varying and
             # restrict the BROADBAND loss (>= floor_cutoff_hz) to the QUIET TIME FRAMES -- those whose
             # broadband power (NOT total power, which the LF/rumble would contaminate) is in the
-            # [0.4*floor_pctile, floor_pctile] percentile band. There g(t)*noise_tract is regressed
-            # onto the real quiet-frame spectra (the floor); loud frames get no broadband gradient, so
-            # syllables can't drag g up. LF bins keep the loss at all frames (rumble). The constant
-            # per-voc level g0 is read out POST-HOC as mean(g(t)) over these quiet frames (x
-            # floor_correction, the minimum-statistics de-bias), never in the gradient. Full rationale
-            # + the Gamma-K derivation of floor_correction: docs/noise_floor_fit.md.
+            # [0.4*floor_pctile, floor_pctile] percentile band. There sigma*noise_tract is regressed
+            # onto those frames' real spectra; loud frames get no broadband gradient, so syllables
+            # can't drag the gain up. LF bins keep the loss at all frames (rumble). The quiet frames
+            # are the LOW TAIL of the noise, so they underestimate the mean floor -- we DE-BIAS by
+            # lifting the target by C(K, band), the minimum-statistics correction COMPUTED from the
+            # band + an estimated DOF K (not hard-coded). See docs/noise_floor_fit.md.
             fdim = G.shape[-2]
             if mel:
                 bin_hz = torch.as_tensor(_mel_hz(fdim, fmax if fmax is not None else sr / 2.0),
@@ -144,13 +160,26 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             else:
                 bin_hz = torch.linspace(0.0, sr / 2.0, fdim, device=G.device, dtype=G.dtype)
             bb = (bin_hz >= float(floor_cutoff_hz))                      # broadband mask (F,)
-            bbp = G[:, bb, :].sum(dim=1)                                 # (B, T) broadband power/frame
-            q_lo = torch.quantile(bbp, 0.4 * float(floor_pctile) / 100.0, dim=1, keepdim=True)
-            q_hi = torch.quantile(bbp, float(floor_pctile) / 100.0, dim=1, keepdim=True)
+            bbp = G[:, bb, :].sum(dim=1)                                 # (B, T) broadband level/frame
+            p_lo, p_hi = 0.4 * float(floor_pctile) / 100.0, float(floor_pctile) / 100.0
+            q_lo = torch.quantile(bbp, p_lo, dim=1, keepdim=True)
+            q_hi = torch.quantile(bbp, p_hi, dim=1, keepdim=True)
             quiet = (bbp >= q_lo) & (bbp <= q_hi)                        # (B, T) quiet frames
             quiet = torch.where(quiet.any(dim=1, keepdim=True), quiet, bbp <= q_hi)  # fallback
-            drop = bb.view(1, fdim, 1) & (~quiet).unsqueeze(1)          # (B, F, T) broadband, loud frames
-            wmask = (~drop).to(G.dtype)                                 # 1 everywhere except those
+            # Correction C(K, band): if floor_correction>0 use it as a manual override, else compute
+            # from the band + K = mean^2/var of bbp over its lower half (~noise; excludes the loud
+            # syllables that would inflate the variance and collapse K), pooled over the batch.
+            if float(floor_correction) > 0.0:
+                cmag = float(floor_correction)
+            else:
+                med = torch.quantile(bbp, 0.5, dim=1, keepdim=True)
+                low = bbp[bbp <= med]
+                K = float((low.mean() ** 2 / low.var().clamp_min(1e-12)).clamp(2.0, 500.0))
+                cmag = _floor_C(K, p_lo, p_hi)
+            bbq = bb.view(1, fdim, 1) & quiet.unsqueeze(1)             # (B, F, T) broadband quiet frames
+            G = torch.where(bbq, G * cmag, G)                          # de-bias the low-tail target
+            drop = bb.view(1, fdim, 1) & (~quiet).unsqueeze(1)         # (B, F, T) broadband, loud frames
+            wmask = (~drop).to(G.dtype)                                # 1 everywhere except those
         if wmask is not None:
             sc = torch.norm((G - A) * wmask, dim=(-2, -1)) / (torch.norm(G * wmask, dim=(-2, -1)) + sc_eps)
             lm = (torch.log(G + eps) - torch.log(A + eps)).abs() * wmask
