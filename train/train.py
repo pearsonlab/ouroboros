@@ -83,6 +83,7 @@ def save_model(
         "sigma_constant": getattr(model, "sigma_constant", False),
         "use_rumble_branch": getattr(model, "use_rumble_branch", False),
         "rumble_lowpass_hz": getattr(model, "rumble_lowpass_hz", 250.0),
+        "noise_highpass_hz": getattr(model, "noise_highpass_hz", 0.0),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -170,6 +171,7 @@ def load_model(
             sigma_constant=sd.get("sigma_constant", False),
             use_rumble_branch=sd.get("use_rumble_branch", False),
             rumble_lowpass_hz=sd.get("rumble_lowpass_hz", 250.0),
+            noise_highpass_hz=sd.get("noise_highpass_hz", 0.0),
         )
     except:
         print("no kernel in savefile!")

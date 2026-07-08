@@ -187,6 +187,7 @@ class Ouroboros(nn.Module):
         sigma_constant: bool = False,
         use_rumble_branch: bool = False,
         rumble_lowpass_hz: float = 250.0,
+        noise_highpass_hz: float = 0.0,   # noise high-pass cutoff; 0 -> use rumble_lowpass_hz (complementary)
     ):
 
         super().__init__()
@@ -389,6 +390,11 @@ class Ouroboros(nn.Module):
         # oscillator is left FULL-RANGE (not high-passed), so it can still reach below the cutoff
         # when a vocalization has genuine LF content. Zero-init head -> starts silent, learned gently.
         self.use_rumble_branch = use_rumble_branch
+        # Noise high-pass cutoff. 0 -> use rumble_lowpass_hz (complementary crossover). Set > 0 to
+        # DECOUPLE: e.g. rumble low-passes at 300 (covers the LF signal a bit higher) while the noise
+        # high-passes at 250, giving a 250-300 overlap where the rumble carries the deterministic LF
+        # and the noise carries the floor -- fills the crossover residual bump.
+        self.noise_highpass_hz = float(noise_highpass_hz)
         if use_rumble_branch:
             self.rumble_lowpass_hz = float(rumble_lowpass_hz)
             rumbleConfig = MambaConfig(

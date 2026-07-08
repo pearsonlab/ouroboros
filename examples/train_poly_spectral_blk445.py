@@ -446,6 +446,11 @@ def main():
     p.add_argument("--rumble-lowpass-hz", type=float, default=250.0,
                    help="Cutoff (Hz) for the rumble head's low-pass (soft raised-cosine rolloff to "
                         "1.5x cutoff). Only meaningful with --use-rumble-branch. Default 250.")
+    p.add_argument("--noise-highpass-hz", type=float, default=0.0,
+                   help="Cutoff (Hz) for the noise branch's high-pass. Default 0 = use "
+                        "--rumble-lowpass-hz (complementary, single-cutoff). Set < the rumble cutoff to "
+                        "DECOUPLE (e.g. noise-HP 250, rumble-LP 300) -> a 250-300 overlap that fills the "
+                        "crossover residual: rumble carries the LF signal, noise carries the floor.")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -594,6 +599,7 @@ def main():
         sigma_lowpass_ms=args.sigma_lowpass_ms,
         sigma_constant=args.sigma_constant,
         use_rumble_branch=args.use_rumble_branch, rumble_lowpass_hz=args.rumble_lowpass_hz,
+        noise_highpass_hz=args.noise_highpass_hz,
         noise_start_step=args.noise_start_step,
         noise_warmup_steps=args.noise_warmup_steps,
         osc_warmup_epochs=args.osc_warmup_epochs,
@@ -672,6 +678,7 @@ def main():
                                  else 1.5 * args.rumble_lowpass_hz),
         "use_rumble_branch": bool(args.use_rumble_branch),
         "rumble_lowpass_hz": float(args.rumble_lowpass_hz),
+        "noise_highpass_hz": float(args.noise_highpass_hz),
         "noise_start_step": int(args.noise_start_step),
         "noise_warmup_steps": int(args.noise_warmup_steps),
         "osc_warmup_epochs": int(args.osc_warmup_epochs),
