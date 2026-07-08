@@ -689,9 +689,8 @@ def spectral_rollout_step(
     lam_env_log: float = 0.0,         # weight on the log-ratio envelope loss (env_loss_log)
     env_log_eps: float = 1e-4,        # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
-    lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights
-    lam_gamma: float = 0.0,           # L2 pull on gamma(t) toward 0 (linear-damping coeff; same form as
-                                      #   a degree-1 kernel weight, own scale) -- anchors neutral damping
+    lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights (+ gamma,
+                                      #   the degree-1 damping coeff, folded in as just another term)
     lam_env_anchor: float = 0.0,      # scale on mean((e - 1)^2) envelope gauge anchor; pulls e toward identity, per-sample backward grad bounded by 2|e-1|/N
     lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor; pins K=softplus(K_raw) near its data-init K0, closing the (K, source) gauge the env anchor leaves open
     lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2); pins the envelope PEAK to 1 (absolute scale) without penalizing its time-variance (shape)
@@ -899,18 +898,18 @@ def spectral_rollout_step(
         deg = torch.arange(P, dtype=weights.dtype, device=weights.device)
         lam_grid = float(model.kernel.lam) ** (deg.view(P, 1) + deg.view(1, P))  # (P, P)
         L_reg = (lam_grid * weights ** 2).sum(dim=(-1, -2, -3)).mean()
+        # gamma(t) is the degree-1 linear-damping coefficient (the x'^1 term), so regularize it as
+        # JUST ANOTHER KERNEL TERM -- same lam_reg scale, same degree grading (lam**1) -- by folding
+        # it into L_reg. Pulls gamma toward neutral damping so it can't run away negative into the
+        # anti-damped/diverging regime. Omega is deliberately NOT regularized (pulling it toward 0
+        # would drop the natural frequency out of the harmonic band). L_gamma tracked for logging.
+        if gamma is not None:
+            L_gamma = (float(model.kernel.lam) * gamma[:, :, 0] ** 2).sum(dim=1).mean()
+            L_reg = L_reg + L_gamma
+        else:
+            L_gamma = torch.zeros((), device=x.device, dtype=x.dtype)
     else:
         L_reg = torch.zeros((), device=x.device, dtype=x.dtype)
-
-    # gamma(t) treated as the degree-1 linear-damping coefficient (the x'^1 term): same
-    # degree-graded L2 as a kernel weight (lam**1 factor), pulling gamma toward 0 (neutral
-    # damping) so it can't run away negative into the anti-damped/diverging regime. Own scale
-    # (lam_gamma), NOT lam_reg -- gamma needs a far larger coefficient to bite than the kernel
-    # can tolerate without losing its amplitude-bounding nonlinearity. Omega is deliberately
-    # NOT regularized (pulling it toward 0 would drop the natural frequency out of the band).
-    if lam_gamma > 0 and gamma is not None:
-        L_gamma = (float(model.kernel.lam) * gamma[:, :, 0] ** 2).sum(dim=1).mean()
-    else:
         L_gamma = torch.zeros((), device=x.device, dtype=x.dtype)
 
     # Gauge-fixing anchor on the envelope: quadratic penalty mean((e - 1)^2) pulls e toward
@@ -978,7 +977,6 @@ def spectral_rollout_step(
         + lam_env * L_env
         + lam_env_log * L_env_log
         + lam_reg * L_reg
-        + lam_gamma * L_gamma
         + lam_env_anchor * L_env_anchor
         + lam_tract_k_anchor * L_k_anchor
         + lam_env_max_anchor * L_env_max

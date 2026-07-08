@@ -231,7 +231,6 @@ def train(
     env_log_eps: float = 1e-4,      # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
-    lam_gamma: float = 0.0,         # L2 pull on gamma(t) toward 0 (neutral damping); own scale, not lam_reg
     lam_env_anchor: float = 0.0,    # scale on mean((e - 1)^2) envelope gauge anchor (pulls e toward 1)
     lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor (pins K near data-init)
     lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2) envelope PEAK anchor (pins scale, not shape)
@@ -596,7 +595,6 @@ def train(
                     lam_env_log=lam_env_log_t, env_log_eps=env_log_eps,
                     env_ms=env_ms,
                     lam_reg=lam_reg,
-                    lam_gamma=lam_gamma,
                     lam_env_anchor=lam_env_anchor,
                     lam_tract_k_anchor=lam_tract_k_anchor,
                     lam_env_max_anchor=lam_env_max_anchor,
@@ -668,9 +666,9 @@ def train(
                     writer.add_scalar("Loss/env_log", env_log_v, idx)
                 if lam_reg > 0:
                     writer.add_scalar("Loss/reg", reg_v, idx)
-                if lam_gamma > 0:
+                if lam_reg > 0:
                     writer.add_scalar("Loss/gamma_reg", gamma_reg_v, idx)
-                    writer.add_scalar("LossW/gamma_reg", float(lam_gamma) * gamma_reg_v, idx)
+                    writer.add_scalar("LossW/gamma_reg", float(lam_reg) * gamma_reg_v, idx)
                 if lam_env_anchor > 0:
                     writer.add_scalar("Loss/env_anchor", env_anchor_v, idx)
                 if lam_tract_k_anchor > 0:

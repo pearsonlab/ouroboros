@@ -255,12 +255,6 @@ def main():
                    help="overall scale on the degree-graded L2 penalty `sum lam**(i+j) * weights**2` "
                         "applied to the polynomial kernel weights. 0 disables (no behavior change). "
                         "lam (above) shapes the degree grading; lam_reg scales the whole penalty.")
-    p.add_argument("--lam-gamma-reg", type=float, default=0.0,
-                   help="L2 pull on the damping drive gamma(t) toward 0 (`lam * sum gamma**2`): gamma is "
-                        "the degree-1 linear-damping coefficient, regularized like a kernel weight but on "
-                        "its OWN scale (it needs a far larger coefficient to bite than the kernel tolerates). "
-                        "Holds gamma near neutral damping so it can't run away negative -> anti-damped "
-                        "divergence. omega is deliberately NOT regularized. 0 disables.")
     p.add_argument("--lam-env-anchor", type=float, default=0.0,
                    help="weight on the mean((e - 1)^2) envelope gauge anchor. Quadratic "
                         "penalty with minimum at e=1 (its identity-init value); breaks the "
@@ -582,7 +576,6 @@ def main():
         lam_env=args.lam_env, lam_env_log=args.lam_env_log, env_log_eps=args.env_log_eps,
         env_ms=args.env_ms,
         lam_reg=args.lam_reg,
-        lam_gamma=args.lam_gamma_reg,
         lam_env_anchor=args.lam_env_anchor,
         lam_tract_k_anchor=args.lam_tract_k_anchor,
         lam_env_max_anchor=args.lam_env_max_anchor,
@@ -651,7 +644,6 @@ def main():
         "env_log_eps": args.env_log_eps,
         "env_ms": args.env_ms,
         "lam_reg": args.lam_reg,
-        "lam_gamma": args.lam_gamma_reg,
         "lam_env_anchor": args.lam_env_anchor,
         "lam_tract_k_anchor": args.lam_tract_k_anchor,
         "lam_env_max_anchor": args.lam_env_max_anchor,
