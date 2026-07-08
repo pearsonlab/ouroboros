@@ -444,6 +444,9 @@ def spectral_rollout_step(
     ic_noise_rms: float = 1e-3,
     rng: Optional[torch.Generator] = None,
     rollout_backend: str = "eager",
+    do_sample: bool = False,          # draw a stochastic drive-policy sample for the rollout
+    noise_scale: float = 1.0,         # external multiplier on the learnable drive sigmas
+    lam_entropy: float = 0.0,         # weight of the entropy BONUS (anti-collapse) on the policy
 ) -> dict:
     """One forward + loss for the spectral-rollout objective.
 
@@ -501,6 +504,20 @@ def spectral_rollout_step(
             v = max(float(tf_var), 1e-6)
         L_tf = ((tf_d2 - tf_target) ** 2).mean() / v
 
+    # Stochastic-drive policy (Option A): the REWARD (spectral) is evaluated on a sampled
+    # drive trajectory, while the TF anchor above stays on the deterministic MEAN drives
+    # (a behavioral-cloning term that keeps the policy mean near the data). When sampling
+    # is off this reduces exactly to the deterministic objective.
+    do_noise = do_sample and getattr(model, "drive_noise", False) and noise_scale != 0
+    if do_noise:
+        omega_s, gamma_s, weights_s = model.sample_drives(
+            omega, gamma, weights, dt, noise_scale=noise_scale, generator=rng
+        )
+        L_ent = model.drive_entropy()
+    else:
+        omega_s, gamma_s, weights_s = omega, gamma, weights
+        L_ent = torch.zeros((), device=x.device, dtype=x.dtype)
+
     # Rollout + spectral loss. Reuse the drives (ω, γ, w) and rescaled velocity z2
     # already encoded above for the TF anchor instead of re-running the Mamba encoders
     # inside the rollout — they are deterministic in (x, dxdt, dt), so backprop through
@@ -508,7 +525,7 @@ def spectral_rollout_step(
     xg = teacher_forced_rollout(
         model, x, dxdt, dt, H=H,
         ic_mask=ic_mask, ic_noise_rms=ic_noise_rms, rng=rng,
-        drives=(omega, gamma, weights, z2),
+        drives=(omega_s, gamma_s, weights_s, z2),
         rollout_backend=rollout_backend,
     )
     # NON-TRAINABLE STABILIZER on the raw RK4 source: subtract the per-segment mean
@@ -613,10 +630,11 @@ def spectral_rollout_step(
         + lam_env_log * L_env_log
         + lam_reg * L_reg
         + lam_env_anchor * L_env_anchor
+        - lam_entropy * L_ent   # entropy BONUS: maximize policy entropy -> subtract from loss
     )
     return {"spec": L_spec, "sc": L_sc, "logm": L_logm,
             "tf": L_tf, "env": L_env, "env_log": L_env_log,
-            "reg": L_reg, "env_anchor": L_env_anchor, "total": total}
+            "reg": L_reg, "env_anchor": L_env_anchor, "ent": L_ent, "total": total}
 
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:
@@ -656,6 +674,24 @@ def horizon_for_step(step: int, total_steps: int, H_min: int, H_max: int,
     else:
         raise ValueError(f"unknown schedule {schedule!r}")
     return int(round(H))
+
+
+def noise_scale_for_step(step: int, total_steps: int, start: float, end: float,
+                         schedule: str = "const") -> float:
+    """External exploration-magnitude multiplier for the drive policy, indexed by global
+    training step. 'const' holds `start`; 'linear'/'geom' anneal start->end over
+    total_steps. Lets the loop SCHEDULE exploration size (e.g. high early, annealed late)
+    on top of the per-drive LEARNABLE sigmas in the model."""
+    if schedule == "const" or total_steps is None or total_steps <= 1 or start == end:
+        return float(start)
+    t = min(max(step / max(1, total_steps - 1), 0.0), 1.0)
+    if schedule == "linear":
+        return float(start + t * (end - start))
+    if schedule == "geom":
+        s = max(float(start), 1e-12)
+        e = max(float(end), 1e-12)
+        return float(s * (e / s) ** t)
+    raise ValueError(f"unknown noise schedule {schedule!r}")
 
 
 def horizon_for_epoch(epoch: int, n_epochs: int, H_min: int, H_max: int,

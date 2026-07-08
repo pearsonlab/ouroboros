@@ -297,6 +297,17 @@ def model_seed_cv_spectral(
     # use the same batch size the fresh run trained at (otherwise the saved Adam
     # buffers bloat the allocator past the GPU's headroom).
     reset_optimizer_on_resume: bool = False,
+    # stochastic-drive policy (Option A)
+    drive_noise: bool = False,
+    drive_noise_ms: float = None,
+    drive_noise_init: float = 0.05,
+    drive_noise_corr: bool = False,
+    drive_noise_trainable: bool = True,
+    drive_noise_scale_start: float = 1.0,
+    drive_noise_scale_end: float = 1.0,
+    drive_noise_schedule: str = "const",
+    drive_noise_total_steps: int = None,
+    lam_entropy: float = 0.0,
     # selection
     rescale_autonomy: bool = False,
     cold_start_autonomy: bool = True,
@@ -337,7 +348,11 @@ def model_seed_cv_spectral(
                           keep_const=keep_const, osc_init=osc_init,
                           checkpoint_encoder=checkpoint_encoder,
                           use_tract=use_tract, tract_n_sec=tract_n_sec,
-                          use_envelope=use_envelope, env_lowpass_ms=env_lowpass_ms)
+                          use_envelope=use_envelope, env_lowpass_ms=env_lowpass_ms,
+                          drive_noise=drive_noise, drive_noise_ms=drive_noise_ms,
+                          drive_noise_init=drive_noise_init,
+                          drive_noise_corr=drive_noise_corr,
+                          drive_noise_trainable=drive_noise_trainable)
         # K_raw_init: set the tract gain so audio amplitude starts near target RMS
         # at epoch 0, instead of relying on it to descend from K_raw=0 during training.
         # Only applies on fresh start; resume restores the trained value.
@@ -402,6 +417,12 @@ def model_seed_cv_spectral(
                 freeze_drives_epochs=freeze_drives_epochs,
                 freeze_tract_epochs=freeze_tract_epochs,
                 freeze_envelope_epochs=freeze_envelope_epochs,
+                drive_sample=drive_noise,
+                drive_noise_scale_start=drive_noise_scale_start,
+                drive_noise_scale_end=drive_noise_scale_end,
+                drive_noise_schedule=drive_noise_schedule,
+                drive_noise_total_steps=drive_noise_total_steps,
+                lam_entropy=lam_entropy,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

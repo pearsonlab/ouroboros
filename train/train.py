@@ -74,6 +74,12 @@ def save_model(
         "tract_n_sec": getattr(model, "tract_n_sec", 3),
         "use_envelope": getattr(model, "use_envelope", False),
         "env_lowpass_ms": getattr(model, "env_lowpass_ms", 20.0),
+        # stochastic-drive policy: store the structural flags so the constructor
+        # re-registers the same parameters and load_state_dict(strict) matches.
+        "drive_noise": getattr(model, "drive_noise", False),
+        "drive_noise_ms": getattr(model, "drive_noise_ms", None),
+        "drive_noise_corr": getattr(model, "drive_noise_corr", False),
+        "drive_noise_trainable": getattr(model, "drive_noise_trainable", True),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -152,6 +158,10 @@ def load_model(
             tract_n_sec=sd.get("tract_n_sec", 3),
             use_envelope=sd.get("use_envelope", False),
             env_lowpass_ms=sd.get("env_lowpass_ms", 20.0),
+            drive_noise=sd.get("drive_noise", False),
+            drive_noise_ms=sd.get("drive_noise_ms", None),
+            drive_noise_corr=sd.get("drive_noise_corr", False),
+            drive_noise_trainable=sd.get("drive_noise_trainable", True),
         )
     except:
         print("no kernel in savefile!")
@@ -245,6 +255,14 @@ def train(
     # (identity) during the freeze -- amplitude lives entirely in K_raw + drives
     # while the envelope can't roam. 0 disables.
     freeze_envelope_epochs: int = 0,
+    # stochastic-drive policy (Option A); only consulted in spectral_rollout mode and
+    # only effective when the model was built with drive_noise=True.
+    drive_sample: bool = False,            # sample drives for the rollout (exploration on)
+    drive_noise_scale_start: float = 1.0,  # external sigma multiplier at step 0
+    drive_noise_scale_end: float = 1.0,    # ... at drive_noise_total_steps
+    drive_noise_schedule: str = "const",   # 'const' | 'linear' | 'geom'
+    drive_noise_total_steps: int = None,   # None -> nEpochs * batches_per_epoch
+    lam_entropy: float = 0.0,              # entropy-bonus weight (anti-collapse)
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
 ]:
@@ -287,6 +305,7 @@ def train(
         from train.spectral_rollout import (
             spectral_rollout_step,
             horizon_for_step,
+            noise_scale_for_step,
             DEFAULT_CONFIGS,
             ONSET,
         )
@@ -321,6 +340,23 @@ def train(
             H_total_steps_eff = nEpochs * batches_per_epoch
         else:
             H_total_steps_eff = int(H_total_steps)
+        if drive_noise_total_steps is None:
+            drive_noise_total_steps_eff = nEpochs * batches_per_epoch
+        else:
+            drive_noise_total_steps_eff = int(drive_noise_total_steps)
+        drive_noise_on = drive_sample and getattr(model, "drive_noise", False)
+        if drive_sample and not getattr(model, "drive_noise", False):
+            print("  WARNING: drive_sample=True but model.drive_noise=False -> "
+                  "no exploration noise will be added (build the model with drive_noise=True).",
+                  flush=True)
+        if drive_noise_on:
+            print(
+                f"  drive policy: noise_scale={drive_noise_scale_start}->{drive_noise_scale_end} "
+                f"({drive_noise_schedule}, over {drive_noise_total_steps_eff} steps) "
+                f"lam_entropy={lam_entropy} drive_noise_ms={getattr(model, 'drive_noise_ms', None)} "
+                f"corr={getattr(model, 'drive_noise_corr', False)}",
+                flush=True,
+            )
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
             f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} lam_reg={lam_reg} "
@@ -474,6 +510,15 @@ def train(
                 else:
                     lam_env_t = lam_env
                     lam_env_log_t = lam_env_log
+                # Exploration magnitude: external schedule * learnable per-drive sigmas.
+                noise_scale_t = (
+                    noise_scale_for_step(
+                        idx, drive_noise_total_steps_eff,
+                        drive_noise_scale_start, drive_noise_scale_end,
+                        drive_noise_schedule,
+                    )
+                    if drive_noise_on else 0.0
+                )
                 out = spectral_rollout_step(
                     model, x, dxdt, dx2, dt,
                     H=H, configs=spec_configs,
@@ -486,6 +531,8 @@ def train(
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
+                    do_sample=drive_noise_on, noise_scale=noise_scale_t,
+                    lam_entropy=lam_entropy,
                 )
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):
@@ -524,10 +571,12 @@ def train(
                         max_saved=max_saved,
                     )
                     _last_save_t = _time.time()
-                # Stack the raw component tensors for a single host sync, then derive the
-                # weighted views in Python so the TB plots show each term's actual contribution
-                # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
-                # plain floats already on host.
+                # One device->host sync for all scalar logging instead of separate
+                # .item() calls: stack the loss tensors and transfer once. out["env"] /
+                # out["env_log"] / out["reg"] / out["env_anchor"] are always tensors
+                # (zeros when their lam is 0), so the stack is well-formed.
+                # The weighted views are derived in Python so the TB plots show each term's
+                # actual contribution to total (= raw value times its lam_*).
                 spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, env_anchor_v, total_v = torch.stack(
                     [out["spec"], out["sc"], out["logm"], out["tf"],
                      out["env"], out["env_log"], out["reg"], out["env_anchor"], total_loss]
@@ -565,6 +614,18 @@ def train(
                 writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)
                 if lam_env_log > 0:
                     writer.add_scalar("Train/lam_env_log_t", float(lam_env_log_t), idx)
+                if drive_noise_on:
+                    writer.add_scalar("Drive/noise_scale", float(noise_scale_t), idx)
+                    writer.add_scalar("Drive/entropy", float(out["ent"].item()), idx)
+                    if lam_entropy > 0:
+                        writer.add_scalar("LossW/entropy", -float(lam_entropy) * float(out["ent"].item()), idx)
+                    # effective per-drive sigma fraction = noise_scale * exp(log_sigma); detach
+                    # before the host transfer (these params require grad -> float() warns).
+                    writer.add_scalar("Drive/sigma_omega", noise_scale_t * float(torch.exp(model.log_sigma_omega.detach())), idx)
+                    writer.add_scalar("Drive/sigma_gamma", noise_scale_t * float(torch.exp(model.log_sigma_gamma.detach())), idx)
+                    writer.add_scalar("Drive/sigma_w", noise_scale_t * float(torch.exp(model.log_sigma_w.detach())), idx)
+                    if getattr(model, "drive_noise_corr", False):
+                        writer.add_scalar("Drive/rho_omega_gamma", float(torch.tanh(model.og_corr_raw.detach())), idx)
                 # Memory diagnostics: log allocated (live tensors) and reserved (PyTorch's
                 # caching allocator pool, including fragments). If reserved grows while
                 # allocated stays flat across batches, that's fragmentation. Logged every
@@ -579,8 +640,6 @@ def train(
                 # Periodic empty_cache to reclaim fragmented memory between batches. Cost
                 # is a brief sync + losing the fast path for tensor allocation for one
                 # batch; benefit is that fragments stop accumulating across many batches.
-                # Frequency tuned for "every 100 batches" -- about every 14 min at our pace,
-                # negligible overhead.
                 if idx > 0 and idx % 100 == 0:
                     torch.cuda.empty_cache()
                 continue

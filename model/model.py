@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -6,7 +7,6 @@ from mambapy.mamba import Mamba, MambaConfig
 from model.model_utils import smooth
 from typing import Optional, Tuple, Union
 # from model.kernels import *
-import math
 
 import numpy as np
 from tqdm import tqdm
@@ -163,6 +163,11 @@ class Ouroboros(nn.Module):
         tract_n_sec: int = 3,
         use_envelope: bool = False,
         env_lowpass_ms: float = 20.0,
+        drive_noise: bool = False,
+        drive_noise_ms: float = None,
+        drive_noise_init: float = 0.05,
+        drive_noise_corr: bool = False,
+        drive_noise_trainable: bool = True,
     ):
 
         super().__init__()
@@ -211,6 +216,44 @@ class Ouroboros(nn.Module):
         # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Keeps the
         # drives from re-encoding the audio carrier and improves autonomous behavior.
         self.drive_lowpass_ms = drive_lowpass_ms
+        # --- stochastic-drive policy (Option A: colored-Gaussian exploration) -------------
+        # When drive_noise is True the drives become a (reparameterized) Gaussian policy.
+        # Each deterministic drive d(t) gains an additive, temporally-correlated fluctuation
+        #     d(t) <- d(t) + noise_scale * sigma_d * xi_d(t),
+        # where xi_d(t) is unit-variance white noise low-passed to `drive_noise_ms` with the
+        # SAME zero-phase Gaussian used for the drives -- so exploration is temporally LOCAL
+        # at the control rate rather than white per-sample noise (which the in-loop low-pass
+        # would erase, or which would inject audio-band content into the ODE). sigma_d =
+        # exp(log_sigma_d) is LEARNABLE (the spectral reward + an optional entropy bonus set
+        # the exploration size); `noise_scale` is an external multiplier the train loop can
+        # SCHEDULE. Sampling is reparameterized -> pathwise gradients reach log_sigma_d.
+        # Sampling is OFF at eval/autonomy (get_funcs is unchanged), so inference is unchanged.
+        self.drive_noise = drive_noise
+        self.drive_noise_corr = drive_noise_corr
+        self.drive_noise_trainable = drive_noise_trainable
+        if drive_noise_ms is None:
+            drive_noise_ms = drive_lowpass_ms if (drive_lowpass_ms and drive_lowpass_ms > 0) else 1.0
+        self.drive_noise_ms = float(drive_noise_ms)
+        if drive_noise:
+            # Parameters are registered ONLY when drive_noise is on, so deterministic models
+            # keep the exact same state_dict (old checkpoints load with strict=True).
+            log_init = float(math.log(max(drive_noise_init, 1e-8)))
+            self.log_sigma_omega = nn.Parameter(torch.tensor(log_init, device=device))
+            self.log_sigma_gamma = nn.Parameter(torch.tensor(log_init, device=device))
+            self.log_sigma_w = nn.Parameter(torch.tensor(log_init, device=device))
+            if drive_noise_corr:
+                # single free parameter -> correlation rho = tanh(.) between the omega and
+                # gamma fluctuations (a 2x2 covariance among drives; weights stay diagonal).
+                self.og_corr_raw = nn.Parameter(torch.zeros((), device=device))
+            if not drive_noise_trainable:
+                # Freeze the noise magnitude at a FIXED constant (params stay nn.Parameters
+                # so the state_dict keys are identical and trainability can be flipped on
+                # resume); reparameterized samples then carry no gradient into the sigmas.
+                self.log_sigma_omega.requires_grad_(False)
+                self.log_sigma_gamma.requires_grad_(False)
+                self.log_sigma_w.requires_grad_(False)
+                if drive_noise_corr:
+                    self.og_corr_raw.requires_grad_(False)
         # if True, gradient-checkpoint the three Mamba drive encoders in get_funcs: their
         # activations over the doubled-length sequence (x_in is 2L) dominate training memory
         # (~6.9 GB at B=64, vs ~60 MiB for the RK4 rollout), so recomputing them in backward
@@ -318,6 +361,70 @@ class Ouroboros(nn.Module):
         B, L, P, P2 = weights.shape
         w = self._lowpass(weights.reshape(B, L, P * P2), dt)
         return w.reshape(B, L, P, P2)
+
+    def _colored_noise(self, B, L, C, dt, ms, device, dtype, generator=None):
+        """Unit-marginal-variance, temporally-correlated noise of shape (B, L, C):
+        white noise low-passed by the SAME zero-phase Gaussian used for the drives
+        (timescale `ms`), then rescaled so each sample's marginal std ~= 1. The rescale
+        divides the (sum-1) kernel by its L2 norm, since Var(filtered white noise) =
+        sum_i k_i^2. This is the 'colored reparameterization' that makes drive
+        exploration local in time at the control rate."""
+        eps = torch.randn(B, L, C, device=device, dtype=dtype, generator=generator)
+        sigma = (ms / 1e3) / dt  # samples
+        if sigma <= 0:
+            return eps
+        radius = max(1, min(int(round(3 * sigma)), L - 1))
+        t = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+        k = torch.exp(-0.5 * (t / sigma) ** 2)
+        k = k / k.sum()
+        k = k / torch.linalg.norm(k)  # unit L2 -> unit output marginal variance
+        k = k.view(1, 1, -1).expand(C, 1, -1)
+        ec = F.pad(eps.transpose(1, 2), (radius, radius), mode="reflect")
+        return F.conv1d(ec, k, groups=C).transpose(1, 2)
+
+    def sample_drives(self, omega, gamma, weights, dt, noise_scale: float = 1.0, generator=None):
+        """Draw one policy sample: add colored-Gaussian exploration noise to the
+        deterministic drives. Returns (omega_s, gamma_s, weights_s) with identical
+        shapes. No-op (returns the inputs) when drive_noise is off or noise_scale == 0.
+        omega is NOT re-abs'd -- the rollout uses omega**2, so the fluctuation's sign is
+        irrelevant. Reparameterized, so gradients flow into the log_sigma_* parameters."""
+        if not self.drive_noise or noise_scale == 0:
+            return omega, gamma, weights
+        B, L, _ = omega.shape
+        dev, dty = omega.device, omega.dtype
+        ms = self.drive_noise_ms
+        xi_o = self._colored_noise(B, L, 1, dt, ms, dev, dty, generator)
+        xi_g = self._colored_noise(B, L, 1, dt, ms, dev, dty, generator)
+        if self.drive_noise_corr:
+            rho = torch.tanh(self.og_corr_raw)
+            # corr(xi_o, xi_g') = rho, each still unit variance.
+            xi_g = rho * xi_o + torch.sqrt((1 - rho ** 2).clamp_min(1e-6)) * xi_g
+        # Scale each drive's noise RELATIVE to that drive's own RMS (detached): sigma is a
+        # *fraction* of the drive's scale, not an absolute value. Essential because the
+        # drives span very different scales (omega RMS ~0.7 vs gamma RMS ~0.01); a single
+        # absolute sigma reasonable for omega is >100% of gamma's RMS, which randomizes the
+        # damping term and blows up the rollout (NaN). Detaching the RMS prevents a gradient
+        # incentive to shrink drives; it is also self-warming (small noise while a drive is
+        # still small early in training).
+        o_rms = omega.detach().pow(2).mean().sqrt().clamp_min(1e-8)
+        g_rms = gamma.detach().pow(2).mean().sqrt().clamp_min(1e-8)
+        omega_s = omega + noise_scale * torch.exp(self.log_sigma_omega) * o_rms * xi_o
+        gamma_s = gamma + noise_scale * torch.exp(self.log_sigma_gamma) * g_rms * xi_g
+        P = weights.shape[-1]
+        xi_w = self._colored_noise(B, L, P * P, dt, ms, dev, dty, generator).reshape(B, L, P, P)
+        w_rms = weights.detach().pow(2).mean().sqrt().clamp_min(1e-8)
+        weights_s = weights + noise_scale * torch.exp(self.log_sigma_w) * w_rms * xi_w
+        return omega_s, gamma_s, weights_s
+
+    def drive_entropy(self):
+        """Mean Gaussian differential entropy of the drive policy, up to an additive
+        constant: H_d = log(sigma_d) + c per drive. Used as an entropy BONUS in the loss
+        (maximize) so the learnable variance does not collapse to 0 under the spectral
+        reward's pathwise gradient (which generally prefers less noise). Returns a 0-dim
+        tensor (0 when drive_noise is off)."""
+        if not self.drive_noise:
+            return torch.zeros((), device=self.device)
+        return (self.log_sigma_omega + self.log_sigma_gamma + self.log_sigma_w) / 3.0
 
     def forward(
         self,

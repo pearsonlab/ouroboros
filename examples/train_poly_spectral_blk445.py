@@ -308,6 +308,36 @@ def main():
     p.add_argument("--ic-noise-rms", type=float, default=1e-3,
                    help="cold-start initial-condition noise RMS (training only).")
     p.add_argument("--grad-clip", type=float, default=5.0)
+
+    # --- stochastic-drive policy (Option A: colored-Gaussian exploration) ---------------
+    p.add_argument("--drive-noise", action=argparse.BooleanOptionalAction, default=False,
+                   help="make the drives a reparameterized Gaussian policy: add temporally-"
+                        "correlated (control-rate) exploration noise with LEARNABLE per-drive "
+                        "variance to the rollout. Off => deterministic drives (unchanged).")
+    p.add_argument("--drive-noise-ms", type=float, default=None,
+                   help="control-rate timescale of the exploration noise (Gaussian low-pass "
+                        "sigma, ms). Default: drive_lowpass_ms if set else 1.0.")
+    p.add_argument("--drive-noise-init", type=float, default=0.05,
+                   help="per-drive exploration noise as a FRACTION of each drive's RMS "
+                        "(scaled relative to omega/gamma/weights RMS). Initial value if "
+                        "trainable, or the fixed value if --no-drive-noise-trainable.")
+    p.add_argument("--drive-noise-corr", action=argparse.BooleanOptionalAction, default=False,
+                   help="also learn a correlation (2x2 covariance) between the omega and "
+                        "gamma fluctuations; weights stay diagonal.")
+    p.add_argument("--drive-noise-trainable", action=argparse.BooleanOptionalAction, default=True,
+                   help="if set (default), the per-drive sigma fractions are learned; "
+                        "--no-drive-noise-trainable freezes them at --drive-noise-init.")
+    p.add_argument("--drive-noise-scale-start", type=float, default=1.0,
+                   help="external multiplier on the learnable sigmas at step 0.")
+    p.add_argument("--drive-noise-scale-end", type=float, default=1.0,
+                   help="external multiplier at --drive-noise-total-steps (anneal exploration).")
+    p.add_argument("--drive-noise-schedule", choices=["const", "linear", "geom"],
+                   default="const", help="how the external noise multiplier moves start->end.")
+    p.add_argument("--drive-noise-total-steps", type=int, default=None,
+                   help="global batches over which the noise schedule runs (default: whole run).")
+    p.add_argument("--lam-entropy", type=float, default=0.0,
+                   help="entropy-bonus weight on the drive policy (keeps the learnable variance "
+                        "from collapsing under the spectral reward). 0 disables it.")
     # run / selection
     p.add_argument("--n-epochs", type=int, default=50)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -475,6 +505,14 @@ def main():
         freeze_drives_epochs=args.freeze_drives_epochs,
         freeze_tract_epochs=args.freeze_tract_epochs,
         freeze_envelope_epochs=args.freeze_envelope_epochs,
+        drive_noise=args.drive_noise, drive_noise_ms=args.drive_noise_ms,
+        drive_noise_init=args.drive_noise_init, drive_noise_corr=args.drive_noise_corr,
+        drive_noise_trainable=args.drive_noise_trainable,
+        drive_noise_scale_start=args.drive_noise_scale_start,
+        drive_noise_scale_end=args.drive_noise_scale_end,
+        drive_noise_schedule=args.drive_noise_schedule,
+        drive_noise_total_steps=args.drive_noise_total_steps,
+        lam_entropy=args.lam_entropy,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
 
@@ -515,6 +553,16 @@ def main():
         "H_max": args.H_max,
         "H_schedule": args.H_schedule,
         "rollout_backend": args.rollout_backend,
+        "drive_noise": bool(args.drive_noise),
+        "drive_noise_ms": args.drive_noise_ms,
+        "drive_noise_init": args.drive_noise_init,
+        "drive_noise_corr": bool(args.drive_noise_corr),
+        "drive_noise_trainable": bool(args.drive_noise_trainable),
+        "drive_noise_scale_start": args.drive_noise_scale_start,
+        "drive_noise_scale_end": args.drive_noise_scale_end,
+        "drive_noise_schedule": args.drive_noise_schedule,
+        "drive_noise_total_steps": args.drive_noise_total_steps,
+        "lam_entropy": args.lam_entropy,
         "spec_warmup_epochs": args.spec_warmup_epochs,
         "env_warmup_epochs": args.env_warmup_epochs,
         "spec_warmup_steps": args.spec_warmup_steps,
