@@ -458,10 +458,13 @@ def train(
               f"(env_mamba + env_net, {len(envelope_params)} tensors) frozen for the "
               f"first {freeze_envelope_epochs} epochs; e(t)=1.0 (identity) during freeze.",
               flush=True)
-    # Noise gate head (sigma_mamba + sigma_net). Frozen for the first freeze_noise_epochs
-    # epochs; also the noise_gain ramp keeps the forcing off until noise_start_step.
+    # Learned BACKGROUND source: the noise branch (sigma gate + noise_tract) AND the rumble
+    # head. Frozen together for the first freeze_noise_epochs epochs. Stage 2 of the sequential
+    # separation freezes the whole background for the WHOLE run (freeze_noise_epochs >= n_epochs,
+    # resuming a noise-fit checkpoint) so the oscillator trains on the residual: raw is explained
+    # by frozen (noise + rumble) + the oscillator, which then only has the vocal energy left to fit.
     noise_params = []
-    for attr in ("sigma_mamba", "sigma_net", "noise_tract"):
+    for attr in ("sigma_mamba", "sigma_net", "noise_tract", "rumble_mamba", "rumble_net"):
         m = getattr(model, attr, None)
         if m is not None:
             noise_params.extend(list(m.parameters()))
