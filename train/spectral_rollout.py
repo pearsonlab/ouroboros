@@ -690,6 +690,8 @@ def spectral_rollout_step(
     env_log_eps: float = 1e-4,        # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights
+    lam_gamma: float = 0.0,           # L2 pull on gamma(t) toward 0 (linear-damping coeff; same form as
+                                      #   a degree-1 kernel weight, own scale) -- anchors neutral damping
     lam_env_anchor: float = 0.0,      # scale on mean((e - 1)^2) envelope gauge anchor; pulls e toward identity, per-sample backward grad bounded by 2|e-1|/N
     lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor; pins K=softplus(K_raw) near its data-init K0, closing the (K, source) gauge the env anchor leaves open
     lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2); pins the envelope PEAK to 1 (absolute scale) without penalizing its time-variance (shape)
@@ -730,6 +732,7 @@ def spectral_rollout_step(
         # vocs). See docs/noise_floor_fit.md.
         weights = None
         z2 = None
+        gamma = None
     else:
         omega, gamma, wk, weights, _ = model.get_funcs(x, dxdt.clone(), dt)
         z2 = (model.tau / dt) * dxdt  # rescaled velocity
@@ -899,6 +902,17 @@ def spectral_rollout_step(
     else:
         L_reg = torch.zeros((), device=x.device, dtype=x.dtype)
 
+    # gamma(t) treated as the degree-1 linear-damping coefficient (the x'^1 term): same
+    # degree-graded L2 as a kernel weight (lam**1 factor), pulling gamma toward 0 (neutral
+    # damping) so it can't run away negative into the anti-damped/diverging regime. Own scale
+    # (lam_gamma), NOT lam_reg -- gamma needs a far larger coefficient to bite than the kernel
+    # can tolerate without losing its amplitude-bounding nonlinearity. Omega is deliberately
+    # NOT regularized (pulling it toward 0 would drop the natural frequency out of the band).
+    if lam_gamma > 0 and gamma is not None:
+        L_gamma = (float(model.kernel.lam) * gamma[:, :, 0] ** 2).sum(dim=1).mean()
+    else:
+        L_gamma = torch.zeros((), device=x.device, dtype=x.dtype)
+
     # Gauge-fixing anchor on the envelope: quadratic penalty mean((e - 1)^2) pulls e toward
     # the identity-init value e=1. Without this, the spec loss is gauge-invariant under
     # (e, x) -> (k*e, x/k) for any k > 0 -- which the kernel-weight L2 reg then exploits
@@ -964,13 +978,14 @@ def spectral_rollout_step(
         + lam_env * L_env
         + lam_env_log * L_env_log
         + lam_reg * L_reg
+        + lam_gamma * L_gamma
         + lam_env_anchor * L_env_anchor
         + lam_tract_k_anchor * L_k_anchor
         + lam_env_max_anchor * L_env_max
     )
     return {"spec": L_spec, "sc": L_sc, "logm": L_logm,
             "tf": L_tf, "env": L_env, "env_log": L_env_log,
-            "reg": L_reg, "env_anchor": L_env_anchor,
+            "reg": L_reg, "gamma_reg": L_gamma, "env_anchor": L_env_anchor,
             "k_anchor": L_k_anchor, "env_max": L_env_max,
             "rumble_td": L_rumble_td, "total": total}
 

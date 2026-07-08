@@ -231,6 +231,7 @@ def train(
     env_log_eps: float = 1e-4,      # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
     lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
+    lam_gamma: float = 0.0,         # L2 pull on gamma(t) toward 0 (neutral damping); own scale, not lam_reg
     lam_env_anchor: float = 0.0,    # scale on mean((e - 1)^2) envelope gauge anchor (pulls e toward 1)
     lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor (pins K near data-init)
     lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2) envelope PEAK anchor (pins scale, not shape)
@@ -595,6 +596,7 @@ def train(
                     lam_env_log=lam_env_log_t, env_log_eps=env_log_eps,
                     env_ms=env_ms,
                     lam_reg=lam_reg,
+                    lam_gamma=lam_gamma,
                     lam_env_anchor=lam_env_anchor,
                     lam_tract_k_anchor=lam_tract_k_anchor,
                     lam_env_max_anchor=lam_env_max_anchor,
@@ -649,9 +651,9 @@ def train(
                 # weighted views in Python so the TB plots show each term's actual contribution
                 # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
                 # plain floats already on host.
-                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, env_anchor_v, k_anchor_v, env_max_v, total_v = torch.stack(
+                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, gamma_reg_v, env_anchor_v, k_anchor_v, env_max_v, total_v = torch.stack(
                     [out["spec"], out["sc"], out["logm"], out["tf"],
-                     out["env"], out["env_log"], out["reg"], out["env_anchor"],
+                     out["env"], out["env_log"], out["reg"], out["gamma_reg"], out["env_anchor"],
                      out["k_anchor"], out["env_max"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
@@ -666,6 +668,9 @@ def train(
                     writer.add_scalar("Loss/env_log", env_log_v, idx)
                 if lam_reg > 0:
                     writer.add_scalar("Loss/reg", reg_v, idx)
+                if lam_gamma > 0:
+                    writer.add_scalar("Loss/gamma_reg", gamma_reg_v, idx)
+                    writer.add_scalar("LossW/gamma_reg", float(lam_gamma) * gamma_reg_v, idx)
                 if lam_env_anchor > 0:
                     writer.add_scalar("Loss/env_anchor", env_anchor_v, idx)
                 if lam_tract_k_anchor > 0:
