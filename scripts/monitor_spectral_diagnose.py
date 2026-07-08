@@ -309,8 +309,21 @@ try:
 except (KeyError, ValueError, TypeError):
     _osc_gain = 1.0
 with torch.no_grad():
-    score, _, bd, trajs = autonomy_score(
+    # METRIC: cold-start (silence IC) autonomy -- the deployment/ignition contract used for
+    # model selection. Keep this for Val/* scalars.
+    score, _, bd, _cold_trajs = autonomy_score(
         model, val_vocs, DT, rescale=False, cold_start=True, return_trajectories=True,
+        noise_gain=_noise_gain, osc_gain=_osc_gain,
+    )
+    # PANELS: reflect the rollout TRAINING actually performs -- supply the voc's own data IC
+    # (drop the ~45ms/2000-sample silence lead-in so audio[0] = the onset, as the training
+    # segments do), not the cold-start silence IC. Otherwise the source/auto panels show a
+    # non-ignited silence rollout that isn't comparable to the target panel. Drives are still
+    # open-loop from the target and the state is autonomous -- identical to teacher_forced_rollout.
+    _panel_vocs = [np.asarray(v)[2000:] if len(np.asarray(v)) > 2000 else np.asarray(v)
+                   for v in val_vocs]
+    _, _, _, trajs = autonomy_score(
+        model, _panel_vocs, DT, rescale=False, cold_start=False, return_trajectories=True,
         noise_gain=_noise_gain, osc_gain=_osc_gain,
     )
 
@@ -534,7 +547,7 @@ try:
         # scorer to display the real epoch / step rather than the temp-dir stub of "0".
         _label = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
         fig.suptitle(f"voc{i}  ckpt {_label}  noise_gain={_noise_gain:.2f}  osc_gain={_osc_gain:.2f}   "
-                     f"(spec: mel, dB re target peak, [-80, 0])", fontsize=10)
+                     f"(data-IC rollout = training regime; spec: mel, dB re target peak, [-80, 0])", fontsize=10)
         plt.tight_layout()
         sw.add_figure(f"specgram/voc{i}", fig, step)
         plt.close(fig)
