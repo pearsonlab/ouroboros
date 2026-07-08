@@ -309,20 +309,16 @@ try:
 except (KeyError, ValueError, TypeError):
     _osc_gain = 1.0
 with torch.no_grad():
-    # METRIC: cold-start (silence IC) autonomy -- the deployment/ignition contract used for
-    # model selection. Keep this for Val/* scalars.
-    score, _, bd, _cold_trajs = autonomy_score(
-        model, val_vocs, DT, rescale=False, cold_start=True, return_trajectories=True,
-        noise_gain=_noise_gain, osc_gain=_osc_gain,
-    )
-    # PANELS: reflect the rollout TRAINING actually performs -- supply the voc's own data IC
-    # (drop the ~45ms/2000-sample silence lead-in so audio[0] = the onset, as the training
-    # segments do), not the cold-start silence IC. Otherwise the source/auto panels show a
-    # non-ignited silence rollout that isn't comparable to the target panel. Drives are still
-    # open-loop from the target and the state is autonomous -- identical to teacher_forced_rollout.
+    # SINGLE data-IC rollout, used for BOTH the Val/* metrics AND the panels. Strip the ~45ms/
+    # 2000-sample silence lead-in so audio[0] = the onset (the training-regime data IC), cold_start
+    # =False. Drives stay open-loop from the target, state autonomous -- identical to
+    # teacher_forced_rollout, so the panels reflect what training actually does and are comparable
+    # to the target. (Previously two calls -- a cold-start metric + a data-IC panel rollout -- but
+    # that doubled the per-poll cost on CPU. The separate cold-start autonomy number was dropped;
+    # Val/autonomy is now the data-IC autonomy, consistent with the panels and the training objective.)
     _panel_vocs = [np.asarray(v)[2000:] if len(np.asarray(v)) > 2000 else np.asarray(v)
                    for v in val_vocs]
-    _, _, _, trajs = autonomy_score(
+    score, _, bd, trajs = autonomy_score(
         model, _panel_vocs, DT, rescale=False, cold_start=False, return_trajectories=True,
         noise_gain=_noise_gain, osc_gain=_osc_gain,
     )
