@@ -25,10 +25,11 @@ loudness-weighted average (which over-subtracts and erases the vocalization).
 ## The branches and the single crossover
 
 - **rumble**: a Mamba head, **low-passed** below `--rumble-lowpass-hz` — owns the LF.
-- **noise**: `sigma · noise_tract(white)`, **high-passed** above the *same* cutoff
-  (`high-pass = x − lowpass(x)`), so rumble and noise are complementary and **one**
-  parameter (`--rumble-lowpass-hz`) sets the whole LF/noise split. The floor-fit band
-  boundary auto-derives to `1.5 ×` that cutoff (the rumble's effective upper edge).
+- **noise**: `sigma · noise_tract(white)`, **high-passed** above `--noise-highpass-hz`
+  (`high-pass = x − lowpass(x)`; default 0 → the rumble cutoff, complementary single split).
+  Setting it *below* the rumble cutoff opens a deliberate overlap — see "Decoupled crossover"
+  below. The floor-fit band boundary auto-derives to `1.5 ×` the rumble cutoff (its effective
+  upper edge).
 - **sigma** (`--sigma-constant`): **one scalar gain per vocalization** on the filtered
   noise. The sigma Mamba head reads the whole waveform (+ its reversal), mean-pools to a
   single number, and applies **softplus** (so it can approach 0 smoothly for clean vocs
@@ -64,11 +65,26 @@ Design choices, in the order we arrived at them (each fixed a failure of the las
    scalar gain trained by that masked loss. Loud frames get no broadband gradient, so
    syllables can't drag the gain up. The shared `noise_tract` learns the (universal) shape.
 
-4. **Bias correction (`--floor-correction`).** Selecting low-power frames biases the
-   estimate downward — the classic minimum-statistics bias, analogous to MAD → σ needing
-   1.4826. Closed form below. The `[5,15]` band (`--floor-pctile 15`, `--floor-correction
-   1.3`) tracks the true floor better than `[10,25]` (measured 1.1–1.3× vs 1.2–1.9× bias
-   across voc types), at the cost of a slightly noisier per-segment estimate.
+4. **Bias correction (`--floor-correction`), applied in the loss and computed from the
+   band.** Selecting low-power frames biases the estimate downward — the classic
+   minimum-statistics bias, analogous to MAD → σ needing 1.4826. This is applied by
+   **lifting the broadband quiet-frame target** `G → G · C` **before** both the SC and the
+   log-magnitude terms, so the gain is regressed onto the *de-biased* floor (not the raw
+   low-tail). `C = C(K, band)` is **computed from the band** `[0.4p, p]` and an effective
+   DOF `K` (closed form below), with `--floor-correction` defaulting to `-1` = auto; a
+   positive value is a manual override. **Two things that were both wrong and are now
+   fixed:** (a) when the loss switched from *replacing* the target to *masking* it, the
+   correction silently went dead — the gain trained to the raw low-tail and sparse vocs
+   undershot to ~0.6×; (b) it was hard-coded (1.2/1.3). With `C` applied + computed, syllA/C
+   land dead-on (0.97–1.0×) instead of undershooting.
+
+   **K must be per-sample.** Estimate `K = mean²/var` of each voc's broadband level `bbp`
+   over *its own* lower half (< its median; the loud syllables that collapse K are excluded).
+   Pooling `bbp` across the batch mixes vocs of different noise *levels*, and that cross-voc
+   level variance collapses K to a tiny value → a wildly inflated `C` (a 2.3× over-correction
+   in practice). Per-sample K gives K ≈ 30–90 → `C ≈ 1.15–1.3`, matching the closed form.
+   NB the loss uses **magnitude** (`stft_mag`), and `bbp` is a magnitude-sum, so its DOF is
+   ~3–4× the *power* DOF — do not reuse a power-derived K here.
 
 The noise-floor **shape is universal** across voc types (normalized quiet-frame PSDs of
 syllA–E overlap within 1.3–2.4 dB), so one shared `noise_tract` is correct — only the
@@ -111,10 +127,10 @@ is exactly the per-bin correction.
 | white | 79.8  | 1.119     | 1.109         |
 | pink  | 20.2  | 1.266     | 1.251         |
 
-Matches to <1%. Our colored noise sits between, so `C ≈ 1.12–1.27`; the fixed default
-**1.2 ≈ C(K≈30)**. The self-calibrating option is to compute `K_emp` from the quiet-frame
-broadband power each batch and plug into `C(K)` — no magic constant. (Not yet wired in;
-the fixed 1.2 only sets the absolute level by ±~0.8 dB.)
+Matches to <1% (this validation is for the *power* DOF). In the loss, `bbp` is a
+**magnitude-sum**, whose DOF runs higher (≈150–300 on synthetic noise, ≈30–90 estimated
+per-sample on real vocs → `C ≈ 1.15–1.3`). This is now computed live per-sample and applied
+by lifting the target — see "Self-calibrating correction" below; no magic constant.
 
 ## Long-window noise-fit STAGE (`--noise-fit-only`)
 
@@ -157,10 +173,11 @@ not remove it — the original plan's bug.)
 ```
 --sigma-constant                 # one softplus scalar gain per vocalization
 --use-noise-branch --use-rumble-branch
---rumble-lowpass-hz 250          # THE single LF/noise crossover (rumble LP, noise HP, floor boundary=1.5x)
+--rumble-lowpass-hz 300          # rumble low-pass (floor boundary auto = 1.5x)
+--noise-highpass-hz 250          # noise high-pass; 0 = use rumble-LP (single crossover). <rumble-LP -> overlap
 --noise-floor-fit                # mask broadband loss to per-sample quiet frames
 --floor-pctile 15                # quiet-frame band = [0.4p, p] pctile -> [6,15]; beats [10,25]
---floor-correction 1.3           # minimum-statistics bias correction C(K); 1.3 for [5,15], 1.2 for [10,25]
+--floor-correction -1            # -1 = auto C(K,band) from band + per-sample K; >0 = manual override
 --noise-fit-only                 # skip oscillator -> long window; run only rumble + noise
 --lam-rumble-td 10               # time-domain rumble MSE (phase-align); rumble-only, drop when frozen
 --context-len 0.3 --H-min 13000 --H-max 13000 --batch-size 8   # long window; oscillator's H is irrelevant here
@@ -171,10 +188,24 @@ Implementation: masked floor loss + rumble MSE in `spectral_rollout_step` /
 `mrstft_loss` (`train/rollout_refine.py`, `train/spectral_rollout.py`); noise high-pass in
 `filtered_noise_branch`; scalar gain in `Ouroboros.get_sigma` (`model/model.py`).
 
-## Self-calibrating correction (optional, not wired)
+## Self-calibrating correction — now wired
 
-`C(K)` needs only `K` = effective DOF = `mean²/var` of the **pure-noise** broadband power
-(≈30 for our colored noise; ≈80 white, ≈20 pink). Estimate it from the selected quiet
-frames each batch and plug into the closed form — no magic constant. NB: estimate `K` on the
-*quiet frames only*; over the full segment the syllables inflate the variance and `K`
-collapses (→ absurd `C`).
+`C(K, band)` is computed live in `mrstft_loss`: `K = mean²/var` of each voc's broadband
+level over its lower half (per-sample; see design choice 4), `C` from the closed form,
+applied by lifting the quiet-frame target. `--floor-correction` defaults to `-1` (auto);
+set a positive value only to pin a manual factor. The diagnostic (`pervoc.py`) applies the
+**identical** `[6,15]`/per-sample-K/magnitude correction to its reference floor, so a
+reported `1.0×` genuinely means "on the de-biased floor."
+
+## Decoupled crossover (`--noise-highpass-hz`)
+
+The single shared cutoff (noise-HP = rumble-LP) leaves a residual bump in **250–375 Hz**:
+the rumble rolls off from its cutoff while the raw still has LF *signal* there (measured
+residual/raw ≈ 0.19 at 250–300, 0.51 at 300–375 for syllA). `--noise-highpass-hz` decouples
+the two: set the noise HP **below** the rumble LP (e.g. `--rumble-lowpass-hz 300
+--noise-highpass-hz 250`) to open a 250–300 **overlap** where the rumble carries the
+deterministic (phase-matched) LF signal and the noise carries the floor. Measured: syllA's
+300–375 residual dropped ~0.51 → ~0.05, floors unchanged. Bound it by the phase caveat
+above — the rumble should cover LF *signal*, not push into the flat stochastic floor (keep
+rumble-LP ≲ 300 so its rolloff stays below where the floor takes over). Default
+`--noise-highpass-hz 0` = use the rumble cutoff (the complementary single-crossover case).
