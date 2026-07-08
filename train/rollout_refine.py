@@ -167,17 +167,23 @@ def mrstft_loss(xg, tgt, configs=DEFAULT_CONFIGS, eps=1e-3, sc_eps=1e-2, return_
             quiet = (bbp >= q_lo) & (bbp <= q_hi)                        # (B, T) quiet frames
             quiet = torch.where(quiet.any(dim=1, keepdim=True), quiet, bbp <= q_hi)  # fallback
             # Correction C(K, band): if floor_correction>0 use it as a manual override, else compute
-            # from the band + K = mean^2/var of bbp over its lower half (~noise; excludes the loud
-            # syllables that would inflate the variance and collapse K), pooled over the batch.
-            if float(floor_correction) > 0.0:
-                cmag = float(floor_correction)
-            else:
-                med = torch.quantile(bbp, 0.5, dim=1, keepdim=True)
-                low = bbp[bbp <= med]
-                K = float((low.mean() ** 2 / low.var().clamp_min(1e-12)).clamp(2.0, 500.0))
-                cmag = _floor_C(K, p_lo, p_hi)
+            # from the band + a PER-SAMPLE effective DOF K = mean^2/var of bbp over that voc's own
+            # lower half (< its median; ~noise, the loud syllables that collapse K are excluded).
+            # K MUST be per-sample: pooling bbp across the batch mixes vocs of different noise LEVELS,
+            # and that cross-voc level variance collapses K -> a wildly inflated correction.
             bbq = bb.view(1, fdim, 1) & quiet.unsqueeze(1)             # (B, F, T) broadband quiet frames
-            G = torch.where(bbq, G * cmag, G)                          # de-bias the low-tail target
+            if float(floor_correction) > 0.0:
+                G = torch.where(bbq, G * float(floor_correction), G)
+            else:
+                med = torch.quantile(bbp, 0.5, dim=1, keepdim=True)    # (B, 1) per-sample median
+                lo = (bbp <= med).to(bbp.dtype)                        # (B, T)
+                n = lo.sum(dim=1).clamp_min(1.0)                       # (B,)
+                mu = (bbp * lo).sum(dim=1) / n                         # (B,)
+                var = (((bbp - mu.unsqueeze(1)) ** 2) * lo).sum(dim=1) / n
+                Kps = (mu ** 2 / var.clamp_min(1e-12)).clamp(2.0, 500.0)  # (B,) per-sample DOF
+                cmag = torch.tensor([_floor_C(float(k), p_lo, p_hi) for k in Kps],
+                                    device=G.device, dtype=G.dtype).view(-1, 1, 1)  # (B,1,1)
+                G = torch.where(bbq, G * cmag, G)                      # de-bias the low-tail target
             drop = bb.view(1, fdim, 1) & (~quiet).unsqueeze(1)         # (B, F, T) broadband, loud frames
             wmask = (~drop).to(G.dtype)                                # 1 everywhere except those
         if wmask is not None:
