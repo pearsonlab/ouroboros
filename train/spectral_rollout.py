@@ -35,6 +35,7 @@ from train.rollout_refine import (
     env_loss_log,
     gaussian_envelope,
 )
+from utils import deriv_approx_dy, deriv_approx_d2y  # finite-diff stencils for the rumble-removed TF target
 
 # ONSET category from data.load_data (kept local to avoid the import cycle the data
 # module would introduce through utils).
@@ -768,15 +769,29 @@ def spectral_rollout_step(
     if lam_tf <= 0 or noise_fit_only:
         L_tf = torch.zeros((), device=x.device, dtype=x.dtype)
     else:
+        # TF anchor targets the RUMBLE-REMOVED signal (raw - rumble): the frozen rumble owns the LF, so
+        # the oscillator should reproduce the residual dynamics, not the raw. Subtract the (frozen) rumble
+        # waveform AND its 1st/2nd derivatives (same finite-diff stencil + tau/dt rescaling as the data)
+        # from the teacher-forced state (x, z2), the target accel (d2x), and recompute the kernel there.
+        x_tf, z2_tf, d2x_tf, wk_tf = x, z2, d2x, wk
+        if getattr(model, "use_rumble_branch", False):
+            r3 = rumble_branch(model, x, dxdt.clone(), dt, x.shape[1]).detach().unsqueeze(-1)  # (B, L, 1)
+            r_np = r3.cpu().numpy()
+            dr = torch.from_numpy(deriv_approx_dy(r_np)).to(x.device, x.dtype)
+            d2r = torch.from_numpy(deriv_approx_d2y(r_np)).to(x.device, x.dtype) / (dt ** 2) * model.tau ** 2
+            x_tf = x - r3
+            z2_tf = z2 - (model.tau / dt) * dr
+            d2x_tf = d2x - d2r
+            wk_tf = model.kernel.forward_given_weights(torch.cat([x_tf, z2_tf], dim=-1), weights.clone())
         if e is not None:
             ef = e.clamp_min(1e-6)
-            s, s2 = x / ef, z2 / ef
+            s, s2 = x_tf / ef, z2_tf / ef
             wk_s = model.kernel.forward_given_weights(torch.cat([s, s2], dim=-1), weights.clone())
             tf_d2 = -(omega ** 2) * s - gamma * s2 - wk_s
-            tf_target = d2x / ef
+            tf_target = d2x_tf / ef
         else:
-            tf_d2 = -(omega ** 2) * x - gamma * z2 - wk
-            tf_target = d2x
+            tf_d2 = -(omega ** 2) * x_tf - gamma * z2_tf - wk_tf
+            tf_target = d2x_tf
         # Variance-normalized so the anchor scale is commensurable across vocs / runs.
         # tf_var should be the variance computed ONCE over the whole training set (see
         # rollout_refine.py:110) -- per-batch variance is unstable when the batch is mostly
