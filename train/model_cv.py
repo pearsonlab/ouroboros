@@ -232,6 +232,7 @@ def model_seed_cv_spectral(
     tau: float = None,             # default 1/sr if None
     smooth_len: float = 0.001,
     drive_lowpass_ms: float = 1.0,
+    alpha_lowpass_ms: float = 0.0,
     keep_const: bool = False,
     osc_init: bool = False,        # Strategy 1: van der Pol limit-cycle init (see Ouroboros.__init__)
     checkpoint_encoder: bool = False,  # gradient-checkpoint the Mamba drive encoders (memory for larger B)
@@ -261,6 +262,8 @@ def model_seed_cv_spectral(
     env_ms: float = 2.0,
     lam_reg: float = 0.0,
     lam_env_anchor: float = 0.0,
+    lam_tract_k_anchor: float = 0.0,
+    lam_env_max_anchor: float = 0.0,
     spec_warmup_epochs: int = 5,
     env_warmup_epochs: int = 0,
     spec_warmup_steps: int = None,
@@ -298,7 +301,23 @@ def model_seed_cv_spectral(
     noise_init_bias: float = 0.1,
     noise_start_step: int = 0,
     noise_warmup_steps: int = 0,
+    osc_warmup_epochs: int = 0,
+    mel_spec: bool = False,
+    mel_n_mels: int = 80,
+    floor_fit: bool = False,
+    floor_pctile: float = 25.0,
+    floor_cutoff_hz: float = 375.0,
+    floor_correction: float = -1.0,   # <=0: auto C(K,band); >0: manual override
+    noise_fit_only: bool = False,
+    lam_rumble_td: float = 0.0,
     freeze_noise_epochs: int = 0,
+    use_noise_branch: bool = False,
+    noise_tract_n_sec: int = 3,
+    sigma_lowpass_ms: float = 0.0,
+    sigma_constant: bool = False,
+    use_rumble_branch: bool = False,
+    rumble_lowpass_hz: float = 250.0,
+    noise_highpass_hz: float = 0.0,
     # tract.K_raw initial value (None = leave at 0 → K = softplus(0) = log(2)).
     # When set, the entry script picks this from a quick RMS scan of the training
     # audio so K = softplus(K_raw) matches target audio scale from epoch 0.
@@ -344,18 +363,30 @@ def model_seed_cv_spectral(
         model = Ouroboros(d_data=1, n_layers=n_layers, d_state=d_state, d_conv=d_conv,
                           expand_factor=expand_factor, tau=tau, smooth_len=smooth_len,
                           kernel=kernel, drive_lowpass_ms=drive_lowpass_ms,
+                          alpha_lowpass_ms=alpha_lowpass_ms,
                           keep_const=keep_const, osc_init=osc_init,
                           checkpoint_encoder=checkpoint_encoder,
                           use_tract=use_tract, tract_n_sec=tract_n_sec,
                           use_envelope=use_envelope, env_lowpass_ms=env_lowpass_ms,
                           enable_noise_forcing=enable_noise_forcing,
-                          noise_tau_ms=noise_tau_ms, noise_init_bias=noise_init_bias)
+                          noise_tau_ms=noise_tau_ms, noise_init_bias=noise_init_bias,
+                          use_noise_branch=use_noise_branch,
+                          noise_tract_n_sec=noise_tract_n_sec,
+                          sigma_lowpass_ms=sigma_lowpass_ms,
+                          sigma_constant=sigma_constant,
+                          use_rumble_branch=use_rumble_branch,
+                          rumble_lowpass_hz=rumble_lowpass_hz,
+                          noise_highpass_hz=noise_highpass_hz)
         # K_raw_init: set the tract gain so audio amplitude starts near target RMS
         # at epoch 0, instead of relying on it to descend from K_raw=0 during training.
         # Only applies on fresh start; resume restores the trained value.
         if use_tract and K_raw_init is not None:
             with torch.no_grad():
                 model.tract.K_raw.data.fill_(float(K_raw_init))
+                # keep the K-gauge anchor target aligned with the data-init gain, so
+                # --lam-tract-k-anchor pins K near this value rather than softplus(0)
+                model.tract.K_anchor_target.copy_(
+                    torch.nn.functional.softplus(model.tract.K_raw.data))
         opt = Adam(model.parameters(), lr=lr)
         sched = ReduceLROnPlateau(opt, factor=0.5, patience=max(n_epochs // 25, 2),
                                   min_lr=1e-10)
@@ -402,6 +433,8 @@ def model_seed_cv_spectral(
                 env_ms=env_ms,
                 lam_reg=lam_reg,
                 lam_env_anchor=lam_env_anchor,
+                lam_tract_k_anchor=lam_tract_k_anchor,
+                lam_env_max_anchor=lam_env_max_anchor,
                 spec_warmup_epochs=spec_warmup_epochs,
                 env_warmup_epochs=env_warmup_epochs,
                 spec_warmup_steps=spec_warmup_steps,
@@ -417,6 +450,11 @@ def model_seed_cv_spectral(
                 noise_start_step=noise_start_step,
                 noise_warmup_steps=noise_warmup_steps,
                 freeze_noise_epochs=freeze_noise_epochs,
+                osc_warmup_epochs=osc_warmup_epochs,
+                mel_spec=mel_spec, mel_n_mels=mel_n_mels,
+                floor_fit=floor_fit, floor_pctile=floor_pctile, floor_cutoff_hz=floor_cutoff_hz,
+                floor_correction=floor_correction,
+                noise_fit_only=noise_fit_only, lam_rumble_td=lam_rumble_td,
             )
             save_model(model, opt, os.path.join(run_dir, f"checkpoint_{target}.tar"),
                        n_layers=n_layers, d_state=d_state, expand_factor=expand_factor,

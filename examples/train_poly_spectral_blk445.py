@@ -208,6 +208,10 @@ def main():
     p.add_argument("--d-conv", type=int, default=4)
     p.add_argument("--expand-factor", type=int, default=10)
     p.add_argument("--drive-lowpass-ms", type=float, default=1.0)
+    p.add_argument("--alpha-lowpass-ms", type=float, default=0.0,
+                   help="Extra low-pass timescale (ms) for alpha (the constant kernel term = "
+                        "pressure-analog DC drive); 0=off (smoothed at --drive-lowpass-ms like the "
+                        "other drives). >0 (e.g. 15) makes the driving pressure vary slowly.")
     p.add_argument("--keep-const", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--osc-init", action=argparse.BooleanOptionalAction, default=False,
                    help="Strategy 1: initialize each seed as a marginal van der Pol limit cycle "
@@ -261,6 +265,20 @@ def main():
                         "Per-sample backward grad 2*(e-1)/N is bounded and smooth -- no eps "
                         "machinery, no small-e gradient cliff. Only meaningful when "
                         "use_envelope is enabled. Default 0 disables.")
+    p.add_argument("--lam-env-max-anchor", type=float, default=0.0,
+                   help="weight on mean((max_t e - 1)^2), a quadratic penalty on the departure "
+                        "of the envelope's PEAK from 1. Fixes only the absolute SCALE of e(t): "
+                        "its time-variance (syllable shaping) is unpenalized, unlike --lam-env-anchor "
+                        "which pins the whole shape to a target. Prevents the envelope roaming its "
+                        "level up while letting it vary. Only meaningful with use_envelope. Default 0.")
+    p.add_argument("--lam-tract-k-anchor", type=float, default=0.0,
+                   help="weight on the (K/K0 - 1)^2 tract-GAIN gauge anchor, where "
+                        "K = softplus(tract.K_raw) and K0 is the data-init gain. Closes the "
+                        "(K, source) -> (c*K, source/c) gauge the envelope anchor leaves open: "
+                        "pins the absolute output gain near its data-matched start WITHOUT "
+                        "flattening the envelope (which mean((e-1)^2) does). K is a scalar so the "
+                        "term is tiny with a bounded gradient. Only meaningful with use_tract. "
+                        "Default 0 disables.")
     p.add_argument("--lam-env-log", type=float, default=0.0,
                    help="weight on the LOG-RATIO envelope loss (|log((env(a)+eps)/(env(g)+eps))|). "
                         "Symmetric in (auto, target) -- penalizes shrinking past target the same as "
@@ -362,6 +380,77 @@ def main():
     p.add_argument("--freeze-noise-epochs", type=int, default=0,
                    help="Freeze the sigma gate head (sigma_mamba + sigma_net) for the first N epochs. "
                         "0 disables (the gain ramp already holds the term off early).")
+    p.add_argument("--osc-warmup-epochs", type=int, default=0,
+                   help="Oscillator warmup: hold the deterministic (oscillator->env->tract) output "
+                        "gated OFF for the first N epochs so the rumble+noise branches fit the "
+                        "spectrum FIRST, then ramp the oscillator in over the following epoch. The "
+                        "oscillator/tract/envelope get no gradient while gated (stay at init). 0 = off.")
+    p.add_argument("--mel-spec", action=argparse.BooleanOptionalAction, default=False,
+                   help="Compute the MRSTFT magnitude loss on MEL-warped spectra (mel filterbank "
+                        "applied to |STFT| before the SC + log-mag terms) instead of linear frequency.")
+    p.add_argument("--mel-n-mels", type=int, default=80,
+                   help="Number of mel bands for --mel-spec (fmax = Nyquist). Default 80.")
+    # harmonic-plus-noise: additive filtered-noise branch (alternative to --enable-noise-forcing)
+    p.add_argument("--use-noise-branch", action=argparse.BooleanOptionalAction, default=False,
+                   help="Harmonic-plus-noise: keep the oscillator PURELY deterministic (RK4) and add, "
+                        "OUTSIDE the tract, a parallel noise source -- white noise through a LOW-ORDER "
+                        "rational (pole/zero) filter (--noise-tract-n-sec sections, same form as the "
+                        "vocal tract), amplitude-modulated by the sigma gate g(t). The low filter order "
+                        "can shape a broadband envelope but can't make sharp harmonic peaks, forcing the "
+                        "oscillator to carry the tonal structure. Requires the spectral loss.")
+    p.add_argument("--noise-tract-n-sec", type=int, default=3,
+                   help="Number of 2nd-order pole/zero sections in the noise branch's rational filter "
+                        "(order ~2*n_sec num/den). Low (2-3) keeps it too coarse to synthesize harmonics.")
+    p.add_argument("--sigma-lowpass-ms", type=float, default=0.0,
+                   help="Optional low-pass timescale (ms) for the sigma noise gate g(t); 0 = off (sharp "
+                        "gate, default). >0 smooths the noise amplitude envelope (same zero-phase Gaussian "
+                        "as the drives) so it can't snap abruptly. ~1-2 ms is a light smoothing.")
+    p.add_argument("--sigma-constant", action=argparse.BooleanOptionalAction, default=False,
+                   help="Restrict the noise gate g to a single CONSTANT per vocalization (the sigma Mamba "
+                        "head mean-pools over time and predicts one number). Forces g to model a stationary "
+                        "noise floor rather than tracking syllabic content. For the noise-floor-fit scheme.")
+    p.add_argument("--noise-floor-fit", action=argparse.BooleanOptionalAction, default=False,
+                   help="Noise-fit loss: for broadband bins (>= --floor-cutoff-hz) the spectral target is a "
+                        "PER-SAMPLE floor = the mean spectrum of the QUIET TIME FRAMES (those whose broadband "
+                        "power falls in the [0.4x, 1x]*--floor-pctile percentile band), times --floor-correction "
+                        "(minimum-statistics bias correction). Each voc targets its own coherent floor spectrum; "
+                        "the shared noise_tract learns the shape. LF bins keep the real time-resolved target "
+                        "so the rumble fits the LF signal.")
+    p.add_argument("--floor-pctile", type=float, default=25.0,
+                   help="Upper edge of the quiet-frame selection band (frames with broadband power in "
+                        "[0.4*p, p] percentile are averaged). ~25 selects the 10-25th percentile frames.")
+    p.add_argument("--floor-correction", type=float, default=-1.0,
+                   help="Minimum-statistics de-bias for the quiet-frame floor. Default (<=0) COMPUTES it as "
+                        "C(K, band) from the [0.4p,p] band and an estimated DOF K -- not hard-coded. Set >0 to "
+                        "override with a fixed factor.")
+    p.add_argument("--noise-fit-only", action=argparse.BooleanOptionalAction, default=False,
+                   help="Noise-floor-fit STAGE: skip the oscillator (drives / TF anchor / RK4 rollout) and run "
+                        "only the feedforward rumble + filtered noise. No rollout cost -> use a LONG --context-len "
+                        "so segments contain quiet gaps and the quiet-frame floor is the true floor.")
+    p.add_argument("--lam-rumble-td", type=float, default=0.0,
+                   help="Weight on a time-domain MSE of the rumble vs the raw LF waveform (low-passed at "
+                        "--rumble-lowpass-hz). Phase-aligns the rumble so raw-rumble cancels in the time domain; "
+                        "rumble-only; drop it once the rumble is frozen.")
+    p.add_argument("--floor-cutoff-hz", type=float, default=-1.0,
+                   help="Frequency boundary: bins >= this get the floor target (noise); below keep the real "
+                        "time-resolved target (rumble). Default (-1) AUTO-derives to 1.5*--rumble-lowpass-hz "
+                        "(the rumble's effective upper edge) so ONE param (--rumble-lowpass-hz) controls the "
+                        "whole LF/noise split. Set explicitly only to override.")
+    p.add_argument("--use-rumble-branch", action=argparse.BooleanOptionalAction, default=False,
+                   help="Add a deterministic low-frequency 'rumble' source: a parallel Mamba head "
+                        "whose output is band-limited to < --rumble-lowpass-hz and ADDED to the "
+                        "tract+noise output. Gives the model a cheap dedicated channel for the "
+                        "sub-cutoff recording floor so the oscillator isn't forced to match it -- "
+                        "but the oscillator stays FULL-RANGE (not high-passed), so it can still "
+                        "produce LF when a vocalization has genuine low-frequency content.")
+    p.add_argument("--rumble-lowpass-hz", type=float, default=250.0,
+                   help="Cutoff (Hz) for the rumble head's low-pass (soft raised-cosine rolloff to "
+                        "1.5x cutoff). Only meaningful with --use-rumble-branch. Default 250.")
+    p.add_argument("--noise-highpass-hz", type=float, default=0.0,
+                   help="Cutoff (Hz) for the noise branch's high-pass. Default 0 = use "
+                        "--rumble-lowpass-hz (complementary, single-cutoff). Set < the rumble cutoff to "
+                        "DECOUPLE (e.g. noise-HP 250, rumble-LP 300) -> a 250-300 overlap that fills the "
+                        "crossover residual: rumble carries the LF signal, noise carries the floor.")
     p.add_argument("--n-seeds", type=int, default=4)
     p.add_argument("--cull-frac", type=float, default=0.0)
     p.add_argument("--cull-keep", type=int, default=2)
@@ -473,7 +562,7 @@ def main():
         dls=dls, dt=dt, val_vocs=val_vocs, test_vocs=test_vocs,
         n_kernels=args.n_kernels, n_layers=args.n_layers,
         d_state=args.d_state, d_conv=args.d_conv, expand_factor=args.expand_factor,
-        tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, keep_const=args.keep_const,
+        tau=dt, drive_lowpass_ms=args.drive_lowpass_ms, alpha_lowpass_ms=args.alpha_lowpass_ms, keep_const=args.keep_const,
         osc_init=args.osc_init,
         checkpoint_encoder=args.checkpoint_encoder,
         use_tract=args.use_tract, tract_n_sec=args.tract_n_sec, use_envelope=args.use_envelope,
@@ -488,6 +577,8 @@ def main():
         env_ms=args.env_ms,
         lam_reg=args.lam_reg,
         lam_env_anchor=args.lam_env_anchor,
+        lam_tract_k_anchor=args.lam_tract_k_anchor,
+        lam_env_max_anchor=args.lam_env_max_anchor,
         spec_warmup_epochs=args.spec_warmup_epochs,
         env_warmup_epochs=args.env_warmup_epochs,
         spec_warmup_steps=args.spec_warmup_steps,
@@ -504,8 +595,20 @@ def main():
         freeze_envelope_epochs=args.freeze_envelope_epochs,
         enable_noise_forcing=args.enable_noise_forcing,
         noise_tau_ms=args.noise_tau_ms, noise_init_bias=args.noise_init_bias,
+        use_noise_branch=args.use_noise_branch, noise_tract_n_sec=args.noise_tract_n_sec,
+        sigma_lowpass_ms=args.sigma_lowpass_ms,
+        sigma_constant=args.sigma_constant,
+        use_rumble_branch=args.use_rumble_branch, rumble_lowpass_hz=args.rumble_lowpass_hz,
+        noise_highpass_hz=args.noise_highpass_hz,
         noise_start_step=args.noise_start_step,
         noise_warmup_steps=args.noise_warmup_steps,
+        osc_warmup_epochs=args.osc_warmup_epochs,
+        mel_spec=args.mel_spec, mel_n_mels=args.mel_n_mels,
+        floor_fit=args.noise_floor_fit, floor_pctile=args.floor_pctile,
+        floor_correction=args.floor_correction,
+        noise_fit_only=args.noise_fit_only, lam_rumble_td=args.lam_rumble_td,
+        floor_cutoff_hz=(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
+                         else 1.5 * args.rumble_lowpass_hz),  # one shared cutoff (--rumble-lowpass-hz)
         freeze_noise_epochs=args.freeze_noise_epochs,
         cold_start_autonomy=True, rescale_autonomy=False,
     )
@@ -527,6 +630,7 @@ def main():
         "ratio": list(ratio),
         "max_segs": args.max_segs,
         "drive_lowpass_ms": args.drive_lowpass_ms,
+        "alpha_lowpass_ms": args.alpha_lowpass_ms,
         "keep_const": bool(args.keep_const),
         "osc_init": bool(args.osc_init),
         "use_tract": bool(args.use_tract),
@@ -541,6 +645,8 @@ def main():
         "env_ms": args.env_ms,
         "lam_reg": args.lam_reg,
         "lam_env_anchor": args.lam_env_anchor,
+        "lam_tract_k_anchor": args.lam_tract_k_anchor,
+        "lam_env_max_anchor": args.lam_env_max_anchor,
         "lam": args.lam,
         "spec_configs": [list(c) for c in spec_configs],
         "H_min": args.H_min,
@@ -559,8 +665,25 @@ def main():
         "enable_noise_forcing": bool(args.enable_noise_forcing),
         "noise_tau_ms": float(args.noise_tau_ms),
         "noise_init_bias": float(args.noise_init_bias),
+        "use_noise_branch": bool(args.use_noise_branch),
+        "noise_tract_n_sec": int(args.noise_tract_n_sec),
+        "sigma_lowpass_ms": float(args.sigma_lowpass_ms),
+        "sigma_constant": bool(args.sigma_constant),
+        "noise_floor_fit": bool(args.noise_floor_fit),
+        "floor_pctile": float(args.floor_pctile),
+        "floor_correction": float(args.floor_correction),
+        "noise_fit_only": bool(args.noise_fit_only),
+        "lam_rumble_td": float(args.lam_rumble_td),
+        "floor_cutoff_hz": float(args.floor_cutoff_hz if args.floor_cutoff_hz > 0
+                                 else 1.5 * args.rumble_lowpass_hz),
+        "use_rumble_branch": bool(args.use_rumble_branch),
+        "rumble_lowpass_hz": float(args.rumble_lowpass_hz),
+        "noise_highpass_hz": float(args.noise_highpass_hz),
         "noise_start_step": int(args.noise_start_step),
         "noise_warmup_steps": int(args.noise_warmup_steps),
+        "osc_warmup_epochs": int(args.osc_warmup_epochs),
+        "mel_spec": bool(args.mel_spec),
+        "mel_n_mels": int(args.mel_n_mels),
         "freeze_noise_epochs": int(args.freeze_noise_epochs),
         "sr": int(sr),
     }

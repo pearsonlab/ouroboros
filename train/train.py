@@ -69,6 +69,7 @@ def save_model(
         # parameterization tag for forward-compat (always "poly" on this branch)
         "parameterization": getattr(model, "parameterization", "poly"),
         "drive_lowpass_ms": getattr(model, "drive_lowpass_ms", 0.0),
+        "alpha_lowpass_ms": getattr(model, "alpha_lowpass_ms", 0.0),
         "keep_const": getattr(model, "keep_const", False),
         "use_tract": getattr(model, "use_tract", False),
         "tract_n_sec": getattr(model, "tract_n_sec", 3),
@@ -76,6 +77,13 @@ def save_model(
         "env_lowpass_ms": getattr(model, "env_lowpass_ms", 20.0),
         "enable_noise_forcing": getattr(model, "enable_noise_forcing", False),
         "noise_tau_ms": getattr(model, "noise_tau_ms", 5.0),
+        "use_noise_branch": getattr(model, "use_noise_branch", False),
+        "noise_tract_n_sec": getattr(model, "noise_tract_n_sec", 3),
+        "sigma_lowpass_ms": getattr(model, "sigma_lowpass_ms", 0.0),
+        "sigma_constant": getattr(model, "sigma_constant", False),
+        "use_rumble_branch": getattr(model, "use_rumble_branch", False),
+        "rumble_lowpass_hz": getattr(model, "rumble_lowpass_hz", 250.0),
+        "noise_highpass_hz": getattr(model, "noise_highpass_hz", 0.0),
     }
     try:
         sd["n_kernel"] = model.kernel.nTerms
@@ -149,6 +157,7 @@ def load_model(
             kernel=kernel,
             device=device,
             drive_lowpass_ms=sd.get("drive_lowpass_ms", 0.0),
+            alpha_lowpass_ms=sd.get("alpha_lowpass_ms", 0.0),
             keep_const=sd.get("keep_const", False),
             use_tract=sd.get("use_tract", False),
             tract_n_sec=sd.get("tract_n_sec", 3),
@@ -156,6 +165,13 @@ def load_model(
             env_lowpass_ms=sd.get("env_lowpass_ms", 20.0),
             enable_noise_forcing=sd.get("enable_noise_forcing", False),
             noise_tau_ms=sd.get("noise_tau_ms", 5.0),
+            use_noise_branch=sd.get("use_noise_branch", False),
+            noise_tract_n_sec=sd.get("noise_tract_n_sec", 3),
+            sigma_lowpass_ms=sd.get("sigma_lowpass_ms", 0.0),
+            sigma_constant=sd.get("sigma_constant", False),
+            use_rumble_branch=sd.get("use_rumble_branch", False),
+            rumble_lowpass_hz=sd.get("rumble_lowpass_hz", 250.0),
+            noise_highpass_hz=sd.get("noise_highpass_hz", 0.0),
         )
     except:
         print("no kernel in savefile!")
@@ -164,7 +180,14 @@ def load_model(
     print(f"model tau: {model.tau}")
     opt = Adam(model.parameters(), lr=1e-3)
     scheduler = ReduceLROnPlateau(opt, factor=0.75, patience=5, min_lr=1e-10)
-    model.load_state_dict(sd["ouroboros"])
+    # strict=False only to tolerate the K_anchor_target buffer being absent in checkpoints
+    # saved before the tract-gain anchor existed; the buffer keeps its constructor/data-init
+    # value in that case. Any OTHER missing/unexpected key is a real mismatch -> raise.
+    _incompat = model.load_state_dict(sd["ouroboros"], strict=False)
+    _missing = [k for k in _incompat.missing_keys if not k.endswith("K_anchor_target")]
+    if _missing or _incompat.unexpected_keys:
+        raise RuntimeError(f"state_dict mismatch: missing={_missing} "
+                           f"unexpected={list(_incompat.unexpected_keys)}")
     opt.load_state_dict(sd["opt"])
 
     # Free any allocator fragments left over from the ckpt-loading sequence.
@@ -209,6 +232,8 @@ def train(
     env_ms: float = 2.0,
     lam_reg: float = 0.0,           # scale on the degree-graded L2 penalty on kernel weights
     lam_env_anchor: float = 0.0,    # scale on mean((e - 1)^2) envelope gauge anchor (pulls e toward 1)
+    lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor (pins K near data-init)
+    lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2) envelope PEAK anchor (pins scale, not shape)
     spec_warmup_epochs: int = 5,    # linearly ramp lam_spec 0 -> lam_spec over these epochs
     env_warmup_epochs: int = 0,     # linearly ramp lam_env AND lam_env_log over these epochs
     # Step-based overrides (None = derived from _epochs * batches_per_epoch at startup).
@@ -257,6 +282,18 @@ def train(
     # and set noise_start_step so the deterministic model is settled before noise turns on.
     noise_start_step: int = 0,
     noise_warmup_steps: int = 0,
+    # Oscillator warmup: osc_gain (gain on the deterministic tract output) is held at 0 for the
+    # first `osc_warmup_epochs` epochs, then ramped 0 -> 1 over the following epoch -- so the
+    # rumble+noise branches fit the spectrum FIRST and the oscillator is brought in afterward.
+    osc_warmup_epochs: int = 0,
+    mel_spec: bool = False,        # MRSTFT magnitude loss on mel-warped spectra
+    mel_n_mels: int = 80,
+    floor_fit: bool = False,       # noise-fit: broadband spectral target = per-sample quiet-frame floor
+    floor_pctile: float = 25.0,
+    floor_cutoff_hz: float = 375.0,
+    floor_correction: float = -1.0,   # <=0: auto C(K,band); >0: manual override
+    noise_fit_only: bool = False,  # skip oscillator (drives/TF/rollout) -> long-window rumble+noise fit
+    lam_rumble_td: float = 0.0,    # time-domain MSE: rumble vs raw LF waveform (phase-align)
     freeze_noise_epochs: int = 0,
 ) -> Tuple[
     list[float], list[Tuple[int, float, float]], nn.Module, torch.optim.Optimizer
@@ -297,11 +334,12 @@ def train(
     # Hard dependency: the OU noise term can only be supervised in distribution by the
     # phase-discarding MRSTFT magnitude loss. A pointwise/time-domain loss would penalize
     # every noise realization for not matching the specific training draw, which is incoherent.
-    if getattr(model, "enable_noise_forcing", False) and loss_mode != "spectral_rollout":
+    if (getattr(model, "enable_noise_forcing", False) or getattr(model, "use_noise_branch", False)) \
+            and loss_mode != "spectral_rollout":
         raise ValueError(
-            "enable_noise_forcing requires loss_mode='spectral_rollout' (MRSTFT magnitude "
-            f"loss); got loss_mode={loss_mode!r}. The noise realization is not a pathwise "
-            "target and cannot be supervised by a pointwise objective."
+            "enable_noise_forcing / use_noise_branch require loss_mode='spectral_rollout' "
+            f"(MRSTFT magnitude loss); got loss_mode={loss_mode!r}. The noise realization is "
+            "random-phase and cannot be supervised by a pointwise objective."
         )
 
     train_losses, val_losses = [], []
@@ -344,10 +382,17 @@ def train(
             H_total_steps_eff = nEpochs * batches_per_epoch
         else:
             H_total_steps_eff = int(H_total_steps)
+        # Oscillator warmup: osc off for the first osc_warmup_epochs, then ramp in over one epoch.
+        osc_start_step_eff = int(osc_warmup_epochs) * batches_per_epoch
+        osc_warmup_steps_eff = batches_per_epoch if osc_warmup_epochs > 0 else 0
+        _k0 = (float(model.tract.K_anchor_target)
+               if getattr(model, "tract", None) is not None else float("nan"))
         print(
             f"spectral_rollout mode: lam_spec={lam_spec} lam_tf={lam_tf} lam_env={lam_env} "
             f"lam_env_log={lam_env_log} env_log_eps={env_log_eps} lam_reg={lam_reg} "
-            f"lam_env_anchor={lam_env_anchor} kernel.lam={float(model.kernel.lam):.4g} "
+            f"lam_env_anchor={lam_env_anchor} lam_tract_k_anchor={lam_tract_k_anchor} "
+            f"lam_env_max_anchor={lam_env_max_anchor} "
+            f"K_anchor_target={_k0:.4g} kernel.lam={float(model.kernel.lam):.4g} "
             f"H={H_min}->{H_max} ({H_schedule}) ic_noise_rms={ic_noise_rms} tf_var={tf_var:.4g} "
             f"rollout_backend={rollout_backend} "
             f"spec_warmup_steps={spec_warmup_steps_eff} env_warmup_steps={env_warmup_steps_eff} "
@@ -413,10 +458,13 @@ def train(
               f"(env_mamba + env_net, {len(envelope_params)} tensors) frozen for the "
               f"first {freeze_envelope_epochs} epochs; e(t)=1.0 (identity) during freeze.",
               flush=True)
-    # Noise gate head (sigma_mamba + sigma_net). Frozen for the first freeze_noise_epochs
-    # epochs; also the noise_gain ramp keeps the forcing off until noise_start_step.
+    # Learned BACKGROUND source: the noise branch (sigma gate + noise_tract) AND the rumble
+    # head. Frozen together for the first freeze_noise_epochs epochs. Stage 2 of the sequential
+    # separation freezes the whole background for the WHOLE run (freeze_noise_epochs >= n_epochs,
+    # resuming a noise-fit checkpoint) so the oscillator trains on the residual: raw is explained
+    # by frozen (noise + rumble) + the oscillator, which then only has the vocal energy left to fit.
     noise_params = []
-    for attr in ("sigma_mamba", "sigma_net"):
+    for attr in ("sigma_mamba", "sigma_net", "noise_tract", "rumble_mamba", "rumble_net"):
         m = getattr(model, attr, None)
         if m is not None:
             noise_params.extend(list(m.parameters()))
@@ -425,6 +473,7 @@ def train(
         print(f"enable_noise_forcing: sigma head ({len(noise_params)} tensors), "
               f"noise_tau_ms={getattr(model, 'noise_tau_ms', None)}, "
               f"noise_start_step={noise_start_step}, noise_warmup_steps={noise_warmup_steps}, "
+              f"osc_warmup_epochs={osc_warmup_epochs} (osc_start_step={osc_start_step_eff}), mel_spec={mel_spec}, "
               f"freeze_noise_epochs={freeze_noise_epochs}.", flush=True)
 
     for epoch in tqdm(range(start_epoch, nEpochs), desc="training model"):
@@ -518,10 +567,11 @@ def train(
                 else:
                     lam_env_t = lam_env
                     lam_env_log_t = lam_env_log
-                # Noise forcing gain ramp: held at 0 until noise_start_step (so the
-                # deterministic model settles first), then linearly 0 -> 1 over
-                # noise_warmup_steps. 0 when the model has no noise head.
-                if not getattr(model, "enable_noise_forcing", False):
+                # Noise gain ramp: held at 0 until noise_start_step (so the deterministic model
+                # settles first), then linearly 0 -> 1 over noise_warmup_steps. Gates BOTH the
+                # in-ODE OU forcing and the additive filtered-noise branch. 0 with no noise head.
+                if not (getattr(model, "enable_noise_forcing", False)
+                        or getattr(model, "use_noise_branch", False)):
                     noise_gain_t = 0.0
                 elif idx < noise_start_step:
                     noise_gain_t = 0.0
@@ -529,6 +579,14 @@ def train(
                     noise_gain_t = min(1.0, (idx - noise_start_step) / float(noise_warmup_steps))
                 else:
                     noise_gain_t = 1.0
+                # Oscillator warmup ramp: held at 0 until osc_start_step_eff (rumble+noise fit
+                # first), then 0 -> 1 over osc_warmup_steps_eff. Gates the deterministic tract output.
+                if idx < osc_start_step_eff:
+                    osc_gain_t = 0.0
+                elif osc_warmup_steps_eff > 0:
+                    osc_gain_t = min(1.0, (idx - osc_start_step_eff) / float(osc_warmup_steps_eff))
+                else:
+                    osc_gain_t = 1.0
                 out = spectral_rollout_step(
                     model, x, dxdt, dx2, dt,
                     H=H, configs=spec_configs,
@@ -538,10 +596,17 @@ def train(
                     env_ms=env_ms,
                     lam_reg=lam_reg,
                     lam_env_anchor=lam_env_anchor,
+                    lam_tract_k_anchor=lam_tract_k_anchor,
+                    lam_env_max_anchor=lam_env_max_anchor,
                     tf_var=tf_var,
                     ic_mask=ic_mask, ic_noise_rms=ic_noise_rms,
                     rollout_backend=rollout_backend,
                     noise_gain=noise_gain_t,
+                    osc_gain=osc_gain_t,
+                    mel_spec=mel_spec, mel_n_mels=mel_n_mels,
+                    floor_fit=floor_fit, floor_pctile=floor_pctile, floor_cutoff_hz=floor_cutoff_hz,
+                    floor_correction=floor_correction,
+                    noise_fit_only=noise_fit_only, lam_rumble_td=lam_rumble_td,
                 )
                 total_loss = out["total"]
                 if not torch.isfinite(total_loss):
@@ -584,9 +649,10 @@ def train(
                 # weighted views in Python so the TB plots show each term's actual contribution
                 # to total (= raw value times its lam_*). lam_spec_t / lam_tf / lam_reg are
                 # plain floats already on host.
-                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, env_anchor_v, total_v = torch.stack(
+                spec_v, sc_v, logm_v, tf_v, env_v, env_log_v, reg_v, gamma_reg_v, env_anchor_v, k_anchor_v, env_max_v, total_v = torch.stack(
                     [out["spec"], out["sc"], out["logm"], out["tf"],
-                     out["env"], out["env_log"], out["reg"], out["env_anchor"], total_loss]
+                     out["env"], out["env_log"], out["reg"], out["gamma_reg"], out["env_anchor"],
+                     out["k_anchor"], out["env_max"], total_loss]
                 ).tolist()
                 train_losses.append(spec_v)
                 # Raw values
@@ -600,11 +666,20 @@ def train(
                     writer.add_scalar("Loss/env_log", env_log_v, idx)
                 if lam_reg > 0:
                     writer.add_scalar("Loss/reg", reg_v, idx)
+                if lam_reg > 0:
+                    writer.add_scalar("Loss/gamma_reg", gamma_reg_v, idx)
+                    writer.add_scalar("LossW/gamma_reg", float(lam_reg) * gamma_reg_v, idx)
                 if lam_env_anchor > 0:
                     writer.add_scalar("Loss/env_anchor", env_anchor_v, idx)
+                if lam_tract_k_anchor > 0:
+                    writer.add_scalar("Loss/k_anchor", k_anchor_v, idx)
+                if lam_env_max_anchor > 0:
+                    writer.add_scalar("Loss/env_max", env_max_v, idx)
                 writer.add_scalar("Loss/total", total_v, idx)
-                if getattr(model, "enable_noise_forcing", False):
+                if getattr(model, "enable_noise_forcing", False) or getattr(model, "use_noise_branch", False):
                     writer.add_scalar("Train/noise_gain", float(noise_gain_t), idx)
+                if osc_start_step_eff > 0:
+                    writer.add_scalar("Train/osc_gain", float(osc_gain_t), idx)
                 # Weighted (contribution to total) -- directly comparable across components
                 writer.add_scalar("LossW/spec",  float(lam_spec_t) * spec_v,  idx)
                 writer.add_scalar("LossW/sc",    float(lam_spec_t) * sc_v,    idx)
@@ -618,6 +693,10 @@ def train(
                     writer.add_scalar("LossW/reg",     float(lam_reg)       * reg_v,     idx)
                 if lam_env_anchor > 0:
                     writer.add_scalar("LossW/env_anchor", float(lam_env_anchor) * env_anchor_v, idx)
+                if lam_tract_k_anchor > 0:
+                    writer.add_scalar("LossW/k_anchor", float(lam_tract_k_anchor) * k_anchor_v, idx)
+                if lam_env_max_anchor > 0:
+                    writer.add_scalar("LossW/env_max", float(lam_env_max_anchor) * env_max_v, idx)
                 writer.add_scalar("Train/H", float(H), idx)
                 writer.add_scalar("Train/lam_spec_t", float(lam_spec_t), idx)
                 writer.add_scalar("Train/lam_env_t", float(lam_env_t), idx)

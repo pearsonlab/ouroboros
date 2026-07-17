@@ -35,6 +35,7 @@ from train.rollout_refine import (
     env_loss_log,
     gaussian_envelope,
 )
+from utils import deriv_approx_dy, deriv_approx_d2y  # finite-diff stencils for the rumble-removed TF target
 
 # ONSET category from data.load_data (kept local to avoid the import cycle the data
 # module would introduce through utils).
@@ -102,14 +103,16 @@ def _rk4_core_factory(H, powers):
             om2k, gak, w_k = om2[:, k], ga[:, k], w[:, k]
 
             def f(xx, vv):
-                # NOTE: substep-clamp (eval.integrate_poly_autonomous) is intentionally
-                # NOT applied here: each extra tanh op saves another (B,) tensor for
-                # backward (~few hundred MB across H=2048 substeps), tipping resumes
-                # into OOM. Training relies on the post-step clamp + grad nan_to_num
-                # to bound divergence; eval gets the surgical fix because integration
-                # is no-grad and the float64 overflow path is the real divergence cause.
-                xpw = xx.unsqueeze(1) ** powers  # (B, P)
-                xvw = vv.unsqueeze(1) ** powers  # (B, P)
+                # Clamp the kernel INPUT (soft-tanh) before the v^P polynomial so a runaway
+                # (gamma<0) substep velocity can't overflow fp32 -> NaN. Mirrors the Heun core.
+                # The LINEAR terms (-om2*x - ga*v) keep the raw state -- only the polynomial
+                # needs bounding. Costs a couple (B,) tanh tensors/substep for backward (the
+                # memory the old comment fretted about); worth it to keep the RK4 path from
+                # diverging when the oscillator self-oscillates hard.
+                xx_c = BX * torch.tanh(xx / BX)
+                vv_c = BXP * torch.tanh(vv / BXP)
+                xpw = xx_c.unsqueeze(1) ** powers  # (B, P)
+                xvw = vv_c.unsqueeze(1) ** powers  # (B, P)
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 return vv, -om2k * xx - gak * vv - kern
 
@@ -287,9 +290,12 @@ class _GraphedRK4Step:
 
         def step(om2k, gak, w_k, xc, xp):
             def f(xx, vv):
-                # See _rk4_core_factory.f re. why substep-clamp is not applied in training.
-                xpw = xx.unsqueeze(1) ** powers
-                xvw = vv.unsqueeze(1) ** powers
+                # Kernel-input soft-tanh clamp (matches _rk4_core_factory.f) so graphstep RK4
+                # is bit-for-bit with eager and can't overflow v^P on a gamma<0 runaway.
+                xx_c = BX * torch.tanh(xx / BX)
+                vv_c = BXP * torch.tanh(vv / BXP)
+                xpw = xx_c.unsqueeze(1) ** powers
+                xvw = vv_c.unsqueeze(1) ** powers
                 kern = torch.einsum("bp,bk,bpk->b", xpw, xvw, w_k)
                 return vv, -om2k * xx - gak * vv - kern
             k1x, k1v = f(xc, xp)
@@ -627,6 +633,48 @@ def teacher_forced_rollout(
                      powers, H, float(noise_tau_samp))
 
 
+def filtered_noise_branch(model, x, dxdt, dt, H, rng=None):
+    """Additive noise source (harmonic-plus-noise mode).
+
+    white noise (reparameterized: sampled once, held fixed) -> model.noise_tract (a LOW-ORDER
+    rational pole/zero filter, same parameterization as the vocal tract, too coarse to synthesize
+    sharp harmonic peaks) -> amplitude-modulate by the sigma gate g(t). Returns (B, H) to be ADDED
+    to the tract output. Differentiable in the sigma head + noise_tract; the low filter order is
+    what forces the oscillator (not the noise) to carry the tonal/harmonic structure.
+    """
+    B = x.shape[0]
+    dev = x.device
+    g = model.get_sigma(x, dxdt.clone(), dt)[:, :H, 0]                 # (B, H) AM gate >= 0
+    w = torch.randn(B, H, device=dev, dtype=x.dtype, generator=rng)    # white noise
+    colored = model.noise_tract.apply(w[..., None])[..., 0]           # (B, H) low-order rational
+    if getattr(model, "use_rumble_branch", False):
+        # Band-limit the noise: high-pass ABOVE noise_highpass_hz (0 -> rumble_lowpass_hz, the
+        # complementary single-cutoff case). The LF is owned by the rumble; the noise scales only the
+        # broadband floor. Decoupled (e.g. noise-HP 250 < rumble-LP 300) leaves a 250-300 OVERLAP where
+        # the rumble carries the deterministic LF signal and the noise carries the floor -- fills the
+        # crossover residual bump. high-pass = x - lowpass(x) at the cutoff.
+        cutoff = (float(getattr(model, "noise_highpass_hz", 0.0) or 0.0)
+                  or float(getattr(model, "rumble_lowpass_hz", 250.0)))
+        colored = colored - model._lowpass_fft(colored[..., None], cutoff, dt)[..., 0]
+    return g * colored                                                # sigma AM gate
+
+
+def rumble_branch(model, x, dxdt, dt, H):
+    """Deterministic low-frequency 'rumble' source (harmonic-plus-noise-plus-rumble mode).
+
+    model.get_rumble runs a parallel Mamba head and band-limits its output to < rumble_lowpass_hz.
+    Returns (B, H) to be ADDED to the tract output OUTSIDE the tract, alongside the noise branch.
+    A dedicated cheap channel for the sub-cutoff recording floor so the oscillator isn't forced to
+    spend capacity on it -- the oscillator is left FULL-RANGE (not high-passed), so it can still
+    reach below the cutoff when a vocalization has genuine LF content. Differentiable in the head.
+    """
+    r = model.get_rumble(x, dxdt.clone(), dt)[:, :H, 0]   # (B, H) band-limited LF source
+    # DC-subtract (like the oscillator source): the rumble low-pass passes 0 Hz and the MRSTFT loss
+    # ignores the 0-freq bin, so an un-penalized DC offset would otherwise accumulate -- adding a
+    # pure offset to the output and a broadband STFT edge artifact. Remove it.
+    return r - r.mean(dim=1, keepdim=True)
+
+
 def spectral_rollout_step(
     model,
     x: torch.Tensor,        # (B, L, 1) target audio
@@ -642,14 +690,26 @@ def spectral_rollout_step(
     lam_env_log: float = 0.0,         # weight on the log-ratio envelope loss (env_loss_log)
     env_log_eps: float = 1e-4,        # noise floor inside the log() in env_loss_log
     env_ms: float = 2.0,
-    lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights
+    lam_reg: float = 0.0,             # scale on the degree-graded L2 penalty on kernel weights (+ gamma,
+                                      #   the degree-1 damping coeff, folded in as just another term)
     lam_env_anchor: float = 0.0,      # scale on mean((e - 1)^2) envelope gauge anchor; pulls e toward identity, per-sample backward grad bounded by 2|e-1|/N
+    lam_tract_k_anchor: float = 0.0,  # scale on (K/K0 - 1)^2 tract-gain gauge anchor; pins K=softplus(K_raw) near its data-init K0, closing the (K, source) gauge the env anchor leaves open
+    lam_env_max_anchor: float = 0.0,  # scale on mean((max_t e - 1)^2); pins the envelope PEAK to 1 (absolute scale) without penalizing its time-variance (shape)
     tf_var: Optional[float] = None,   # precomputed Var(d2x) over the dataset; matches rollout_refine.py:110
     ic_mask: Optional[torch.Tensor] = None,
     ic_noise_rms: float = 1e-3,
     rng: Optional[torch.Generator] = None,
     rollout_backend: str = "eager",
     noise_gain: float = 0.0,          # ramp/ablation multiplier on the OU forcing (0 => off)
+    osc_gain: float = 1.0,            # gain on the deterministic (tract) output; warmup ramp gates it in
+    mel_spec: bool = False,           # compute the MRSTFT magnitude loss on mel-warped spectra
+    mel_n_mels: int = 80,
+    floor_fit: bool = False,          # noise-fit: broadband target = per-sample quiet-frame floor
+    floor_pctile: float = 25.0,
+    floor_cutoff_hz: float = 375.0,
+    floor_correction: float = -1.0,   # <=0: auto C(K,band) from the band; >0: manual override
+    noise_fit_only: bool = False,     # skip the oscillator (drives/TF/rollout) -> long-window rumble+noise fit
+    lam_rumble_td: float = 0.0,       # time-domain MSE of the rumble vs the raw LF waveform (phase-align)
 ) -> dict:
     """One forward + loss for the spectral-rollout objective.
 
@@ -664,8 +724,18 @@ def spectral_rollout_step(
     acceleration tf_d2 = -ω²·x - γ·z2 - weighted_kernels.
     """
     # Encode drives once (model.get_funcs mutates dxdt in place; pass a clone).
-    omega, gamma, wk, weights, _ = model.get_funcs(x, dxdt.clone(), dt)
-    z2 = (model.tau / dt) * dxdt  # rescaled velocity
+    if noise_fit_only:
+        # Noise-floor-fit stage: the oscillator is frozen and off, so skip the drives / TF anchor /
+        # RK4 rollout entirely (the expensive, O(H) part) and run ONLY the feedforward rumble +
+        # filtered noise. With no rollout the window can be long, so segments contain quiet gaps and
+        # the per-segment quiet-frame floor is the TRUE floor (a 46 ms window has none for dense
+        # vocs). See docs/noise_floor_fit.md.
+        weights = None
+        z2 = None
+        gamma = None
+    else:
+        omega, gamma, wk, weights, _ = model.get_funcs(x, dxdt.clone(), dt)
+        z2 = (model.tau / dt) * dxdt  # rescaled velocity
 
     # Flow-gated colored-noise forcing (opt-in). The noise realization can only be supervised
     # in distribution by the phase-discarding MRSTFT magnitude loss below -- never pathwise --
@@ -680,7 +750,8 @@ def spectral_rollout_step(
 
     # Learnable amplitude envelope e(t): computed once here and reused by both the TF anchor
     # (immediately below) and the rollout (further down). None when the model has no envelope.
-    e = model.get_envelope(x, dxdt.clone(), dt) if getattr(model, "use_envelope", False) else None
+    e = (model.get_envelope(x, dxdt.clone(), dt)
+         if (getattr(model, "use_envelope", False) and not noise_fit_only) else None)
 
     # TF anchor (variance-normalized 1-step acceleration MSE; a basin-keeper for early epochs).
     # When the model carries the envelope, the ODE describes a UNIT-amplitude source -- e carries
@@ -695,18 +766,32 @@ def spectral_rollout_step(
     # log enormous (then potentially inf) values at deep-silence ONSET segments. With lam_tf=0
     # the value isn't even backproppable, so skipping it saves a kernel forward and keeps the
     # TB curves readable. L_tf is returned as a zero tensor for downstream stacking.
-    if lam_tf <= 0:
+    if lam_tf <= 0 or noise_fit_only:
         L_tf = torch.zeros((), device=x.device, dtype=x.dtype)
     else:
+        # TF anchor targets the RUMBLE-REMOVED signal (raw - rumble): the frozen rumble owns the LF, so
+        # the oscillator should reproduce the residual dynamics, not the raw. Subtract the (frozen) rumble
+        # waveform AND its 1st/2nd derivatives (same finite-diff stencil + tau/dt rescaling as the data)
+        # from the teacher-forced state (x, z2), the target accel (d2x), and recompute the kernel there.
+        x_tf, z2_tf, d2x_tf, wk_tf = x, z2, d2x, wk
+        if getattr(model, "use_rumble_branch", False):
+            r3 = rumble_branch(model, x, dxdt.clone(), dt, x.shape[1]).detach().unsqueeze(-1)  # (B, L, 1)
+            r_np = r3.cpu().numpy()
+            dr = torch.from_numpy(deriv_approx_dy(r_np)).to(x.device, x.dtype)
+            d2r = torch.from_numpy(deriv_approx_d2y(r_np)).to(x.device, x.dtype) / (dt ** 2) * model.tau ** 2
+            x_tf = x - r3
+            z2_tf = z2 - (model.tau / dt) * dr
+            d2x_tf = d2x - d2r
+            wk_tf = model.kernel.forward_given_weights(torch.cat([x_tf, z2_tf], dim=-1), weights.clone())
         if e is not None:
             ef = e.clamp_min(1e-6)
-            s, s2 = x / ef, z2 / ef
+            s, s2 = x_tf / ef, z2_tf / ef
             wk_s = model.kernel.forward_given_weights(torch.cat([s, s2], dim=-1), weights.clone())
             tf_d2 = -(omega ** 2) * s - gamma * s2 - wk_s
-            tf_target = d2x / ef
+            tf_target = d2x_tf / ef
         else:
-            tf_d2 = -(omega ** 2) * x - gamma * z2 - wk
-            tf_target = d2x
+            tf_d2 = -(omega ** 2) * x_tf - gamma * z2_tf - wk_tf
+            tf_target = d2x_tf
         # Variance-normalized so the anchor scale is commensurable across vocs / runs.
         # tf_var should be the variance computed ONCE over the whole training set (see
         # rollout_refine.py:110) -- per-batch variance is unstable when the batch is mostly
@@ -722,13 +807,16 @@ def spectral_rollout_step(
     # already encoded above for the TF anchor instead of re-running the Mamba encoders
     # inside the rollout — they are deterministic in (x, dxdt, dt), so backprop through
     # the single shared forward sums the TF and spectral gradients exactly as before.
-    xg = teacher_forced_rollout(
-        model, x, dxdt, dt, H=H,
-        ic_mask=ic_mask, ic_noise_rms=ic_noise_rms, rng=rng,
-        drives=(omega, gamma, weights, z2),
-        rollout_backend=rollout_backend,
-        gate=gate, noise_gain=noise_gain, noise_tau_samp=noise_tau_samp,
-    )
+    if noise_fit_only:
+        xg = x.new_zeros(x.shape[0], H)   # no oscillator source; rumble+noise added below
+    else:
+        xg = teacher_forced_rollout(
+            model, x, dxdt, dt, H=H,
+            ic_mask=ic_mask, ic_noise_rms=ic_noise_rms, rng=rng,
+            drives=(omega, gamma, weights, z2),
+            rollout_backend=rollout_backend,
+            gate=gate, noise_gain=noise_gain, noise_tau_samp=noise_tau_samp,
+        )
     # NON-TRAINABLE STABILIZER on the raw RK4 source: subtract the per-segment mean
     # so any DC drift the integrator accumulated is gone BEFORE env(t) multiplies it.
     # Without this, env*DC becomes an additive DC modulated by env(t), which gets
@@ -748,8 +836,30 @@ def spectral_rollout_step(
     # the SAME tensor used by the TF anchor above (one env encode per step).
     if e is not None:
         xg = e[:, :H, 0] * xg  # (B, H)
-    if getattr(model, "use_tract", False):
+    if getattr(model, "use_tract", False) and not noise_fit_only:
         xg = model.tract.apply(xg[..., None])[..., 0]  # (B, H)
+
+    # Oscillator warmup gate: multiply the deterministic (oscillator -> env -> tract) output by
+    # osc_gain. Held at 0 during warmup (train.train schedule) so the rumble+noise branches fit
+    # the SPECTRAL loss FIRST, then ramped to 1 to bring the oscillator in for the harmonics. At
+    # osc_gain=0 the tract output is 0, so the spectral loss sends NO gradient to the oscillator /
+    # tract / envelope -- they are not recruited to the spectrum. (The TF anchor still uses the
+    # drives directly, weight lam_tf, so the oscillator idles in a learnable basin meanwhile.)
+    if osc_gain != 1.0:
+        xg = osc_gain * xg
+
+    # Harmonic-plus-noise: add the parallel filtered-noise branch OUTSIDE the tract. The
+    # oscillator rollout above stayed fully deterministic (gate=None => RK4), so this is a
+    # clean additive source -- no ODE coupling, no collapse. noise_gain ramps/gates it in.
+    if getattr(model, "use_noise_branch", False) and noise_gain > 0:
+        xg = xg + noise_gain * filtered_noise_branch(model, x, dxdt, dt, H, rng=rng)
+
+    # Rumble branch: deterministic band-limited (< rumble_lowpass_hz) LF source added OUTSIDE the
+    # tract, alongside the noise. Takes the sub-cutoff recording floor off the oscillator's plate.
+    rumble = None
+    if getattr(model, "use_rumble_branch", False):
+        rumble = rumble_branch(model, x, dxdt, dt, H)   # (B, H) band-limited LF, DC-subtracted
+        xg = xg + rumble
 
     # Backward gradient clip at the rolled-out audio: caps the spec loss's backward
     # contribution norm to SPEC_GRAD_MAX_NORM before it flows back into env_mamba's
@@ -774,7 +884,10 @@ def spectral_rollout_step(
     tgt = x[:, :H, 0]
 
     configs_H = _filter_configs_for_horizon(configs, H)
-    spec_parts = mrstft_loss(xg, tgt, configs_H, return_components=True)
+    spec_parts = mrstft_loss(xg, tgt, configs_H, return_components=True,
+                             mel=mel_spec, sr=1.0 / dt, n_mels=mel_n_mels,
+                             floor_fit=floor_fit, floor_pctile=floor_pctile,
+                             floor_cutoff_hz=floor_cutoff_hz, floor_correction=floor_correction)
     L_spec = spec_parts["spec"]
     L_sc = spec_parts["sc"]
     L_logm = spec_parts["logm"]
@@ -795,13 +908,24 @@ def spectral_rollout_step(
     # Operates on the same `weights` tensor returned by get_funcs above -- no extra
     # forward pass. Mirrors the legacy MSE-accel reg_weights block in train.train,
     # which never ran in spectral mode prior to this.
-    if lam_reg > 0:
+    if lam_reg > 0 and weights is not None:
         P = weights.shape[-1]
         deg = torch.arange(P, dtype=weights.dtype, device=weights.device)
         lam_grid = float(model.kernel.lam) ** (deg.view(P, 1) + deg.view(1, P))  # (P, P)
         L_reg = (lam_grid * weights ** 2).sum(dim=(-1, -2, -3)).mean()
+        # gamma(t) is the degree-1 linear-damping coefficient (the x'^1 term), so regularize it as
+        # JUST ANOTHER KERNEL TERM -- same lam_reg scale, same degree grading (lam**1) -- by folding
+        # it into L_reg. Pulls gamma toward neutral damping so it can't run away negative into the
+        # anti-damped/diverging regime. Omega is deliberately NOT regularized (pulling it toward 0
+        # would drop the natural frequency out of the harmonic band). L_gamma tracked for logging.
+        if gamma is not None:
+            L_gamma = (float(model.kernel.lam) * gamma[:, :, 0] ** 2).sum(dim=1).mean()
+            L_reg = L_reg + L_gamma
+        else:
+            L_gamma = torch.zeros((), device=x.device, dtype=x.dtype)
     else:
         L_reg = torch.zeros((), device=x.device, dtype=x.dtype)
+        L_gamma = torch.zeros((), device=x.device, dtype=x.dtype)
 
     # Gauge-fixing anchor on the envelope: quadratic penalty mean((e - 1)^2) pulls e toward
     # the identity-init value e=1. Without this, the spec loss is gauge-invariant under
@@ -824,17 +948,59 @@ def spectral_rollout_step(
     else:
         L_env_anchor = torch.zeros((), device=x.device, dtype=x.dtype)
 
+    # Gauge-fixing anchor on the tract GAIN K = softplus(K_raw): quadratic pull toward its
+    # data-init value K0 (model.tract.K_anchor_target). Closes the (K, source) -> (c*K, source/c)
+    # gauge the envelope anchor leaves open -- pins the absolute output gain WITHOUT flattening
+    # the envelope. Relative (K/K0 - 1)^2 so the weight is scale-free; K is a scalar so this is a
+    # tiny, bounded-gradient term (dL/dK_raw = 2(K/K0 - 1)/K0 * sigmoid(K_raw)).
+    tract = getattr(model, "tract", None)
+    if lam_tract_k_anchor > 0 and tract is not None and getattr(tract, "K_anchor_target", None) is not None:
+        K = torch.nn.functional.softplus(tract.K_raw)
+        K0 = tract.K_anchor_target.clamp_min(1e-8)
+        L_k_anchor = (K / K0 - 1.0).pow(2)
+    else:
+        L_k_anchor = torch.zeros((), device=x.device, dtype=x.dtype)
+
+    # Scale-only anchor on the envelope: quadratic penalty on the departure of the PEAK of
+    # e(t) from 1, mean over batch: mean((max_t e - 1)^2). Unlike lam_env_anchor (which pins
+    # e(t) to a per-sample target and thus penalizes the whole shape), this fixes only the
+    # absolute SCALE of the envelope -- its time-variance (syllable shaping) is unpenalized,
+    # so e is free to vary but can't roam its overall level up (the runaway seen with only a
+    # K anchor). Grad flows only through each sample's argmax timestep (max-pool subgradient).
+    if lam_env_max_anchor > 0 and e is not None:
+        e_max = e[:, :H, 0].amax(dim=1)          # (B,) per-sample envelope peak
+        L_env_max = (e_max - 1.0).pow(2).mean()
+    else:
+        L_env_max = torch.zeros((), device=x.device, dtype=x.dtype)
+
+    # Time-domain rumble anchor: MSE of the (deterministic) rumble against the raw waveform's LF
+    # (low-passed at the same cutoff, DC-subtracted to match rumble_branch). Unlike the noise and
+    # oscillator, the rumble CAN phase-align to the actual LF waveform, so this makes raw - rumble
+    # cancel cleanly in the time domain (magnitude-only fits leave the phase random -> subtraction
+    # ADDS power). Rumble-only; dropped once the rumble is frozen. See docs/noise_floor_fit.md.
+    if lam_rumble_td > 0 and rumble is not None:
+        tgt_lf = model._lowpass_fft(x[:, :H, :], float(model.rumble_lowpass_hz), dt)[:, :, 0]  # (B,H)
+        tgt_lf = tgt_lf - tgt_lf.mean(dim=1, keepdim=True)
+        L_rumble_td = ((rumble - tgt_lf) ** 2).mean()
+    else:
+        L_rumble_td = torch.zeros((), device=x.device, dtype=x.dtype)
+
     total = (
         lam_spec * L_spec
         + lam_tf * L_tf
+        + lam_rumble_td * L_rumble_td
         + lam_env * L_env
         + lam_env_log * L_env_log
         + lam_reg * L_reg
         + lam_env_anchor * L_env_anchor
+        + lam_tract_k_anchor * L_k_anchor
+        + lam_env_max_anchor * L_env_max
     )
     return {"spec": L_spec, "sc": L_sc, "logm": L_logm,
             "tf": L_tf, "env": L_env, "env_log": L_env_log,
-            "reg": L_reg, "env_anchor": L_env_anchor, "total": total}
+            "reg": L_reg, "gamma_reg": L_gamma, "env_anchor": L_env_anchor,
+            "k_anchor": L_k_anchor, "env_max": L_env_max,
+            "rumble_td": L_rumble_td, "total": total}
 
 
 def pow2_horizon_buckets(H_min: int, H_max: int) -> list:

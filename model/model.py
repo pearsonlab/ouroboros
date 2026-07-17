@@ -60,6 +60,7 @@ class Tract(nn.Module):
         tau_init: float = 10.0,
         pad: int = 128,
         r_max: float = 0.99,
+        use_comb: bool = True,
     ):
         super().__init__()
         self.device = device
@@ -90,11 +91,22 @@ class Tract(nn.Module):
         # (vs the old K=1 at log_K=0); the entry script's data-driven init
         # picks K_raw = softplus_inv(target_K) so the absolute gain is correct.
         self.K_raw = nn.Parameter(torch.zeros((), device=device))
+        # Target gain for the optional K-gauge anchor (see train.spectral_rollout). Persistent
+        # buffer so it rides save/load + device moves; holds the INITIAL K = softplus(K_raw).
+        # model_cv's data-driven K_raw init updates it so the anchor pins K near its data-matched
+        # starting gain, not the constructor default. Closes the (K, source) -> (c*K, source/c)
+        # gauge the envelope anchor leaves open. (load_model tolerates its absence in old ckpts.)
+        self.register_buffer("K_anchor_target", F.softplus(self.K_raw.detach().clone()))
         # trachea comb: reflection r = r_max*tanh(r_raw) (init 0 -> no comb); delay tau samples.
-        self.r_raw = nn.Parameter(torch.zeros((), device=device))
-        self.tau_raw = nn.Parameter(
-            torch.tensor(math.log(math.expm1(tau_init)), device=device)
-        )
+        # Disabled (use_comb=False) for the noise branch: a comb imposes periodic spectral teeth,
+        # exactly the harmonic-like structure the low-order noise filter must NOT be able to make
+        # -- without it the noise filter is a pure broadband pole/zero envelope.
+        self.use_comb = use_comb
+        if use_comb:
+            self.r_raw = nn.Parameter(torch.zeros((), device=device))
+            self.tau_raw = nn.Parameter(
+                torch.tensor(math.log(math.expm1(tau_init)), device=device)
+            )
 
     def _transfer(self, n: int, device, dtype) -> torch.Tensor:
         """complex rational transfer function H(f) on the rFFT grid of a length-n signal."""
@@ -114,6 +126,8 @@ class Tract(nn.Module):
             den = jw2 + (2 * zp[k] * wp[k]) * jw + wp[k] ** 2
             H = H * (num / den)
 
+        if not self.use_comb:
+            return H
         r = self.r_max * torch.tanh(self.r_raw)
         tau = F.softplus(self.tau_raw)
         ang = -2 * math.pi * (kf / n) * tau
@@ -152,6 +166,7 @@ class Ouroboros(nn.Module):
         tau: float = 1 / 10000,
         smooth_len: float = 0.001,
         drive_lowpass_ms: float = 0.0,
+        alpha_lowpass_ms: float = 0.0,
         keep_const: bool = False,
         osc_init: bool = False,
         checkpoint_encoder: bool = False,
@@ -166,6 +181,13 @@ class Ouroboros(nn.Module):
         enable_noise_forcing: bool = False,
         noise_tau_ms: float = 5.0,
         noise_init_bias: float = 0.1,
+        use_noise_branch: bool = False,
+        noise_tract_n_sec: int = 3,
+        sigma_lowpass_ms: float = 0.0,
+        sigma_constant: bool = False,
+        use_rumble_branch: bool = False,
+        rumble_lowpass_hz: float = 250.0,
+        noise_highpass_hz: float = 0.0,   # noise high-pass cutoff; 0 -> use rumble_lowpass_hz (complementary)
     ):
 
         super().__init__()
@@ -214,6 +236,11 @@ class Ouroboros(nn.Module):
         # zero-phase Gaussian (sigma = drive_lowpass_ms) -- "low-pass in the loop". Keeps the
         # drives from re-encoding the audio carrier and improves autonomous behavior.
         self.drive_lowpass_ms = drive_lowpass_ms
+        # Optional EXTRA low-pass on alpha (the constant kernel term [0,0] = pressure-analog DC
+        # drive). 0 = off (alpha smoothed at drive_lowpass_ms like the rest). >0 smooths alpha at
+        # this longer timescale so the driving pressure varies slowly (syllable-scale), matching the
+        # physical syringeal pressure wave.
+        self.alpha_lowpass_ms = alpha_lowpass_ms
         # if True, gradient-checkpoint the three Mamba drive encoders in get_funcs: their
         # activations over the doubled-length sequence (x_in is 2L) dominate training memory
         # (~6.9 GB at B=64, vs ~60 MiB for the RK4 rollout), so recomputing them in backward
@@ -307,7 +334,23 @@ class Ouroboros(nn.Module):
         # the deterministic poly model and adds no parameters.
         self.enable_noise_forcing = enable_noise_forcing
         self.noise_tau_ms = noise_tau_ms
-        if enable_noise_forcing:
+        # Optional low-pass on the sigma gate g(t) (0 = off, the default -- g stays sharp). When
+        # >0, get_sigma smooths g at this timescale (same zero-phase Gaussian as the drives), so
+        # the noise amplitude envelope can't snap abruptly.
+        self.sigma_lowpass_ms = sigma_lowpass_ms
+        self.sigma_constant = sigma_constant
+        # ---- harmonic-plus-noise: additive filtered-noise branch (opt-in) ----
+        # An alternative to the in-ODE OU forcing: keep the oscillator PURELY deterministic
+        # (RK4) and add, OUTSIDE the tract, a parallel noise source -- white noise, amplitude-
+        # modulated by the sigma gate g(t), passed through a learned time-varying filter (a
+        # per-frame magnitude response from a new Mamba head), summed with the tract output.
+        # This is the DDSP harmonic-plus-filtered-noise decomposition: the oscillator carries
+        # the tonal/harmonic content, the noise branch carries the broadband/aperiodic floor,
+        # and the two can't fight (the noise never touches the ODE, so no collapse, no Heun).
+        self.use_noise_branch = use_noise_branch
+        # The sigma gate is the noise AM for the additive branch too, so build it for EITHER
+        # mode. get_sigma() keys off the head existing, not off enable_noise_forcing.
+        if enable_noise_forcing or use_noise_branch:
             sigmaConfig = MambaConfig(
                 d_model=2 * d_data,
                 n_layers=n_layers,
@@ -330,6 +373,77 @@ class Ouroboros(nn.Module):
             nn.init.constant_(self.sigma_net.bias, float(noise_init_bias))
             self.names = self.names + [r"$\sigma$"]
 
+        if use_noise_branch:
+            self.noise_tract_n_sec = noise_tract_n_sec
+            # Low-order rational (pole/zero) filter for the noise branch -- SAME parameterization
+            # as the vocal Tract (n_sec second-order pole/zero sections, identity at init). Kept
+            # deliberately LOW order so it can shape a broadband spectral envelope but CANNOT
+            # synthesize sharp harmonic peaks -- that forces the oscillator to carry the tonal /
+            # harmonic structure instead of the noise modelling everything. Applied to white noise;
+            # the sigma gate g(t) provides the time-varying amplitude (see filtered_noise_branch).
+            self.noise_tract = Tract(device=device, n_sec=noise_tract_n_sec, use_comb=False)
+            self.names = self.names + [r"$H_{noise}$"]
+
+        # Deterministic low-frequency "rumble" source, band-limited to < rumble_lowpass_hz, added
+        # alongside tract + noise (OUTSIDE the tract). A dedicated cheap channel for the sub-cutoff
+        # recording floor so the oscillator isn't forced to spend capacity matching it -- but the
+        # oscillator is left FULL-RANGE (not high-passed), so it can still reach below the cutoff
+        # when a vocalization has genuine LF content. Zero-init head -> starts silent, learned gently.
+        self.use_rumble_branch = use_rumble_branch
+        # Noise high-pass cutoff. 0 -> use rumble_lowpass_hz (complementary crossover). Set > 0 to
+        # DECOUPLE: e.g. rumble low-passes at 300 (covers the LF signal a bit higher) while the noise
+        # high-passes at 250, giving a 250-300 overlap where the rumble carries the deterministic LF
+        # and the noise carries the floor -- fills the crossover residual bump.
+        self.noise_highpass_hz = float(noise_highpass_hz)
+        if use_rumble_branch:
+            self.rumble_lowpass_hz = float(rumble_lowpass_hz)
+            rumbleConfig = MambaConfig(
+                d_model=2 * d_data,
+                n_layers=n_layers,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand_factor=expand_factor,
+            )
+            self.rumble_mamba = Mamba(rumbleConfig).to(device)
+            self.rumble_net = nn.Linear(2 * d_data, d_data, device=device)
+            nn.init.zeros_(self.rumble_net.weight)
+            nn.init.zeros_(self.rumble_net.bias)
+            self.names = self.names + [r"rumble"]
+
+    def _lowpass_fft(self, x: torch.FloatTensor, cutoff_hz: float, dt: float) -> torch.FloatTensor:
+        """Zero-phase soft-mask rFFT low-pass along time of a (B, L, C) series: unity below
+        cutoff_hz, raised-cosine rolloff to 0 by 1.5*cutoff_hz. Fixed (non-learnable) given the
+        cutoff; differentiable through rfft/irfft. Used to band-limit the rumble source."""
+        B, L, C = x.shape
+        sig = x.transpose(1, 2)                                   # (B, C, L)
+        Xf = torch.fft.rfft(sig, dim=-1)
+        freqs = torch.fft.rfftfreq(L, d=dt, device=x.device)     # (L//2+1,) Hz
+        hi = 1.5 * cutoff_hz
+        t = ((hi - freqs) / (hi - cutoff_hz)).clamp(0.0, 1.0)     # 1 below cutoff, 0 above hi
+        mask = 0.5 - 0.5 * torch.cos(math.pi * t)                # raised-cosine transition band
+        out = torch.fft.irfft(Xf * mask, n=L, dim=-1)            # (B, C, L)
+        return out.transpose(1, 2)                                # (B, L, C)
+
+    def get_rumble(
+        self, x: torch.FloatTensor, dxdt: torch.FloatTensor, dt: float
+    ) -> Optional[torch.FloatTensor]:
+        """Deterministic low-frequency source r(t), band-limited to < rumble_lowpass_hz, shape
+        (B, L, 1), or None when use_rumble_branch is False. Parallel Mamba head over the same
+        [x, x'] state as the drives; zero-init so it starts silent. Added to the tract+noise
+        output OUTSIDE the tract (see train.spectral_rollout / train.eval)."""
+        if not getattr(self, "use_rumble_branch", False):
+            return None
+        dxdt = dxdt * (self.tau / dt)  # rescaled velocity; out-of-place (no caller mutation)
+        z = torch.cat([x, dxdt], dim=-1)
+        L = z.shape[1]
+        x_in = torch.cat([torch.flip(z, [1]), z], dim=1)
+        if self.checkpoint_encoder and torch.is_grad_enabled():
+            r_out = checkpoint(self.rumble_mamba, x_in, use_reentrant=False)[:, L:, :]
+        else:
+            r_out = self.rumble_mamba(x_in)[:, L:, :]
+        r = self.rumble_net(r_out)                          # (B, L, 1) raw LF source
+        return self._lowpass_fft(r, self.rumble_lowpass_hz, dt)
+
     def _lowpass(self, x: torch.FloatTensor, dt: float, lp_ms: float = None) -> torch.FloatTensor:
         """centered zero-phase Gaussian low-pass along time of a (B, L, C) control series.
         lp_ms overrides the timescale (defaults to self.drive_lowpass_ms). The kernel radius is
@@ -350,10 +464,16 @@ class Ouroboros(nn.Module):
         return F.conv1d(xc, k, groups=C).transpose(1, 2)
 
     def _lowpass_weights(self, weights: torch.FloatTensor, dt: float) -> torch.FloatTensor:
-        """low-pass the polynomial kernel weights (B, L, P, P) along time."""
+        """low-pass the polynomial kernel weights (B, L, P, P) along time. The constant term
+        (alpha = [0,0], the pressure-analog DC drive) optionally gets an EXTRA, longer low-pass
+        (alpha_lowpass_ms) so it varies on a slow syllable-scale timescale."""
         B, L, P, P2 = weights.shape
-        w = self._lowpass(weights.reshape(B, L, P * P2), dt)
-        return w.reshape(B, L, P, P2)
+        w = self._lowpass(weights.reshape(B, L, P * P2), dt).reshape(B, L, P, P2)
+        if getattr(self, "alpha_lowpass_ms", 0.0) > 0:
+            a = self._lowpass(w[:, :, 0, 0:1], dt, lp_ms=self.alpha_lowpass_ms)  # (B,L,1)
+            w = w.clone()
+            w[:, :, 0, 0] = a[:, :, 0]
+        return w
 
     def forward(
         self,
@@ -569,8 +689,9 @@ class Ouroboros(nn.Module):
         is deliberately NOT low-passed -- the gate is allowed to be sharp so it can track fast
         onset/offset structure. Multiplies the OU noise eta in the momentum equation (see the
         stochastic-Heun path in train.spectral_rollout); at init the noise_gain ramp holds the
-        term off regardless of g."""
-        if not self.enable_noise_forcing:
+        term off regardless of g. Also serves as the amplitude modulation for the additive
+        filtered-noise branch (harmonic-plus-noise mode)."""
+        if not hasattr(self, "sigma_net"):   # built for enable_noise_forcing OR use_noise_branch
             return None
         dxdt = dxdt * (self.tau / dt)  # rescaled velocity; out-of-place (no caller mutation)
         z = torch.cat([x, dxdt], dim=-1)
@@ -581,7 +702,21 @@ class Ouroboros(nn.Module):
             g_out = checkpoint(self.sigma_mamba, x_in, use_reentrant=False)[:, L:, :]
         else:
             g_out = self.sigma_mamba(x_in)[:, L:, :]
-        return F.relu(self.sigma_net(g_out))
+        if getattr(self, "sigma_constant", False):
+            # ONE scalar gain per vocalization on the filtered noise. The Mamba sees the whole
+            # waveform (+ its reversal) and mean-pools to a single number; the spectral loss is MASKED
+            # to the quiet frames (see mrstft_loss), so this gain is trained to match the noise floor
+            # -- "see the whole voc, output a gain for the quiet parts". Softplus (not relu) so it can
+            # approach 0 smoothly for clean vocs instead of dead-relu collapsing. See
+            # docs/noise_floor_fit.md.
+            g_out = g_out.mean(dim=1, keepdim=True)                     # (B, 1, F) full-voc summary
+            return F.softplus(self.sigma_net(g_out)).expand(-1, L, -1)  # (B, L, 1) constant gain
+        g = F.relu(self.sigma_net(g_out))
+        # Optional smoothing (opt-in via sigma_lowpass_ms). The Gaussian kernel has all-positive,
+        # unit-sum weights, so low-passing a nonnegative gate keeps it nonnegative.
+        if getattr(self, "sigma_lowpass_ms", 0.0) > 0:
+            g = self._lowpass(g, dt, lp_ms=self.sigma_lowpass_ms)
+        return g
 
     def integrate(
         self,

@@ -107,9 +107,17 @@ def detect_batches_per_epoch(fallback: int = 750) -> int:
     try:
         run_dir = os.path.dirname(SEED_DIR.rstrip("/"))
         parent = os.path.dirname(run_dir)
-        log_path = os.path.join(parent, os.path.basename(run_dir) + "_train.log")
-        if os.path.exists(log_path):
-            import re
+        # The launch script writes <run_dir>/train.log; older runs used a sibling
+        # <parent>/<runname>_train.log. Try both.
+        candidates = [
+            os.path.join(run_dir, "train.log"),
+            os.path.join(parent, os.path.basename(run_dir) + "_train.log"),
+        ]
+        import re
+        for log_path in candidates:
+            if not os.path.exists(log_path):
+                continue
+            found = False
             with open(log_path) as f:
                 # the line is small + near the top; scan up to first ~200 lines.
                 for i, line in enumerate(f):
@@ -118,7 +126,10 @@ def detect_batches_per_epoch(fallback: int = 750) -> int:
                     m = re.search(r"batches_per_epoch=(\d+)", line)
                     if m:
                         bpe = int(m.group(1))
+                        found = True
                         break
+            if found:
+                break
     except Exception:
         pass
     _BPE_CACHE[SEED_DIR] = bpe
@@ -287,10 +298,29 @@ else:
             min(1.0, (_step - _nstart) / _nwarm) if _nwarm > 0 else 1.0)
     except (KeyError, ValueError, TypeError):
         _noise_gain = 1.0
+# Oscillator warmup gain: same ramp-from-step logic as noise, so warmup-epoch checkpoints are
+# scored/rendered with the oscillator OFF (only rumble+noise), matching what was trained.
+try:
+    _ostep = float(os.environ["MONITOR_STEP_OVERRIDE"]) + float(os.environ.get("MONITOR_BPE", "0"))
+    _ostart = float(os.environ.get("MONITOR_OSC_START_STEP", "0"))
+    _owarm = float(os.environ.get("MONITOR_OSC_WARMUP_STEPS", "0"))
+    _osc_gain = 0.0 if _ostep < _ostart else (
+        min(1.0, (_ostep - _ostart) / _owarm) if _owarm > 0 else 1.0)
+except (KeyError, ValueError, TypeError):
+    _osc_gain = 1.0
 with torch.no_grad():
+    # SINGLE data-IC rollout, used for BOTH the Val/* metrics AND the panels. Strip the ~45ms/
+    # 2000-sample silence lead-in so audio[0] = the onset (the training-regime data IC), cold_start
+    # =False. Drives stay open-loop from the target, state autonomous -- identical to
+    # teacher_forced_rollout, so the panels reflect what training actually does and are comparable
+    # to the target. (Previously two calls -- a cold-start metric + a data-IC panel rollout -- but
+    # that doubled the per-poll cost on CPU. The separate cold-start autonomy number was dropped;
+    # Val/autonomy is now the data-IC autonomy, consistent with the panels and the training objective.)
+    _panel_vocs = [np.asarray(v)[2000:] if len(np.asarray(v)) > 2000 else np.asarray(v)
+                   for v in val_vocs]
     score, _, bd, trajs = autonomy_score(
-        model, val_vocs, DT, rescale=False, cold_start=True, return_trajectories=True,
-        noise_gain=_noise_gain,
+        model, _panel_vocs, DT, rescale=False, cold_start=False, return_trajectories=True,
+        noise_gain=_noise_gain, osc_gain=_osc_gain,
     )
 
 # Persist signed amp_pen alongside the offline cache the loss panels reads.
@@ -322,13 +352,14 @@ try:
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    import librosa  # mel filterbank for the spectrogram panels (already a codebase dep)
     bpe_env = os.environ.get('MONITOR_BPE')
     bpe = int(bpe_env) if (bpe_env and bpe_env.isdigit()) else 1
     # epoch -> step alignment: trainer's writer.add_scalar uses idx = global batch index,
-    # so the audio/figure step at end-of-epoch N should be (N + 1) * bpe - 1. Resume runs
-    # complicate this (idx resets to 0 even though epoch counter starts at start_epoch);
-    # for now use epoch_in_loop * bpe which is good enough for x-axis alignment when the
-    # run is from-scratch. Resumed runs will land at the resumed-epoch index in TB.
+    # so checkpoint_N (saved at the END of epoch N) sits at global step (N + 1) * bpe - 1.
+    # Use that so the audio/figure/Val points land exactly on the train-loss curve for the
+    # same model. (Resume runs complicate this -- idx resets to 0 even though the epoch
+    # counter starts at start_epoch -- but from-scratch runs are exact.)
     # MONITOR_LOG_DIR overrides where Val/* scalars + spectrograms are written. Needed
     # when the sidecar stages an inflight save into a temp dir (ckpt_dir then points at
     # the temp dir that gets cleaned up after subprocess exit, taking the SummaryWriter
@@ -340,7 +371,10 @@ try:
     # inflight ckpts which don't have a clean epoch number — the sidecar reads the
     # trainer's latest Loss/spec step and passes it here so the Val/ curves align).
     _step_override = os.environ.get("MONITOR_STEP_OVERRIDE")
-    step = int(_step_override) if _step_override else ep * bpe
+    # step_override is ckpt_epoch*bpe (start of epoch); add bpe-1 to land on the epoch's LAST
+    # batch index = (ckpt_epoch+1)*bpe-1, matching the noise-gain calc above and the trainer's
+    # end-of-epoch scalar step. (No override -> same formula from the parsed ep.)
+    step = (int(_step_override) + bpe - 1) if _step_override else (ep + 1) * bpe - 1
     # Val metrics (cold-start, rescale=False -- the same numbers the seed-CV uses).
     # Putting them on the same x-axis as the train scalars lets you compare e.g.
     # LossW/logm directly to Val/signed_amp_mean.
@@ -355,6 +389,7 @@ try:
     # long ones. Each per-voc panel still shows its own content; the extra space
     # on the right of short ones is intentional.
     _max_ms = max((len(t[0]) for t in trajs[:N_TB_VOCS] if len(t) >= 1), default=1) / SR * 1000
+    _psd = []  # per-voc (target, auto, noise, rumble) for the mel-PSD panel built after the loop
     for i in range(min(N_TB_VOCS, len(trajs))):
         # autonomy_score returns (tgt, auto, env, src, drives) when return_trajectories=True;
         # tolerate older 2/3/4-tuple shapes so this script works against in-flight runs
@@ -372,6 +407,7 @@ try:
         else:
             tgt_n, auto_n = traj
             env_n = src_n = drives = None
+        rumble_n = drives.get('rumble') if drives is not None else None
         s_tgt = float(np.nanstd(tgt_n) + 1e-12)
         s_auto = float(np.nanstd(auto_n) + 1e-12)
         auto_rescaled = auto_n * (s_tgt / s_auto)  # match target RMS for listening / display
@@ -386,21 +422,25 @@ try:
         #   row 0: target waveform | target spectrogram
         #   row 1: auto (post-tract) waveform | auto spectrogram
         #   row 2: source (pre-tract, pre-env) waveform | source spectrogram (if src_n)
-        #   row 3: drives panel -- omega^2 / gamma / alpha time series (if drives)
-        n_rows = 2 + (1 if src_n is not None else 0) + (1 if drives is not None else 0)
+        #   row 3: rumble (band-limited LF branch) waveform | spectrogram (if rumble_n)
+        #   row 4: drives panel -- omega^2 / gamma / alpha time series (if drives)
+        n_rows = (2 + (1 if src_n is not None else 0)
+                  + (1 if rumble_n is not None else 0) + (1 if drives is not None else 0))
         fig, axes = plt.subplots(n_rows, 2, figsize=(11, 2 * n_rows),
                                  gridspec_kw={'width_ratios': [1, 2]})
-        n_fft, hop = 512, 128
-        def _stft_mag(x):
-            return np.abs(np.fft.rfft(np.lib.stride_tricks.sliding_window_view(x, n_fft)[::hop]
-                                       * np.hanning(n_fft), axis=-1)).T
-        # Spectrogram colour is dB relative to the TARGET's peak |STFT| (one shared reference
-        # for all rows), so the target peaks at 0 dB and its structure fills the [-80, 0] dB
-        # range instead of saturating, while quieter rows (e.g. a ~100x-quiet auto rollout,
-        # ~-40 dB) sit visibly lower on the SAME amplitude-faithful scale. The old code used
-        # un-normalized log10|STFT| with vmax=-2, which saturated for any content above
-        # ~1e-4 amplitude -- so the target washed out and a silent rollout could look bright.
-        _spec_ref = float(np.nanmax(_stft_mag(tgt_n)) + 1e-12)
+        # Mel-spaced spectrograms (default): the low/mid vocal structure is what matters
+        # (birdsong harmonics live < ~8 kHz), so map onto a mel filterbank via librosa (already
+        # a codebase dep -- visualization/model_vis.py). n_fft=1024 gives enough low-frequency
+        # resolution that the bottom mel bands aren't empty (n_fft=512 striped). Colour is dB
+        # relative to the TARGET's peak MEL POWER (one shared reference for all rows), so the
+        # target peaks at 0 dB and quieter rows sit visibly lower on the same faithful scale.
+        _n_mels, _fmax, _mel_nfft, _mel_hop = 128, 16000.0, 1024, 256
+        def _mel_pow(x):
+            return librosa.feature.melspectrogram(
+                y=np.ascontiguousarray(x, dtype=np.float32), sr=SR, n_fft=_mel_nfft,
+                hop_length=_mel_hop, n_mels=_n_mels, fmax=_fmax, power=2.0)  # (nmels, ntime)
+        _mel_hz = librosa.mel_frequencies(n_mels=_n_mels, fmax=_fmax)
+        _spec_ref = float(np.nanmax(_mel_pow(tgt_n)) + 1e-20)
         _spec_db_floor = -80.0
         # Lock all waveform panels to the target's y-range so each panel is
         # directly comparable in scale. The envelope shape (positive) is rescaled
@@ -417,7 +457,12 @@ try:
         row_specs = [("target", tgt_n,  tgt_n,  "tab:orange"),
                      ("auto",   auto_n, auto_n, "tab:green")]
         if src_n is not None:
-            row_specs.append(("source", src_n, src_n, "tab:purple"))
+            # Gate the source DISPLAY by osc_gain too, so during warmup (osc_gain=0) the source row
+            # reads ~0 -- reflecting that the oscillator isn't contributing to the output yet.
+            src_g = src_n * _osc_gain
+            row_specs.append(("source", src_g, src_g, "tab:purple"))
+        if rumble_n is not None:
+            row_specs.append(("rumble", rumble_n, rumble_n, "tab:blue"))
         for row, (label, wf_x, spec_x, color) in enumerate(row_specs):
             t_ms = np.arange(len(wf_x)) / SR * 1000
             axes[row, 0].plot(t_ms, wf_x, color=color, lw=0.6); axes[row, 0].set_ylabel(label)
@@ -433,13 +478,15 @@ try:
                 axes[row, 0].plot(t_ms,  env_shape, color="k", lw=0.6, linestyle="--", label="env (shape only)")
                 axes[row, 0].plot(t_ms, -env_shape, color="k", lw=0.6, linestyle="--")
                 axes[row, 0].legend(loc="upper right", fontsize=7, framealpha=0.6)
-            S = _stft_mag(spec_x)
-            S_db = 20.0 * np.log10(np.maximum(S / _spec_ref, 1e-5))  # dB re target peak
-            axes[row, 1].imshow(S_db, aspect='auto', origin='lower',
-                                 extent=[0, t_ms[-1] if len(t_ms) else 1, 0, SR / 2],
+            Mp = _mel_pow(spec_x)                                     # (nmels, ntime) mel power
+            M_db = 10.0 * np.log10(np.maximum(Mp / _spec_ref, 1e-8))  # dB re target peak mel power
+            axes[row, 1].imshow(M_db, aspect='auto', origin='lower',
+                                 extent=[0, t_ms[-1] if len(t_ms) else 1, 0, _n_mels],
                                  vmin=_spec_db_floor, vmax=0.0, cmap='magma')
             axes[row, 1].set_xlim([0, _max_ms])
-            axes[row, 1].set_ylim([0, 16000])
+            _yt = np.linspace(0, _n_mels - 1, 6).astype(int)          # mel-spaced Hz tick labels
+            axes[row, 1].set_yticks(_yt)
+            axes[row, 1].set_yticklabels([str(int(_mel_hz[k])) for k in _yt], fontsize=7)
         # Drives panel: time series of omega^2, gamma, alpha drawn across BOTH
         # columns of the next row, with the constant terms ALPHA and GAMMA on the
         # left y-axis and OMEGA^2 on a twin right axis (it's on a very different
@@ -449,48 +496,95 @@ try:
             ax_d = axes[drives_row, 0]
             ax_d2 = axes[drives_row, 1]
             ms_axis = np.arange(len(drives['omega'])) / SR * 1000
-            # Left panel: gamma, alpha share an axis; omega^2 on twin
-            ax_d.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
-            ax_d.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
-            # sigma = the learned noise gate g(t)=ReLU(sigma head); same scale as gamma/alpha.
-            # None for models without the noise head (drives dict carries it only when present).
-            if drives.get('sigma') is not None:
-                ax_d.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
-            ax_d.set_ylabel(r'$\gamma$, $\alpha$, $g$', color='black')
-            ax_d.set_xlim([0, _max_ms])
-            ax_dt = ax_d.twinx()
-            ax_dt.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
-                       label=r'$\omega^2$', alpha=0.7)
-            ax_dt.set_ylabel(r'$\omega^2$', color='tab:blue')
-            ax_dt.tick_params(axis='y', labelcolor='tab:blue')
-            ax_d.legend(loc='upper left', fontsize=7, framealpha=0.6)
-            # Right panel: same data, just on the wider 2-column width for readability.
+            # Left panel: for a harmonic-plus-noise model, show the FILTERED-NOISE waveform (the
+            # term added to the tract output to produce the final waveform), y-locked to the
+            # TARGET scale like the other left-column waveforms. The drives are still shown on the
+            # right panel. For models without the noise branch, fall back to the drives here.
+            if drives.get('noise') is not None:
+                nz = drives['noise']
+                t_ms_n = np.arange(len(nz)) / SR * 1000
+                ax_d.plot(t_ms_n, nz, color='tab:gray', lw=0.6)
+                ax_d.set_ylabel('filtered noise')
+                ax_d.set_xlim([0, _max_ms])
+                ax_d.set_ylim(wf_ylim)          # lock to target scale (as with the other left-col waveforms)
+            else:
+                # No noise branch: this panel is reserved for the filtered-noise waveform, so
+                # with noise off leave it blank + annotated (the drives are on the right panel).
+                ax_d.text(0.5, 0.5, 'no noise branch', transform=ax_d.transAxes,
+                          ha='center', va='center', color='gray', fontsize=9, style='italic')
+                ax_d.set_xticks([]); ax_d.set_yticks([])
+            # Right panel: gamma + alpha on the left axis, omega^2 on a twin, and sigma on its
+            # OWN twin (offset spine). sigma (the noise gate g) is ~1000x smaller than gamma, so
+            # sharing gamma's axis squashes it to a flat line -- its own axis makes its structure
+            # visible.
             ax_d2.plot(ms_axis, drives['gamma'], color='tab:red', lw=0.8, label=r'$\gamma$')
             ax_d2.plot(ms_axis, drives['alpha'], color='tab:purple', lw=0.8, label=r'$\alpha$')
-            if drives.get('sigma') is not None:
-                ax_d2.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
             ax_d2.set_xlim([0, _max_ms])
-            ax_d2.set_ylabel(r'$\gamma$, $\alpha$, $g$')
+            ax_d2.set_ylabel(r'$\gamma$, $\alpha$')
             ax_d2t = ax_d2.twinx()
             ax_d2t.plot(ms_axis, drives['omega'] ** 2, color='tab:blue', lw=0.8,
                         label=r'$\omega^2$', alpha=0.7)
             ax_d2t.set_ylabel(r'$\omega^2$', color='tab:blue')
             ax_d2t.tick_params(axis='y', labelcolor='tab:blue')
+            if drives.get('sigma') is not None:
+                ax_d2s = ax_d2.twinx()
+                ax_d2s.spines['right'].set_position(('outward', 44))  # offset so it clears omega^2's axis
+                ax_d2s.plot(ms_axis, drives['sigma'], color='tab:green', lw=0.8, label=r'$g=\sigma$')
+                ax_d2s.set_ylabel(r'$g=\sigma$', color='tab:green')
+                ax_d2s.tick_params(axis='y', labelcolor='tab:green')
             ax_d2.legend(loc='upper left', fontsize=7, framealpha=0.6)
         bottom = n_rows - 1
         axes[bottom, 0].set_xlabel('ms'); axes[bottom, 1].set_xlabel('ms')
         # spec-row right-column labels (skip the drives row which has its own ylabel)
         last_spec_row = len(row_specs) - 1
         for r in range(last_spec_row + 1):
-            axes[r, 1].set_ylabel('Hz')
+            axes[r, 1].set_ylabel('mel (Hz)')
         # MONITOR_CKPT_LABEL overrides the title's epoch tag — used by the inflight
         # scorer to display the real epoch / step rather than the temp-dir stub of "0".
         _label = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
-        fig.suptitle(f"voc{i}  ckpt {_label}  noise_gain={_noise_gain:.2f}   "
-                     f"(spec: dB re target peak, [-80, 0])", fontsize=10)
+        fig.suptitle(f"voc{i}  ckpt {_label}  noise_gain={_noise_gain:.2f}  osc_gain={_osc_gain:.2f}   "
+                     f"(data-IC rollout = training regime; spec: mel, dB re target peak, [-80, 0])", fontsize=10)
         plt.tight_layout()
         sw.add_figure(f"specgram/voc{i}", fig, step)
         plt.close(fig)
+        _dv = drives or {}
+        _psd.append((np.asarray(tgt_n, dtype=np.float64), np.asarray(auto_n, dtype=np.float64),
+                     _dv.get('noise'), _dv.get('rumble')))
+
+    # Per-epoch mel-PSD panel: target vs tract output (= auto - noise - rumble) vs filtered noise
+    # vs rumble, for the same TB vocs. Mel-band power (time-averaged), mel-warped frequency axis.
+    if _psd:
+        _nm, _fm, _nf, _hop = 128, 16000.0, 1024, 256
+        _mhz = librosa.mel_frequencies(n_mels=_nm, fmax=_fm)
+        def _mpsd(y):
+            y = np.ascontiguousarray(np.asarray(y, dtype=np.float32))
+            S = librosa.feature.melspectrogram(y=y, sr=SR, n_fft=_nf, hop_length=_hop,
+                                               n_mels=_nm, fmax=_fm, power=2.0)
+            return 10.0 * np.log10(S.mean(axis=1) + 1e-12)
+        pfig, paxes = plt.subplots(1, len(_psd), figsize=(5 * len(_psd), 4.2),
+                                   sharey=True, squeeze=False)
+        _xt = np.linspace(0, _nm - 1, 7).astype(int)
+        for j, (tg, au, nz, ru) in enumerate(_psd):
+            ax = paxes[0, j]
+            n = min(len(tg), len(au))
+            tract = au[:n].copy()
+            if nz is not None:
+                tract = tract - np.asarray(nz, dtype=np.float64)[:n]
+            if ru is not None:
+                tract = tract - np.asarray(ru, dtype=np.float64)[:n]
+            ax.plot(np.arange(_nm), _mpsd(tg[:n]), color='tab:orange', lw=1.2, label='target')
+            ax.plot(np.arange(_nm), _mpsd(tract), color='tab:green', lw=1.2, label='tract out')
+            if nz is not None:
+                ax.plot(np.arange(_nm), _mpsd(np.asarray(nz)[:n]), color='tab:gray', lw=1.0, label='noise')
+            if ru is not None:
+                ax.plot(np.arange(_nm), _mpsd(np.asarray(ru)[:n]), color='tab:blue', lw=1.0, label='rumble')
+            ax.set_title(f"voc{j}", fontsize=8); ax.set_xlabel('mel freq (Hz)'); ax.grid(alpha=0.3)
+            ax.legend(fontsize=7); ax.set_xticks(_xt)
+            ax.set_xticklabels([str(int(_mhz[k])) for k in _xt], fontsize=7)
+        paxes[0, 0].set_ylabel('mel-band power (dB)')
+        _plabel = os.environ.get("MONITOR_CKPT_LABEL", str(ep))
+        pfig.suptitle(f"mel-PSD  ckpt {_plabel}   (target / tract out / noise / rumble)", fontsize=10)
+        plt.tight_layout(); sw.add_figure("psd/mel", pfig, step); plt.close(pfig)
     sw.close()
 except Exception as _tb_e:
     # Don't let TB rendering errors fail the autonomy score itself.
@@ -561,7 +655,11 @@ def run_autonomy_on_checkpoint(ckpt_path, step_override=None, log_dir=None, labe
     # cap. SIGCONT in finally so a crash inside subprocess.run can't leave the trainer
     # frozen. Cost: ~80s of paused training per scored checkpoint (= one epoch save), or
     # roughly 5% wall-clock on a 30-min-epoch run.
-    trainer_pid = _trainer_gpu_pid()
+    #   CPU scoring mode: skip the pause entirely -- scoring never touches the GPU, so there's
+    #   no reason to freeze GPU training. The sidecar then runs fully decoupled (CPU scoring
+    #   alongside uninterrupted training), at the cost of some CPU contention during a score.
+    _cpu_mode = os.environ.get("MONITOR_DEVICE", "cuda").lower() == "cpu"
+    trainer_pid = None if _cpu_mode else _trainer_gpu_pid()
     if trainer_pid is not None:
         try:
             os.kill(trainer_pid, signal.SIGSTOP)

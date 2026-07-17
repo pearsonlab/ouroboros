@@ -369,6 +369,7 @@ def integrate_poly_autonomous(
     detrend: bool = True,
     noise_sd: float = 0.0,
     noise_gain: float = 0.0,
+    osc_gain: float = 1.0,
     seed: int = 0,
     verbose: bool = True,
     return_envelope: bool = False,
@@ -437,14 +438,17 @@ def integrate_poly_autonomous(
     # (use_learned_noise); noise_tau_c is the OU correlation time in samples.
     noise_on = getattr(model, "enable_noise_forcing", False)
     g_gate = None
-    if noise_on:
-        with torch.no_grad():
-            g_gate = model.get_sigma(audio_t, dy_t.clone(), dt).detach().cpu().numpy().squeeze()
-        g_gate = np.atleast_1d(g_gate).astype(np.float64)
+    with torch.no_grad():
+        _g = model.get_sigma(audio_t, dy_t.clone(), dt)   # non-None iff the sigma head exists
+    if _g is not None:                                    # OU forcing OR additive noise branch
+        g_gate = np.atleast_1d(_g.detach().cpu().numpy().squeeze()).astype(np.float64)
     use_learned_noise = noise_on and noise_gain > 0
     if use_learned_noise:
         g_seq = g_gate
         noise_tau_c = (model.noise_tau_ms / 1e3) / dt
+
+    _noise_cap = {"n": None}   # captures the additive filtered-noise term added to the tract output
+    _rumble_cap = {"r": None}  # captures the additive band-limited rumble term added to the tract output
 
     def _finish(x_src: np.ndarray) -> np.ndarray:
         """detrend the raw RK4 source FIRST (non-trainable HPF stabilizes the
@@ -454,12 +458,42 @@ def integrate_poly_autonomous(
         signal -- no DC ride-through into the formant filter."""
         x_src = np.asarray(x_src, dtype=np.float64)
         if detrend:
-            x_src = correct(x_src)
+            # Mean removal only, matching the training loss (xg - xg.mean()). No butter high-pass:
+            # the low frequencies are MODELED (by the rumble branch), not filtered out, so eval +
+            # plotting reflect exactly what the loss optimizes.
+            x_src = x_src - np.mean(x_src)
         x_src = x_src * e_seq[: len(x_src)]
         if use_tract:
             xt = torch.from_numpy(x_src[None, :, None]).to(torch.float32).to(dev)
             with torch.no_grad():
                 x_src = model.tract.apply(xt).detach().cpu().numpy().squeeze()
+        # Oscillator warmup gate: scale the deterministic (tract) output by osc_gain, matching
+        # the training-time gate, BEFORE the additive noise/rumble branches.
+        if osc_gain != 1.0:
+            x_src = x_src * osc_gain
+        # Harmonic-plus-noise: add the additive filtered-noise branch OUTSIDE the tract, so the
+        # autonomous reconstruction matches training (harmonic + noise floor). Gated by noise_gain.
+        # Capture the added term (noise_gain * filtered noise) so callers can plot it.
+        if getattr(model, "use_noise_branch", False) and noise_gain > 0:
+            from train.spectral_rollout import filtered_noise_branch
+            Hn = len(x_src)
+            gen = torch.Generator(device=dev); gen.manual_seed(int(seed))
+            with torch.no_grad():
+                nb = filtered_noise_branch(model, audio_t, dy_t.clone(), dt, Hn,
+                                           rng=gen).detach().cpu().numpy().squeeze()
+            noise_term = noise_gain * np.asarray(nb, dtype=np.float64)[:len(x_src)]
+            _noise_cap["n"] = noise_term
+            x_src = x_src + noise_term
+        # Rumble branch: deterministic band-limited LF source added OUTSIDE the tract (mirrors
+        # train.spectral_rollout). Captured so callers/monitor can plot it. Always on when enabled.
+        if getattr(model, "use_rumble_branch", False):
+            from train.spectral_rollout import rumble_branch
+            Hr = len(x_src)
+            with torch.no_grad():
+                rb = rumble_branch(model, audio_t, dy_t.clone(), dt, Hr).detach().cpu().numpy().squeeze()
+            rumble_term = np.asarray(rb, dtype=np.float64)[:len(x_src)]
+            _rumble_cap["r"] = rumble_term
+            x_src = x_src + rumble_term
         return x_src
 
     if use_learned_noise:
@@ -508,7 +542,9 @@ def integrate_poly_autonomous(
             rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
                         "gamma": gamma[: len(out)].astype(np.float64).copy(),
                         "alpha": alpha[: len(out)],
-                        "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None)},)
+                        "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None),
+                        "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None),
+                        "rumble": (_rumble_cap["r"][: len(out)].copy() if _rumble_cap["r"] is not None else None)},)
         return rv if len(rv) > 1 else rv[0]
 
     if noise_sd > 0:
@@ -547,7 +583,9 @@ def integrate_poly_autonomous(
             rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
                         "gamma": gamma[: len(out)].astype(np.float64).copy(),
                         "alpha": alpha[: len(out)],
-                        "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None)},)
+                        "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None),
+                        "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None),
+                        "rumble": (_rumble_cap["r"][: len(out)].copy() if _rumble_cap["r"] is not None else None)},)
         return rv if len(rv) > 1 else rv[0]
 
     # Manual RK4 with the same soft-tanh state saturation as train/spectral_rollout.py
@@ -600,7 +638,9 @@ def integrate_poly_autonomous(
         rv = rv + ({"omega": omega[: len(out)].astype(np.float64).copy(),
                     "gamma": gamma[: len(out)].astype(np.float64).copy(),
                     "alpha": alpha[: len(out)],
-                    "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None)},)
+                    "sigma": (g_gate[: len(out)].copy() if g_gate is not None else None),
+                    "noise": (_noise_cap["n"][: len(out)].copy() if _noise_cap["n"] is not None else None),
+                    "rumble": (_rumble_cap["r"][: len(out)].copy() if _rumble_cap["r"] is not None else None)},)
     return rv if len(rv) > 1 else rv[0]
 
 
@@ -617,6 +657,7 @@ def autonomy_score(
     cold_start: bool = False,
     return_trajectories: bool = False,
     noise_gain: float = 0.0,
+    osc_gain: float = 1.0,
 ) -> tuple:
     """
     Validation metric for AUTONOMOUS reconstruction quality (model-selection criterion).
@@ -682,15 +723,15 @@ def autonomy_score(
     trajectories = [] if return_trajectories else None
     for seg in segments:
         seg = np.asarray(seg, dtype=np.float64)
-        tgt = correct(seg)
+        tgt = seg  # raw target (matches the training loss, which fits the raw audio; no high-pass)
         if return_trajectories:
             auto, env, src, drives = integrate_poly_autonomous(
-                model, seg, dt, method=method, noise_sd=0.0, noise_gain=noise_gain,
+                model, seg, dt, method=method, noise_sd=0.0, noise_gain=noise_gain, osc_gain=osc_gain,
                 detrend=True, verbose=False, return_envelope=True,
                 return_source=True, return_drives=True)
         else:
             auto = integrate_poly_autonomous(model, seg, dt, method=method, noise_sd=0.0,
-                                             noise_gain=noise_gain,
+                                             noise_gain=noise_gain, osc_gain=osc_gain,
                                              detrend=True, verbose=False)
             env = src = drives = None
         n = min(len(tgt), len(auto))
@@ -698,7 +739,8 @@ def autonomy_score(
         if return_trajectories:
             env_n = env[:n] if env is not None else np.ones(n)
             src_n = src[:n] if src is not None else auto_n.copy()
-            drives_n = {k: v[:n].copy() for k, v in drives.items()} if drives is not None else None
+            drives_n = ({k: (v[:n].copy() if v is not None else None) for k, v in drives.items()}
+                        if drives is not None else None)
             trajectories.append((tgt_n.copy(), auto_n.copy(), env_n.copy(),
                                  src_n.copy(), drives_n))
         if (not np.isfinite(auto_n).all()) or np.nanstd(auto_n) < 1e-9:
@@ -762,6 +804,6 @@ def generate_autonomous(
     auto = integrate_poly_autonomous(model, audio, dt, method=method, detrend=detrend,
                                      noise_sd=0.0, verbose=verbose)
     if rescale and np.isfinite(auto).all() and np.nanstd(auto) > 1e-9:
-        target = ref_rms if ref_rms is not None else float(np.nanstd(correct(np.asarray(audio, dtype=np.float64))))
+        target = ref_rms if ref_rms is not None else float(np.nanstd(np.asarray(audio, dtype=np.float64)))
         auto = auto * (target / (np.nanstd(auto) + 1e-12))
     return auto
